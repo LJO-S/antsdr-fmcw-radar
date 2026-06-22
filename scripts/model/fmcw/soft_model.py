@@ -208,27 +208,27 @@ class SoftFMCWModel:
         # Mix signals
         return a_signal * doppler_signal
 
+    def add_delay(self, XXX):
+        pass
 
-    def simulate_received_signal(self, a_tx_signal, a_target_distance, a_target_velocity, a_attenuation_db=-3, a_noise_db=0):
+    def simulate_received_signal(self, a_tx_signal, a_targets, a_noise_db=0):
         """
         Simulate attenuated return echo
         """
         # 1. Add Velocity
         rx_signal_doppler = self.add_velocity(a_tx_signal, a_target_velocity)
         # 2. Echo
-        attenuation_lin = 10.0 ** (a_attenuation_db / 20)
         tau_s = 2 * a_target_distance / c
         tau_samples = int(np.ceil(tau_s * self.fmcw_model.fs))
         # Extend time vector
         rx_signal = np.zeros(len(rx_signal_doppler) + tau_samples, dtype=complex)
         # Insert attenuated original (w Doppler)
-        rx_signal[tau_samples:] = rx_signal_doppler * attenuation_lin
+        rx_signal[tau_samples:] = rx_signal_doppler 
         # (Optional) Add noise
         if a_noise_db > 0:
             rx_signal += np.random.rand(len(rx_signal)) * (10.0 ** (a_noise_db / 20)) 
-        # Zero extend tx_signal to match rx_signal length
-        tx_signal = np.zeros(len(rx_signal), dtype=complex)
-        tx_signal[:len(a_tx_signal)] = a_tx_signal
+        # Shorten Rx signal to fit Tx
+        rx_signal = rx_signal[:len(a_tx_signal)]
 
         return rx_signal
 
@@ -237,7 +237,7 @@ class SoftFMCWModel:
         tx_signal = self.fmcw_model.generate_chirp_sequence()
         # Simulate echo
         # TODO need multiple rx signals (added together?)
-        rx_signal = self.simulate_received_signal(a_target_distance=a_target_distance, a_target_velocity=a_target_velocity, a_tx_signal=tx_signal)
+        rx_signal = self.simulate_received_signal(a_tx_signal=tx_signal, a_targets=targets)
         if_signal = self.fmcw_model.mix_signals(a_tx_signal=tx_signal, a_rx_signal=rx_signal)
         self.fmcw_model.create_range_doppler_plot(a_if_signal=if_signal)
         estimated_distance = self.fmcw_model.estimate_distance(if_signal, self.fmcw_model.fs)
