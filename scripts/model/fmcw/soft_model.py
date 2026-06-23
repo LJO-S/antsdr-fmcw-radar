@@ -9,6 +9,8 @@ from scipy.ndimage import convolve
 # ===================================================================================
 # Psysical constant
 c = 3e8  # Speed of light in m/s
+k_b = 1.38e-23  # Boltsmann constant
+T0 = 290  # K, standard reference temperature
 
 
 # ===================================================================================
@@ -57,6 +59,58 @@ class Detector:
 
         return nms_peaks
 
+    def subbin_refine(self, a_pwr, a_rows, a_cols):
+        """
+        Parabolic sub-bin interpolation around detected peaks.
+        Returns (row_offsets, col_offsets) as fractional bin displacements.
+
+        For each detection at (row, col), fits a parabola through the three
+        power samples on each axis and finds the analytical peak offset:
+            delta = 0.5 * (y_left - y_right) / (y_left + y_right - 2*y_center)
+        This shifts each detection from its integer bin center toward the true
+        peak, typically reducing position error from +-0.5 bins to +-0.05 bins.
+        """
+        n_rows, n_cols = a_pwr.shape
+        rows, cols = np.asarray(a_rows), np.asarray(a_cols)
+        # One offset slot per detection; both arrays share length because
+        # (rows[i], cols[i]) are paired coordinates for detection i.
+        # Default value of 0 means "no shift" for edge detections.
+        row_offsets = np.zeros(len(rows), dtype=float)
+        col_offsets = np.zeros(len(rows), dtype=float)
+
+        # --- Range axis (columns) ---
+        # Skip detections at the left/right edge since no neighbor on that side
+        col_mask = (cols > 0) & (cols < n_cols - 1)
+        if col_mask.any():
+            r, c = rows[col_mask], cols[col_mask]
+            # Grab left neighbor, center, and right neighbor power for each detection
+            ym, y0, yp = a_pwr[r, c - 1], a_pwr[r, c], a_pwr[r, c + 1]
+            # Denominator of the parabola formula; negative means the parabola
+            # opens downward e.g. local maxima
+            d = ym + yp - 2 * y0
+            valid = d < 0
+            # Apply formula only where the parabola is concave-down (valid peak)
+            # The inner np.where replaces invalid d values with 1 to avoid a
+            # divide-by-zero warning since those results are discarded by the outer np.where.
+            col_offsets[col_mask] = np.where(
+                valid, 0.5 * (ym - yp) / np.where(valid, d, 1), 0
+            )
+
+        # --- Doppler axis (rows) --- same logic applied vertically
+        # Skip detections at the top/bottom edge
+        row_mask = (rows > 0) & (rows < n_rows - 1)
+        if row_mask.any():
+            r, c = rows[row_mask], cols[row_mask]
+            # Grab upper neighbor, center, and lower neighbor power
+            ym, y0, yp = a_pwr[r - 1, c], a_pwr[r, c], a_pwr[r + 1, c]
+            d = ym + yp - 2 * y0
+            valid = d < 0
+            row_offsets[row_mask] = np.where(
+                valid, 0.5 * (ym - yp) / np.where(valid, d, 1), 0
+            )
+
+        return row_offsets, col_offsets
+
     def cfar_ca_2d(
         self,
         a_rd_matrix: np.ndarray,
@@ -103,8 +157,13 @@ class FMCWModel:
         a_chirp_duration,
         a_sampling_rate,
         a_chirp_reps,
+        # Frontend
+        a_tx_pwr_dbm,
+        a_tx_gain_db,
+        a_rx_gain_db,
+        # Misc
         a_triangle_en,
-        a_operational_range_factor=0.5,
+        a_operational_range_factor=0.2,
         plot_en=False,
         # Detection parameters
         a_cfar_guard_len=4,
@@ -119,6 +178,10 @@ class FMCWModel:
         self.triangle_en = a_triangle_en
 
         self.op_max_rng_factor = a_operational_range_factor
+
+        self.tx_pwr = 10 ** ((a_tx_pwr_dbm - 30) / 10)
+        self.tx_gain = 10 ** (a_tx_gain_db / 10)
+        self.rx_gain = 10 ** (a_rx_gain_db / 10)
 
         self.chirp = np.zeros(int(self.chirp_duration * self.fs), dtype=complex)
         self.if_signal = np.zeros(int(self.chirp_duration * self.fs), dtype=complex)
@@ -143,6 +206,9 @@ class FMCWModel:
             f"  Operational Max Range: {self.op_max_rng_factor * (c * self.chirp_duration) / 2} m"
         )
         print(f"  Max Velocity: {(c/self.chirp_fc) / (4 * self.chirp_duration)} m/s")
+        print(
+            f"Processing Gain: {10 * np.log10(self.chirp_duration * self.fs * self.chirp_reps)}"
+        )
 
         self.plot = plot_en
 
@@ -238,7 +304,7 @@ class FMCWModel:
                 a_rd_matrix=down_matrix_rd, a_apply_nms=False
             )
         else:
-            up_detections, _ = self.detector.cfar_ca_2d(
+            up_detections, up_pwr = self.detector.cfar_ca_2d(
                 a_rd_matrix=up_matrix_rd, a_apply_nms=True
             )
 
@@ -254,7 +320,7 @@ class FMCWModel:
             up_mask = up_detections[:, pos] & ~both_mask
             down_mask = np.flipud(down_detections[:, pos]) & ~both_mask
 
-        # 6. Plot
+        # 6. Plot and target readout
         if self.triangle_en:
             fig, (ax1, ax2, ax3) = plt.subplots(nrows=3, sharex=True)
             mesh1 = ax1.pcolormesh(
@@ -274,32 +340,47 @@ class FMCWModel:
             ax2.set_ylabel("Velocity (m/s)")
             ax2.set_title("Down-chirp")
 
+            # Extract integer bin indices for each detection category
             up_only_dop, up_only_rng = np.where(up_mask)
             down_only_dop, down_only_rng = np.where(down_mask)
             both_dop, both_rng = np.where(both_mask)
+
+            # Physical width of one bin along each axis, used to convert
+            # fractional bin offsets into meters and m/s
+            range_bin_width = ranges[pos][1] - ranges[pos][0]
+            vel_bin_width = velocities[1] - velocities[0]
+
+            # Refine "both" detections using the average power of up and down chirp.
+            # col_off[i] and row_off[i] are fractional bin shifts for detection i.
+            # Multiplying by bin width converts the shift to physical units.
+            row_off, col_off = self.detector.subbin_refine(avg_pwr, both_dop, both_rng)
+            both_rng_r = ranges[pos][both_rng] + col_off * range_bin_width
+            both_dop_r = velocities[both_dop] + row_off * vel_bin_width
+
+            # Target readout
+            targets = list(zip(both_rng_r, both_dop_r))
+
+            # Refine up-only detections using the up-chirp power (range-masked)
+            row_off, col_off = self.detector.subbin_refine(
+                up_pwr[:, pos], up_only_dop, up_only_rng
+            )
+            up_rng_r = ranges[pos][up_only_rng] + col_off * range_bin_width
+            up_dop_r = velocities[up_only_dop] + row_off * vel_bin_width
+
+            # Refine down-only detections. The down-chirp power is flipped along
+            # the Doppler axis to match the up-chirp coordinate convention before refining.
+            row_off, col_off = self.detector.subbin_refine(
+                np.flipud(down_pwr)[:, pos], down_only_dop, down_only_rng
+            )
+            down_rng_r = ranges[pos][down_only_rng] + col_off * range_bin_width
+            down_dop_r = velocities[down_only_dop] + row_off * vel_bin_width
+
+            ax3.scatter(up_rng_r, up_dop_r, marker="x", color="white", s=30, label="Up")
             ax3.scatter(
-                ranges[pos][up_only_rng],
-                velocities[up_only_dop],
-                marker="x",
-                color="white",
-                s=30,
-                label="Up",
+                down_rng_r, down_dop_r, marker="x", color="cyan", s=30, label="Down"
             )
             ax3.scatter(
-                ranges[pos][down_only_rng],
-                velocities[down_only_dop],
-                marker="x",
-                color="cyan",
-                s=30,
-                label="Down",
-            )
-            ax3.scatter(
-                ranges[pos][both_rng],
-                velocities[both_dop],
-                marker="o",
-                color="yellow",
-                s=50,
-                label="Both",
+                both_rng_r, both_dop_r, marker="o", color="yellow", s=50, label="Both"
             )
             ax3.set_facecolor("#0a1628")
             ax3.set_xlim(ranges[pos].min(), ranges[pos].max())
@@ -321,10 +402,27 @@ class FMCWModel:
             ax1.set_ylabel("Velocity (m/s)")
             ax1.set_title("Range-Doppler Map")
 
+            # Extract integer bin indices for each detection
             up_det_dop, up_det_rng = np.where(up_detections[:, pos])
+
+            # Physical width of one bin along each axis
+            range_bin_width = ranges[pos][1] - ranges[pos][0]
+            vel_bin_width = velocities[1] - velocities[0]
+            # col_off shifts each detection along the range axis (in bins),
+            # row_off shifts along the Doppler axis (in bins)
+            row_off, col_off = self.detector.subbin_refine(
+                up_pwr[:, pos], up_det_dop, up_det_rng
+            )
+
+            up_rng_r = ranges[pos][up_det_rng] + col_off * range_bin_width
+            up_dop_r = velocities[up_det_dop] + row_off * vel_bin_width
+
+            # Target readout
+            targets = list(zip(up_rng_r, up_dop_r))
+
             ax2.scatter(
-                ranges[pos][up_det_rng],
-                velocities[up_det_dop],
+                up_rng_r,
+                up_dop_r,
                 marker="o",
                 color="white",
                 s=30,
@@ -343,46 +441,7 @@ class FMCWModel:
         if self.plot:
             plt.show()
 
-        # 4. Fetch targets
-        # maybe use CFAR here?
-
-    def estimate_velocity(self):
-        pass
-
-    def estimate_range(self, a_if_signal, a_fs, a_nbr_targets=1):
-        N = len(a_if_signal)
-        N_chirp = int(np.ceil(self.chirp_duration * self.fs))
-
-        if self.triangle_en:
-            num_chirp = N // (N_chirp * 2)
-        else:
-            num_chirp = N // N_chirp
-
-        freqs = np.fft.fftfreq(N_chirp, d=1 / a_fs)
-        estimated_range = []
-        i = 0
-        for _ in range(num_chirp):
-            if_fft = np.fft.fft(
-                a_if_signal[i * N_chirp : (i + 1) * N_chirp] * np.hanning(N_chirp)
-            )
-            if_fft[freqs < 0.0] = 0.0
-            peak_index = np.argmax(np.abs(if_fft))
-            beat_frequency = freqs[peak_index]
-            i += 1
-            if self.triangle_en:
-                if_fft = np.fft.fft(
-                    a_if_signal[i * N_chirp : (i + 1) * N_chirp] * np.hanning(N_chirp)
-                )
-                if_fft[freqs > 0.0] = 0.0
-                peak_index = np.argmax(np.abs(if_fft))
-                beat_frequency = (beat_frequency - freqs[peak_index]) / 2
-                i += 1
-
-            estimated_range.append(
-                (beat_frequency * c) / (2 * (self.chirp_bw / self.chirp_duration))
-            )
-
-        return estimated_range
+        return targets
 
 
 # ===================================================================================
@@ -390,6 +449,21 @@ class SoftFMCWModel:
     def __init__(self, fmcw_model, plot_en=False):
         self.fmcw_model = fmcw_model
         self.plot = plot_en
+
+    def add_amplitude(self, a_signal, a_rcs, a_range):
+        # Standard radar equation: P_r = P_t * G_t * G_r * λ**2 * σ / ((4π)**3 * R**4)
+        wavelength = c / self.fmcw_model.chirp_fc
+        rx_pwr = (
+            self.fmcw_model.tx_pwr
+            * self.fmcw_model.tx_gain
+            * self.fmcw_model.rx_gain
+            * wavelength**2
+            * a_rcs
+        ) / (((4 * np.pi) ** 3) * a_range**4)
+
+        amplitude = np.sqrt(rx_pwr)
+
+        return a_signal * amplitude
 
     def add_velocity(self, a_signal, a_velocity):
         """
@@ -401,7 +475,7 @@ class SoftFMCWModel:
         t = np.arange(
             0, len(a_signal) * (1 / self.fmcw_model.fs), (1 / self.fmcw_model.fs)
         )
-        doppler_signal = np.exp(2 * np.pi * 1j * doppler_freq * t)
+        doppler_signal = np.exp(-2 * np.pi * 1j * doppler_freq * t)
         # Mix signals
         return a_signal * doppler_signal
 
@@ -413,10 +487,15 @@ class SoftFMCWModel:
         target_rx_signal[tau_samples:] = a_signal[:-tau_samples]
         return target_rx_signal
 
-    def simulate_received_signal(self, a_tx_signal, a_targets, a_noise_db=9):
+    def simulate_received_signal(self, a_tx_signal, a_targets, a_noise_figure_db=0):
         """
-        Simulate attenuated return echo
+        Simulate attenuated return echo with physically-grounded thermal noise.
+
+        Noise power: N = k*T*B*F
+          k = Boltzmann constant, T = 290 K, B = sampling rate (complex bandwidth),
+          F = noise figure (linear). The noise is split equally across I and Q.
         """
+
         rx_signal = np.zeros(len(a_tx_signal), dtype=complex)
         for target in a_targets:
             # 1. Add Velocity
@@ -427,57 +506,83 @@ class SoftFMCWModel:
             rx_signal_echo = self.add_delay(
                 a_signal=rx_signal_doppler, a_range=target["range"]
             )
-            rx_signal += rx_signal_echo
-        # (Optional) Add noise
-        if a_noise_db > 0:
-            rx_signal += np.random.normal(0, 1, len(rx_signal)) * (
-                10.0 ** (a_noise_db / 20)
+            # 3. Attenuate (radar equation)
+            rx_signal_atten = self.add_amplitude(
+                a_signal=rx_signal_echo, a_rcs=target["rcs"], a_range=target["range"]
+            )
+            # 4. Accumulate
+            rx_signal += rx_signal_atten
+
+        if a_noise_figure_db > 0:
+            noise_figure = 10 ** (a_noise_figure_db / 10)
+            # Total noise power referred to receiver input; fs is the complex bandwidth
+            noise_pwr = k_b * T0 * self.fmcw_model.fs * noise_figure
+            # Split equally across I and Q so total power = noise_pwr
+            noise_std = np.sqrt(noise_pwr / 2)
+            n = len(rx_signal)
+            rx_signal += noise_std * (
+                np.random.normal(0, 1, n) + 1j * np.random.normal(0, 1, n)
             )
 
         return rx_signal
 
-    def run_simulation(self, a_targets):
+    def run_simulation(self, a_targets, a_noise_figure_db=0):
         # Generate chirp
         tx_signal = self.fmcw_model.generate_chirp_sequence()
         # Simulate echo
         rx_signal = self.simulate_received_signal(
-            a_tx_signal=tx_signal, a_targets=a_targets
+            a_tx_signal=tx_signal,
+            a_targets=a_targets,
+            a_noise_figure_db=a_noise_figure_db,
         )
 
         if_signal = self.fmcw_model.mix_signals(
             a_tx_signal=tx_signal, a_rx_signal=rx_signal
         )
 
-        self.fmcw_model.create_range_doppler_plot(a_if_signal=if_signal)
-
-        # Fetch range
-        estimated_range = self.fmcw_model.estimate_range(if_signal, self.fmcw_model.fs)
-
-        # Fetch velocity
-        estimated_velocity = self.fmcw_model.estimate_velocity(
-            if_signal, self.fmcw_model.fs
+        detected_targets = self.fmcw_model.create_range_doppler_plot(
+            a_if_signal=if_signal
         )
-        return 0, 0
+
+        return detected_targets
 
 
 if __name__ == "__main__":
+    import argparse
+
+    parser = argparse.ArgumentParser(description="FMCW radar soft model")
+    parser.add_argument("-p", "--plot", action="store_true", help="Show plots")
+    args = parser.parse_args()
+
     # ===============================================================================
     # PARAMETERS
-    CHIRP_FC_HZ = 900e6
-    CHIRP_BW_HZ = 56.6e6
-    CHIRP_DURATION_S = 100e-6
-    CHIRP_REPS = 128
-    SAMPLING_RATE_HZ = 200e6
-    TRIANGLE = True
 
-    PLOT = True
+    CHIRP_FC_HZ = 900e6
+    CHIRP_BW_HZ = 50e6
+    CHIRP_DURATION_S = 100e-6
+    CHIRP_REPS = 64
+
+    TX_PWR_DBM = 10
+    TX_GAIN_DB = 13.0
+    RX_GAIN_DB = 14.0
+
+    SAMPLING_RATE_HZ = 56e6
+    TRIANGLE = False
+
+    PLOT = args.plot
     # ===============================================================================
     # Create FMCW model
     fmcw_model = FMCWModel(
+        # Chirp params
         a_chirp_fc=CHIRP_FC_HZ,
         a_chirp_bw=CHIRP_BW_HZ,
         a_chirp_duration=CHIRP_DURATION_S,
         a_chirp_reps=CHIRP_REPS,
+        # Tx params
+        a_tx_pwr_dbm=TX_PWR_DBM,
+        a_tx_gain_db=TX_GAIN_DB,
+        a_rx_gain_db=RX_GAIN_DB,
+        # Misc
         a_sampling_rate=SAMPLING_RATE_HZ,
         a_triangle_en=TRIANGLE,
         plot_en=PLOT,
@@ -486,30 +591,23 @@ if __name__ == "__main__":
     soft_fmcw_model = SoftFMCWModel(fmcw_model, plot_en=PLOT)
 
     # Generate targets
+    # R [m]   V [m/s]   σ [m2]
     targets = [
-        {
-            "range": 2489,  # Target range in meters
-            "velocity": -118,  # Target velocite in m/s
-            "amplitude": 1.0,
-        },
-        {
-            "range": 105,  # Target range in meters
-            "velocity": 0,  # Target velocite in m/s
-            "amplitude": 1.0,
-        },
-        {
-            "range": 800,  # Target range in meters
-            "velocity": 10,  # Target velocite in m/s
-            "amplitude": 1.0,
-        },
-        {
-            "range": 7200,  # Target range in meters
-            "velocity": 200,  # Target velocite in m/s
-            "amplitude": 1.0,
-        },
+        {"range": 33, "velocity": 0, "rcs": 1.0, "Comment": "Human"},
+        {"range": 43, "velocity": 0, "rcs": 1.0, "Comment": "Human"},
+        {"range": 53, "velocity": 0, "rcs": 1.0, "Comment": "Human"},
+        {"range": 57, "velocity": 0, "rcs": 1.0, "Comment": "Human"},
+        {"range": 67, "velocity": 0, "rcs": 1.0, "Comment": "Human"},
+        {"range": 70, "velocity": -3, "rcs": 1.0, "Comment": "Human"},
+        {"range": 75, "velocity": 17, "rcs": 1.0, "Comment": "Car"},
+        {"range": 105, "velocity": 0, "rcs": 32.0, "Comment": "Car"},
+        {"range": 800, "velocity": -10, "rcs": 32.0, "Comment": "Car"},
+        {"range": 900, "velocity": 0, "rcs": 100.0, "Comment": "House"},
     ]
     # Run simulation
-    estimated_range = soft_fmcw_model.run_simulation(a_targets=targets)
-    print(
-        # f"Estimated range: {np.mean(estimated_range):.2f} m (True range: {target_range} m)"
+    detected_targets = soft_fmcw_model.run_simulation(
+        a_targets=targets, a_noise_figure_db=5
     )
+
+    for i, target in enumerate(detected_targets):
+        print(f"\nTarget {i}: \n\t RNG = {target[0]} \n\t VEL = {target[1]}")
