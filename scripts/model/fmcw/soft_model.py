@@ -3,10 +3,6 @@ import matplotlib.pyplot as plt
 from scipy.ndimage import convolve
 
 # ===================================================================================
-# TODO
-# Target readout
-# Accurate amplitude
-# ===================================================================================
 # Psysical constant
 c = 3e8  # Speed of light in m/s
 k_b = 1.38e-23  # Boltsmann constant
@@ -214,14 +210,14 @@ class FMCWModel:
 
     def generate_chirp(self, B, T, fs):
         t = np.arange(0, T, 1 / fs)
-        # Baseband up-chirp: instantaneous freq sweeps 0 → B
+        # Baseband up-chirp: instantaneous freq sweeps -B/2 -> +B/2
         phase_up = -0.5 * B * t + 0.5 * (B / T) * t**2
         up_chirp = np.exp(2 * np.pi * 1j * phase_up)
 
         if not self.triangle_en:
             return up_chirp
 
-        # Phase-continuous down-chirp: instantaneous freq sweeps B → 0.
+        # Phase-continuous down-chirp: instantaneous freq sweeps +B/2 -> -B/2
         # Offset by phase at end of up-chirp (0.5*B*T) to avoid discontinuity.
         phase_down = 0.5 * B * t - 0.5 * (B / T) * t**2
         down_chirp = np.exp(2 * np.pi * 1j * phase_down)
@@ -239,14 +235,14 @@ class FMCWModel:
 
     def mix_signals(self, a_tx_signal, a_rx_signal):
         if_signal = a_tx_signal * np.conj(a_rx_signal)
-        fig, (ax1, ax2, ax3) = plt.subplots(nrows=3, sharex=True)
-        # Plot signal using spectrogram
-        ax1.specgram(a_tx_signal, NFFT=256, Fs=self.fs)
-        ax2.specgram(a_rx_signal, NFFT=256, Fs=self.fs)
-        ax3.specgram(if_signal, NFFT=256, Fs=self.fs)
-        ax1.set_ylim(-self.chirp_bw / 2 - 1e3, self.chirp_bw / 2 + 1e3)
-        ax2.set_ylim(-self.chirp_bw / 2 - 1e3, self.chirp_bw / 2 + 1e3)
         if self.plot:
+            fig, (ax1, ax2, ax3) = plt.subplots(nrows=3, sharex=True)
+            # Plot signal using spectrogram
+            ax1.specgram(a_tx_signal, NFFT=256, Fs=self.fs)
+            ax2.specgram(a_rx_signal, NFFT=256, Fs=self.fs)
+            ax3.specgram(if_signal, NFFT=256, Fs=self.fs)
+            ax1.set_ylim(-self.chirp_bw / 2 - 1e3, self.chirp_bw / 2 + 1e3)
+            ax2.set_ylim(-self.chirp_bw / 2 - 1e3, self.chirp_bw / 2 + 1e3)
             plt.show()
         return if_signal
 
@@ -446,8 +442,23 @@ class FMCWModel:
 
 # ===================================================================================
 class SoftFMCWModel:
-    def __init__(self, fmcw_model, plot_en=False):
+    def __init__(
+        self,
+        fmcw_model,
+        plot_en=False,
+        a_isolation_db=40.0,
+        a_dc_i=0.0,
+        a_dc_q=0.0,
+        a_iq_amplitude_err=1e-6,
+        a_iq_phase_err_deg=0.1,
+    ):
         self.fmcw_model = fmcw_model
+        self.isolation_db = a_isolation_db
+        self.dc_i = a_dc_i
+        self.dc_q = a_dc_q
+        self.iq_amplitude_err = a_iq_amplitude_err
+        self.iq_phase_err_deg = a_iq_phase_err_deg
+
         self.plot = plot_en
 
     def add_amplitude(self, a_signal, a_rcs, a_range):
@@ -526,6 +537,23 @@ class SoftFMCWModel:
 
         return rx_signal
 
+    def add_imperfections(self, a_tx_signal, a_rx_signal):
+        # TX leakage: direct coupling from TX port to RX port
+        leakage = a_tx_signal * 10 ** (-self.isolation_db / 20)
+        rx = a_rx_signal + leakage
+
+        # DC offset: constant bias from LO self-mixing / ADC offset
+        rx = rx + (self.dc_i + 1j * self.dc_q)
+
+        # IQ imbalance: amplitude and phase mismatch between I and Q branches.
+        # Q branch is scaled and slightly rotated toward I creating an image at -f
+        i = np.real(rx)
+        q = np.imag(rx)
+        amp = 1.0 + self.iq_amplitude_err
+        phi = np.deg2rad(self.iq_phase_err_deg)
+        q_imbalanced = amp * (q * np.cos(phi) + i * np.sin(phi))
+        return i + 1j * q_imbalanced
+
     def run_simulation(self, a_targets, a_noise_figure_db=0):
         # Generate chirp
         tx_signal = self.fmcw_model.generate_chirp_sequence()
@@ -536,10 +564,17 @@ class SoftFMCWModel:
             a_noise_figure_db=a_noise_figure_db,
         )
 
-        if_signal = self.fmcw_model.mix_signals(
+        # Add HW imperfections
+        rx_signal_realistic = self.add_imperfections(
             a_tx_signal=tx_signal, a_rx_signal=rx_signal
         )
 
+        # Downmix
+        if_signal = self.fmcw_model.mix_signals(
+            a_tx_signal=tx_signal, a_rx_signal=rx_signal_realistic
+        )
+
+        # Run detection algorithm
         detected_targets = self.fmcw_model.create_range_doppler_plot(
             a_if_signal=if_signal
         )
