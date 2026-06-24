@@ -215,7 +215,7 @@ class FMCWModel:
     def generate_chirp(self, B, T, fs):
         t = np.arange(0, T, 1 / fs)
         # Baseband up-chirp: instantaneous freq sweeps 0 → B
-        phase_up = 0.5 * (B / T) * t**2
+        phase_up = -0.5 * B * t + 0.5 * (B / T) * t**2
         up_chirp = np.exp(2 * np.pi * 1j * phase_up)
 
         if not self.triangle_en:
@@ -223,7 +223,7 @@ class FMCWModel:
 
         # Phase-continuous down-chirp: instantaneous freq sweeps B → 0.
         # Offset by phase at end of up-chirp (0.5*B*T) to avoid discontinuity.
-        phase_down = 0.5 * B * T + B * t - 0.5 * (B / T) * t**2
+        phase_down = 0.5 * B * t - 0.5 * (B / T) * t**2
         down_chirp = np.exp(2 * np.pi * 1j * phase_down)
         return np.concatenate([up_chirp, down_chirp])
 
@@ -241,11 +241,11 @@ class FMCWModel:
         if_signal = a_tx_signal * np.conj(a_rx_signal)
         fig, (ax1, ax2, ax3) = plt.subplots(nrows=3, sharex=True)
         # Plot signal using spectrogram
-        ax1.specgram(a_tx_signal, NFFT=1024, Fs=self.fs)
-        ax2.specgram(a_rx_signal, NFFT=1024, Fs=self.fs)
-        ax3.specgram(if_signal, NFFT=1024, Fs=self.fs)
-        ax1.set_ylim(-1e3, self.chirp_bw)
-        ax2.set_ylim(-1e3, self.chirp_bw)
+        ax1.specgram(a_tx_signal, NFFT=256, Fs=self.fs)
+        ax2.specgram(a_rx_signal, NFFT=256, Fs=self.fs)
+        ax3.specgram(if_signal, NFFT=256, Fs=self.fs)
+        ax1.set_ylim(-self.chirp_bw / 2 - 1e3, self.chirp_bw / 2 + 1e3)
+        ax2.set_ylim(-self.chirp_bw / 2 - 1e3, self.chirp_bw / 2 + 1e3)
         if self.plot:
             plt.show()
         return if_signal
@@ -552,6 +552,9 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser(description="FMCW radar soft model")
     parser.add_argument("-p", "--plot", action="store_true", help="Show plots")
+    parser.add_argument(
+        "-t", "--triangle", action="store_true", help="Triangle/sawtooth"
+    )
     args = parser.parse_args()
 
     # ===============================================================================
@@ -567,7 +570,7 @@ if __name__ == "__main__":
     RX_GAIN_DB = 14.0
 
     SAMPLING_RATE_HZ = 56e6
-    TRIANGLE = False
+    TRIANGLE = args.triangle
 
     PLOT = args.plot
     # ===============================================================================
