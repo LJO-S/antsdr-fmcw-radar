@@ -3,9 +3,7 @@ from scipy.ndimage import convolve
 from scipy.ndimage import maximum_filter
 from dataclasses import dataclass
 
-from config import RadarConfig
-
-c = 3e8  # Speed of light in m/s
+from .config import RadarConfig, c
 
 
 # ===================================================================================
@@ -41,44 +39,10 @@ def generate_chirp_sequence(a_config: RadarConfig):
 
 
 # ===================================================================================
-# def get_nhood(a_rd_matrix, a_xpos, a_ypos, a_axis=None, a_nsize=2):
-#     if a_axis is None:
-#         return a_rd_matrix[
-#             a_ypos - a_nsize : a_ypos + a_nsize + 1,
-#             a_xpos - a_nsize : a_xpos + a_nsize + 1,
-#         ]
-#     elif a_axis == 0:
-#         return a_rd_matrix[
-#             a_ypos,
-#             a_xpos - a_nsize : a_xpos + a_nsize + 1,
-#         ]
-#     elif a_axis == 1:
-#         return a_rd_matrix[
-#             a_ypos - a_nsize : a_ypos + a_nsize + 1,
-#             a_xpos,
-#         ]
-#     else:
-#         raise KeyError("What?!")
-
-
-# ===================================================================================
 def nms(a_detections: np.ndarray, a_rd_matrix_pwr: np.ndarray, a_nsize=2):
     """
     NMS = Non-maximal Suppression
     """
-    # nms_peaks = np.zeros(a_detections.shape, dtype=int)
-    # for row, col in zip(*np.where(a_detections == True)):
-    #     if np.all(
-    #         a_rd_matrix_pwr[row, col]
-    #         >= get_nhood(
-    #             a_rd_matrix=a_rd_matrix_pwr,
-    #             a_xpos=col,
-    #             a_ypos=row,
-    #             a_axis=None,
-    #             a_nsize=a_nsize,
-    #         )
-    #     ):
-    #         nms_peaks[row, col] = 1
     local_max = maximum_filter(
         input=a_rd_matrix_pwr, size=2 * a_nsize + 1, mode="nearest"
     )
@@ -183,6 +147,27 @@ def cfar_ca_2d(
 
 
 # ===================================================================================
+def mix_signal(a_rx_signal: np.ndarray, a_tx_signal: np.ndarray):
+    """
+    Mix input and output signal
+    """
+    # import matplotlib.pyplot as plt
+
+    # test = RadarConfig()
+    # return a_tx_signal * np.conj(a_rx_signal)
+    if_signal = a_tx_signal * np.conj(a_rx_signal)
+    # fig, (ax1, ax2, ax3) = plt.subplots(nrows=3, sharex=True)
+    # # Plot signal using spectrogram
+    # ax1.specgram(a_tx_signal, NFFT=256, Fs=test.FS)
+    # ax2.specgram(a_rx_signal, NFFT=256, Fs=test.FS)
+    # ax3.specgram(if_signal, NFFT=256, Fs=test.FS)
+    # ax1.set_ylim(-test.CHIRP_BW_HZ / 2 - 1e3, test.CHIRP_BW_HZ / 2 + 1e3)
+    # ax2.set_ylim(-test.CHIRP_BW_HZ / 2 - 1e3, test.CHIRP_BW_HZ / 2 + 1e3)
+    # plt.show()
+    return if_signal
+
+
+# ===================================================================================
 @dataclass
 class CPIContext:
     N_chirp_samples: int
@@ -237,9 +222,11 @@ def process_cpi(a_if_signal: np.ndarray, a_config: RadarConfig, a_ctx: CPIContex
         up_matrix_iq = full_matrix_iq[0::2, :].copy()
         down_matrix_iq = full_matrix_iq[1::2, :].copy()
     else:
-        up_matrix_iq = a_if_signal[: a_config.CHIRP_REPS * N].reshape(
-            a_config.CHIRP_REPS, N
-        ).copy()
+        up_matrix_iq = (
+            a_if_signal[: a_config.CHIRP_REPS * N]
+            .reshape(a_config.CHIRP_REPS, N)
+            .copy()
+        )
 
     # ---------------------------------------------
     # 2. Apply windows
@@ -260,6 +247,12 @@ def process_cpi(a_if_signal: np.ndarray, a_config: RadarConfig, a_ctx: CPIContex
     # ---------------------------------------------
     # 4. Generate detections
     # ---------------------------------------------
+    # Zero the DC bin (range=0) — TX leakage creates a huge spike there that
+    # contaminates CFAR training cells for all near-range targets.
+    up_matrix_rd[:, 0] = 0
+    if a_config.TRIANGLE_EN:
+        down_matrix_rd[:, 0] = 0
+
     if a_config.TRIANGLE_EN:
         up_detections, up_pwr = cfar_ca_2d(
             a_rd_matrix=up_matrix_rd, a_config=a_config, a_apply_nms=False
@@ -317,7 +310,7 @@ def process_cpi(a_if_signal: np.ndarray, a_config: RadarConfig, a_ctx: CPIContex
 
         targets = (
             [{"r": r, "v": v, "kind": "both"} for r, v in zip(both_rng_r, both_dop_r)]
-            + [{"r": r, "v": v, "kind": "up"}   for r, v in zip(up_rng_r,   up_dop_r)]
+            + [{"r": r, "v": v, "kind": "up"} for r, v in zip(up_rng_r, up_dop_r)]
             + [{"r": r, "v": v, "kind": "down"} for r, v in zip(down_rng_r, down_dop_r)]
         )
     else:
@@ -330,7 +323,7 @@ def process_cpi(a_if_signal: np.ndarray, a_config: RadarConfig, a_ctx: CPIContex
         targets = [{"r": r, "v": v, "kind": "up"} for r, v in zip(up_rng_r, up_dop_r)]
 
     down_db = magnitude_db_rd_down if a_config.TRIANGLE_EN else None
-    return magnitude_db_rd_up, down_db, rng, vel, targets
+    return magnitude_db_rd_up, down_db, targets, rng, vel
 
 
 # ===================================================================================
