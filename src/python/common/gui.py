@@ -3,6 +3,7 @@ import numpy as np
 from PySide6.QtCore import QRectF
 from PySide6.QtWidgets import (
     QApplication,
+    QCheckBox,
     QMainWindow,
     QWidget,
     QTabWidget,
@@ -63,22 +64,29 @@ class RadarDisplay(QMainWindow):
         self.rd_down_plot.addItem(self.rd_down_image)
         left_col.addWidget(self.rd_down_plot)
 
-        # B. Right column = detections scatter
+        # B. Right column = detections scatter + toggle
+        right_col = QVBoxLayout()
+        radar_layout.addLayout(right_col, stretch=1)
+
         self.det_plot = pg.PlotWidget(title="Detections")
         self.det_plot.setLabel("left", "Range", units="m")
         self.det_plot.setLabel("bottom", "Velocity", units="m/s")
         self.det_plot.setBackground("#0a1628")
         self.det_plot.showGrid(x=True, y=True, alpha=0.3)
-        radar_layout.addWidget(self.det_plot, stretch=1)
+        right_col.addWidget(self.det_plot)
+
+        self.xs_toggle = QCheckBox("Up/Down Detections")
+        self.xs_toggle.setChecked(False)
+        right_col.addWidget(self.xs_toggle)
 
         self.scatter_both = pg.ScatterPlotItem(
             size=10, symbol="o", pen=pg.mkPen(None), brush=pg.mkBrush("yellow")
         )
         self.scatter_up = pg.ScatterPlotItem(
-            size=8, symbol="x", pen=pg.mkPen("white", width=2)
+            size=8, symbol="x", pen=pg.mkPen((255, 255, 255, 100), width=2)
         )
         self.scatter_down = pg.ScatterPlotItem(
-            size=8, symbol="x", pen=pg.mkPen("cyan", width=2)
+            size=8, symbol="x", pen=pg.mkPen((0, 255, 255, 100), width=2)
         )
         self.det_plot.addItem(self.scatter_both)
         self.det_plot.addItem(self.scatter_up)
@@ -100,8 +108,22 @@ class RadarDisplay(QMainWindow):
             setattr(self, f"{attr}_spec_image", image)
             signals_layout.addWidget(plot)
 
+    def set_detection_limits(self, r_min, r_max, v_min, v_max):
+        self.det_plot.setXRange(v_min, v_max, padding=0)
+        self.det_plot.setYRange(r_min, r_max, padding=0)
+        self.det_plot.setLimits(
+            xMin=v_min,
+            xMax=v_max,
+            yMin=r_min,
+            yMax=r_max,
+            minXRange=v_max - v_min,
+            maxXRange=v_max - v_min,
+            minYRange=r_max - r_min,
+            maxYRange=r_max - r_min,
+        )
+
     def update(self, a_rd_up_db, a_rd_down_db, a_ranges, a_velocities, a_targets):
-        rect = QRectF(
+        rect_up = QRectF(
             float(a_velocities[0]),
             float(a_ranges[0]),
             float(a_velocities[-1] - a_velocities[0]),
@@ -109,25 +131,35 @@ class RadarDisplay(QMainWindow):
         )
 
         self.rd_up_image.setImage(a_rd_up_db, levels=(-80, 0))
-        self.rd_up_image.setRect(rect)
+        self.rd_up_image.setRect(rect_up)
 
         if a_rd_down_db is not None:
+            rect_down = QRectF(
+                float(a_velocities[-1]),
+                float(a_ranges[0]),
+                float(a_velocities[0] - a_velocities[-1]),
+                float(a_ranges[-1] - a_ranges[0]),
+            )
             self.rd_down_image.setImage(a_rd_down_db, levels=(-80, 0))
-            self.rd_down_image.setRect(rect)
+            self.rd_down_image.setRect(rect_down)
 
-        # Split detections by kind
+        show_xs = self.xs_toggle.isChecked()
+
         both = [(t["v"], t["r"]) for t in a_targets if t["kind"] == "both"]
         up = [(t["v"], t["r"]) for t in a_targets if t["kind"] == "up"]
         down = [(t["v"], t["r"]) for t in a_targets if t["kind"] == "down"]
+
+        if a_rd_down_db is None:
+            both = up
+            up, down = [], []
 
         self.scatter_both.setData(pos=both or [(0, 0)], size=10)
         self.scatter_up.setData(pos=up or [(0, 0)], size=8)
         self.scatter_down.setData(pos=down or [(0, 0)], size=8)
 
-        # Hide dummy point when list is empty
         self.scatter_both.setVisible(len(both) > 0)
-        self.scatter_up.setVisible(len(up) > 0)
-        self.scatter_down.setVisible(len(down) > 0)
+        self.scatter_up.setVisible(show_xs and len(up) > 0)
+        self.scatter_down.setVisible(show_xs and len(down) > 0)
 
     def update_signals(self, a_tx_spec, a_rx_spec, a_if_spec, a_t, a_f):
         rect = QRectF(

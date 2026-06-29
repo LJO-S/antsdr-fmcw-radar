@@ -29,7 +29,6 @@ class SoftFMCWModel:
         )
 
         amplitude = np.sqrt(rx_pwr)
-        print("A=", amplitude)
 
         return a_signal * amplitude
 
@@ -148,6 +147,9 @@ class SoftFMCWModel:
             if_signal,
         )
 
+    def run_test(self):
+        pass
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="FMCW radar soft model")
@@ -162,14 +164,37 @@ if __name__ == "__main__":
 
     # 3 .Generate targets
     # R [m]   V [m/s]   σ [m2]
-    targets = [
-        {"range": 533, "velocity": 0, "rcs": 1.0, "Comment": "Human"},
-        {"range": 575, "velocity": 17, "rcs": 1.0, "Comment": "Car"},
-        {"range": 505, "velocity": 0, "rcs": 32.0, "Comment": "Car"},
-        {"range": 800, "velocity": -10, "rcs": 32.0, "Comment": "Car"},
-        {"range": 900, "velocity": 0, "rcs": 100.0, "Comment": "House"},
-        {"range": 1800, "velocity": 0, "rcs": 100.0, "Comment": "House"},
-    ]
+    # targets = [
+    #     {"range": 300, "velocity": -50, "rcs": 30.0, "Comment": "House"},
+    #     {"range": 600, "velocity": 150, "rcs": 30.0, "Comment": "House"},
+    #     {"range": 900, "velocity": -150, "rcs": 30.0, "Comment": "House"},
+    #     {"range": 1200, "velocity": 50, "rcs": 30.0, "Comment": "House"},
+    #     {"range": 1500, "velocity": -50, "rcs": 30.0, "Comment": "House"},
+    #     {"range": 1800, "velocity": 50, "rcs": 30.0, "Comment": "House"},
+    #     {"range": 2100, "velocity": -50, "rcs": 30.0, "Comment": "House"},
+    #     {"range": 2400, "velocity": 50, "rcs": 30.0, "Comment": "House"},
+    #     {"range": 2700, "velocity": -50, "rcs": 30.0, "Comment": "House"},
+    # ]
+
+    # TARGET GENERATION
+    rng = np.random.default_rng(seed=42)
+    r_min = 100  # minimum range for first target [m]
+    range_res = config.c / (2 * radar_config.CHIRP_BW_HZ)
+    min_spacing = 20 * range_res  # minimum range separation between targets [m]
+
+    targets = []
+    r = r_min
+    while r < 0.8 * radar_config.MAX_RANGE:
+        v = rng.uniform(
+            -0.5 * radar_config.MAX_VELOCITY, 0.5 * radar_config.MAX_VELOCITY
+        )
+        targets.append({"range": float(r), "velocity": float(v), "rcs": 10.0})
+        r += min_spacing + rng.uniform(0, 2 * min_spacing)
+
+    print(f"Generated {len(targets)} targets:")
+    for t in targets:
+        print(f"  range={t['range']:.1f} m  velocity={t['velocity']:.2f} m/s")
+
     # 4. Run simulation
     (
         rd_map_db_up,
@@ -182,9 +207,24 @@ if __name__ == "__main__":
         if_signal,
     ) = soft_fmcw_model.run_simulation(a_targets=targets, a_noise_figure_db=5)
 
+    detected_targets.sort(key=lambda t: t["r"])
+    for i, target in enumerate(detected_targets):
+        if not radar_config.TRIANGLE_EN or (
+            radar_config.TRIANGLE_EN and target["kind"] == "both"
+        ):
+            print(
+                f'\nTarget {i}: \t R = {int(np.round(target["r"]))} m \t V = {int(np.round(target["v"]))} m/s'
+            )
+
     # 5. Start GUI
     app = QApplication(sys.argv)
     display = gui.RadarDisplay()
+    display.set_detection_limits(
+        r_min=0,
+        r_max=radar_config.MAX_RANGE,
+        v_min=-radar_config.MAX_VELOCITY,
+        v_max=radar_config.MAX_VELOCITY,
+    )
     display.update(
         a_rd_up_db=rd_map_db_up,
         a_rd_down_db=rd_map_db_down,
@@ -222,6 +262,3 @@ if __name__ == "__main__":
 
     display.show()
     app.exec()
-
-    for i, target in enumerate(detected_targets):
-        print(f"\nTarget {i}: \n\t RNG = {target[0]} \n\t VEL = {target[1]}")
