@@ -1,6 +1,7 @@
 import numpy as np
 from scipy.ndimage import convolve
 from scipy.ndimage import maximum_filter
+from scipy.ndimage import binary_dilation
 from dataclasses import dataclass
 
 from .config import RadarConfig, c
@@ -179,7 +180,7 @@ class CPIContext:
 
 
 def build_cpi_context(a_config: RadarConfig) -> CPIContext:
-    N_chirp_samples = int(np.ceil(a_config.CHIRP_DUR_S * a_config.FS))
+    N_chirp_samples = len(np.arange(0, a_config.CHIRP_DUR_S, 1 / a_config.FS))
     T_rep = 2 * a_config.CHIRP_DUR_S if a_config.TRIANGLE_EN else a_config.CHIRP_DUR_S
 
     range_freqs = np.fft.fftfreq(N_chirp_samples, d=1 / a_config.FS)
@@ -196,6 +197,12 @@ def build_cpi_context(a_config: RadarConfig) -> CPIContext:
     window_2d = doppler_window[:, np.newaxis] * range_window[np.newaxis, :]
 
     return CPIContext(N_chirp_samples, T_rep, ranges[pos], velocities, pos, window_2d)
+
+
+# ===================================================================================
+def align_down_doppler(a_map: np.ndarray):
+    # Align a down-chirp RD map onto the up-chirp Doppler convention
+    return np.roll(np.flipud(a_map), shift=1, axis=0)
 
 
 # ===================================================================================
@@ -254,11 +261,12 @@ def process_cpi(a_if_signal: np.ndarray, a_config: RadarConfig, a_ctx: CPIContex
         down_matrix_rd[:, 0] = 0
 
     if a_config.TRIANGLE_EN:
+        # NMS each ramp independently so every target is a single clean peak before pairing
         up_detections, up_pwr = cfar_ca_2d(
-            a_rd_matrix=up_matrix_rd, a_config=a_config, a_apply_nms=False
+            a_rd_matrix=up_matrix_rd, a_config=a_config, a_apply_nms=True
         )
         down_detections, down_pwr = cfar_ca_2d(
-            a_rd_matrix=down_matrix_rd, a_config=a_config, a_apply_nms=False
+            a_rd_matrix=down_matrix_rd, a_config=a_config, a_apply_nms=True
         )
     else:
         up_detections, up_pwr = cfar_ca_2d(
@@ -269,13 +277,27 @@ def process_cpi(a_if_signal: np.ndarray, a_config: RadarConfig, a_ctx: CPIContex
     # 5. Perform point-cloud reduction on combined detections
     # ---------------------------------------------
     if a_config.TRIANGLE_EN:
-        up_mask = up_detections[:, pos]
-        down_mask = np.flipud(down_detections[:, pos])
-        both_mask = up_mask & down_mask
-        avg_pwr = (up_pwr[:, pos] + np.flipud(down_pwr)[:, pos]) / 2
-        both_mask = nms(a_detections=both_mask, a_rd_matrix_pwr=avg_pwr, a_nsize=8)
-        up_mask = up_detections[:, pos] & ~both_mask
-        down_mask = np.flipud(down_detections[:, pos]) & ~both_mask
+        # Bring the down map onto the up map's Doppler convention, then operate in the
+        # positive-range region only.
+        up_mask_full = up_detections[:, pos]
+        up_pwr_pos = up_pwr[:, pos]
+        down_mask_full = align_down_doppler(down_detections)[:, pos]
+        down_pwr_pos = align_down_doppler(down_pwr)[:, pos]
+        avg_pwr = (up_pwr_pos + down_pwr_pos) / 2
+
+        # A target confirmed in BOTH ramps is "both". Pairing gate is +-PAIR_TOL bins:
+        # the up/down peaks coincide for a clean target (range-Doppler coupling k*v is
+        # not an issue atm), so the gate only needs to absorb noise jitter of
+        # weak targets that wanders the two peaks a bin or two apart. Targets are many
+        # bins apart, so a small gate cannot cross-pair distinct targets.
+        # Each ramp is already NMS'd to one clean cell per target, so both_mask (a subset
+        # of up_mask_full) needs no further thinning. A separate NMS here against avg_pwr
+        # would incorrectly drop valid pairings whose up cell is not the avg_pwr local max.
+        PAIR_TOL = 2
+        both_mask = up_mask_full & binary_dilation(down_mask_full, iterations=PAIR_TOL)
+        both_dil = binary_dilation(both_mask, iterations=PAIR_TOL)
+        up_mask = up_mask_full & ~both_dil
+        down_mask = down_mask_full & ~both_dil
 
     # ---------------------------------------------
     # 6. Target readout
@@ -296,15 +318,12 @@ def process_cpi(a_if_signal: np.ndarray, a_config: RadarConfig, a_ctx: CPIContex
         both_dop_r = vel[both_dop] + row_off * vel_bw
 
         # Refine up-only detections using the up-chirp power (range-masked)
-        row_off, col_off = subbin_refine(up_pwr[:, pos], up_only_dop, up_only_rng)
+        row_off, col_off = subbin_refine(up_pwr_pos, up_only_dop, up_only_rng)
         up_rng_r = rng[up_only_rng] + col_off * rng_bw
         up_dop_r = vel[up_only_dop] + row_off * vel_bw
 
-        # Refine down-only detections. The down-chirp power is flipped along
-        # the Doppler axis to match the up-chirp coordinate convention before refining.
-        row_off, col_off = subbin_refine(
-            np.flipud(down_pwr)[:, pos], down_only_dop, down_only_rng
-        )
+        # Refine down-only detections using the Doppler-aligned down-chirp power.
+        row_off, col_off = subbin_refine(down_pwr_pos, down_only_dop, down_only_rng)
         down_rng_r = rng[down_only_rng] + col_off * rng_bw
         down_dop_r = vel[down_only_dop] + row_off * vel_bw
 

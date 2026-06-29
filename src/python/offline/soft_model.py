@@ -165,15 +165,15 @@ if __name__ == "__main__":
     # 3 .Generate targets
     # R [m]   V [m/s]   σ [m2]
     # targets = [
-    #     {"range": 300, "velocity": -50, "rcs": 30.0, "Comment": "House"},
-    #     {"range": 600, "velocity": 150, "rcs": 30.0, "Comment": "House"},
-    #     {"range": 900, "velocity": -150, "rcs": 30.0, "Comment": "House"},
-    #     {"range": 1200, "velocity": 50, "rcs": 30.0, "Comment": "House"},
-    #     {"range": 1500, "velocity": -50, "rcs": 30.0, "Comment": "House"},
-    #     {"range": 1800, "velocity": 50, "rcs": 30.0, "Comment": "House"},
-    #     {"range": 2100, "velocity": -50, "rcs": 30.0, "Comment": "House"},
-    #     {"range": 2400, "velocity": 50, "rcs": 30.0, "Comment": "House"},
-    #     {"range": 2700, "velocity": -50, "rcs": 30.0, "Comment": "House"},
+    #     {"range": 300, "velocity": 50, "rcs": 30.0, "Comment": "House"},
+    #     {"range": 600, "velocity": 50, "rcs": 30.0, "Comment": "House"},
+    #     {"range": 900, "velocity": 50, "rcs": 30.0, "Comment": "House"},
+    #     {"range": 1200, "velocity": -401, "rcs": 30.0, "Comment": "House"},
+    #     {"range": 1500, "velocity": -401, "rcs": 30.0, "Comment": "House"},
+    #     {"range": 1800, "velocity": -401, "rcs": 30.0, "Comment": "House"},
+    #     {"range": 2100, "velocity": -401, "rcs": 30.0, "Comment": "House"},
+    #     {"range": 2400, "velocity": -401, "rcs": 30.0, "Comment": "House"},
+    #     {"range": 2700, "velocity": -401, "rcs": 30.0, "Comment": "House"},
     # ]
 
     # TARGET GENERATION
