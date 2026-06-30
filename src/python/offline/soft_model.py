@@ -236,7 +236,7 @@ if __name__ == "__main__":
     NFFT = 256
     hop = NFFT // 2
 
-    # Frequency axis: -fs/2 … +fs/2  (two-sided, IQ signal)
+    # Frequency axis: -fs/2 ... +fs/2  (two-sided, IQ signal)
     a_f = np.fft.fftshift(np.fft.fftfreq(NFFT, d=1 / radar_config.FS))
 
     def make_spec(sig):

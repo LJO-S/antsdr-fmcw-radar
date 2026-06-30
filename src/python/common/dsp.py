@@ -40,6 +40,43 @@ def generate_chirp_sequence(a_config: RadarConfig):
 
 
 # ===================================================================================
+def estimate_chirp_offset(a_rx, a_ref_period, a_n_periods=8):
+    """
+    Recover the integer sample offset m in [0, P) of the first chirp boundary in
+    a raw Rx capture where P = len(a_ref_period)
+
+    On hardware the cyclic TX free-runs and a single RX refill() lands at an arbitrary
+    point in the loop so the Rx starts mid-chirp at unknown offset m. Circular
+    cross-correlation against one reference period recovers m. The peak is dominated by
+    the TX self-leakage (i.e. 0 range)
+    """
+    # Guard a_n_periods against len(a_rx) // P
+    P = len(a_ref_period)
+    n_periods = min(a_n_periods, len(a_rx) // P)
+    # Precompute conj(fft(a_ref_period)) once.
+    conj_fft_ref = np.conj(np.fft.fft(a_ref_period))
+    # Circular correlation
+    R_k_abs = np.zeros(P)
+    for k in range(n_periods):
+        segment = a_rx[k * P : (k + 1) * P]
+        R_k = np.fft.ifft(np.fft.fft(segment) * conj_fft_ref)
+        R_k_abs += np.abs(R_k)
+    # Find max correlation index (i.e. the time lag)
+    return int(np.argmax(R_k_abs))
+
+
+# ===================================================================================
+def frame_sync(a_rx, a_config, a_ctx):
+    """
+    Rotate a raw RX capture so sample 0 is a chirp boundary
+    """
+    ref = a_ctx.tx_chirp
+    P = len(ref)
+    m_offset = estimate_chirp_offset(a_rx=a_rx, a_ref_period=ref)
+    return np.roll(a_rx, -m_offset)[: a_config.CHIRP_REPS * P]
+
+
+# ===================================================================================
 def nms(a_detections: np.ndarray, a_rd_matrix_pwr: np.ndarray, a_nsize=2):
     """
     NMS = Non-maximal Suppression
@@ -171,6 +208,7 @@ def mix_signal(a_rx_signal: np.ndarray, a_tx_signal: np.ndarray):
 # ===================================================================================
 @dataclass
 class CPIContext:
+    tx_chirp: np.ndarray
     N_chirp_samples: int
     T_rep: float
     ranges_pos: np.ndarray
@@ -180,6 +218,7 @@ class CPIContext:
 
 
 def build_cpi_context(a_config: RadarConfig) -> CPIContext:
+    tx_chirp = generate_chirp(a_config=a_config)
     N_chirp_samples = len(np.arange(0, a_config.CHIRP_DUR_S, 1 / a_config.FS))
     T_rep = 2 * a_config.CHIRP_DUR_S if a_config.TRIANGLE_EN else a_config.CHIRP_DUR_S
 
@@ -196,7 +235,9 @@ def build_cpi_context(a_config: RadarConfig) -> CPIContext:
     doppler_window = np.blackman(a_config.CHIRP_REPS)
     window_2d = doppler_window[:, np.newaxis] * range_window[np.newaxis, :]
 
-    return CPIContext(N_chirp_samples, T_rep, ranges[pos], velocities, pos, window_2d)
+    return CPIContext(
+        tx_chirp, N_chirp_samples, T_rep, ranges[pos], velocities, pos, window_2d
+    )
 
 
 # ===================================================================================
@@ -236,14 +277,23 @@ def process_cpi(a_if_signal: np.ndarray, a_config: RadarConfig, a_ctx: CPIContex
         )
 
     # ---------------------------------------------
-    # 2. Apply windows
+    # 2. Fast-time DC / TX-leakage removal
+    # ---------------------------------------------
+    # TX self-leakage dechirps to a constant across each chirp's fast-time samples
+    # i.e. a DC term landing in range bin 0. Subtract each chirp's mean (per row) to remove it.
+    up_matrix_iq -= up_matrix_iq.mean(axis=1, keepdims=True)
+    if a_config.TRIANGLE_EN:
+        down_matrix_iq -= down_matrix_iq.mean(axis=1, keepdims=True)
+
+    # ---------------------------------------------
+    # 3. Apply windows
     # ---------------------------------------------
     up_matrix_iq *= a_ctx.window_2d
     if a_config.TRIANGLE_EN:
         down_matrix_iq *= a_ctx.window_2d
 
     # ---------------------------------------------
-    # 3. Generate RD map
+    # 4. Generate RD map
     # ---------------------------------------------
     up_matrix_rd = np.fft.fftshift(np.fft.fft2(up_matrix_iq), axes=0)
     magnitude_db_rd_up = 20 * np.log10(np.abs(up_matrix_rd[:, pos]) + 1e-12)
@@ -252,14 +302,10 @@ def process_cpi(a_if_signal: np.ndarray, a_config: RadarConfig, a_ctx: CPIContex
         magnitude_db_rd_down = 20 * np.log10(np.abs(down_matrix_rd[:, pos]) + 1e-12)
 
     # ---------------------------------------------
-    # 4. Generate detections
+    # 5. Generate detections
     # ---------------------------------------------
-    # Zero the DC bin (range=0) — TX leakage creates a huge spike there that
-    # contaminates CFAR training cells for all near-range targets.
-    up_matrix_rd[:, 0] = 0
-    if a_config.TRIANGLE_EN:
-        down_matrix_rd[:, 0] = 0
-
+    # (TX-leakage DC was removed on the fast-time axis in step 2, so no range-bin-0
+    # blanking is needed here.)
     if a_config.TRIANGLE_EN:
         # NMS each ramp independently so every target is a single clean peak before pairing
         up_detections, up_pwr = cfar_ca_2d(
@@ -274,7 +320,7 @@ def process_cpi(a_if_signal: np.ndarray, a_config: RadarConfig, a_ctx: CPIContex
         )
 
     # ---------------------------------------------
-    # 5. Perform point-cloud reduction on combined detections
+    # 6. Perform point-cloud reduction on combined detections
     # ---------------------------------------------
     if a_config.TRIANGLE_EN:
         # Bring the down map onto the up map's Doppler convention, then operate in the
@@ -300,7 +346,7 @@ def process_cpi(a_if_signal: np.ndarray, a_config: RadarConfig, a_ctx: CPIContex
         down_mask = down_mask_full & ~both_dil
 
     # ---------------------------------------------
-    # 6. Target readout
+    # 7. Target readout
     # ---------------------------------------------
     rng_bw = rng[1] - rng[0]
     vel_bw = vel[1] - vel[0]
