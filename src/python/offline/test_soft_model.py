@@ -92,7 +92,7 @@ def recover_with_offset(a_targets_truth, a_cfg, seed=0, n_offsets=5):
     ctx = dsp.build_cpi_context(a_config=a_cfg)
     checker = True
 
-    tx = dsp.generate_chirp_sequence(a_cfg)
+    tx = ctx.tx_seq
     rx = model.simulate_received_signal(
         a_tx_signal=tx, a_targets=a_targets_truth, a_noise_figure_db=5
     )
@@ -144,7 +144,7 @@ def recover_with_offset(a_targets_truth, a_cfg, seed=0, n_offsets=5):
         #     plt.tight_layout()
         #     plt.show()
 
-        if_signal = dsp.mix_signal(a_rx_signal=rx_aligned, a_tx_signal=tx)
+        if_signal = dsp.mix_signal(a_rx_signal=rx_aligned, a_tx_signal=ctx.tx_seq)
         _, _, detections, _, _ = dsp.process_cpi(
             a_if_signal=if_signal, a_config=a_cfg, a_ctx=ctx
         )

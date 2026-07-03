@@ -39,7 +39,7 @@ class SoftFMCWModel:
         # Calculate Doppler shift
         doppler_freq = 2 * a_velocity * self.config.CHIRP_FC_HZ / dsp.c
         # Create signal
-        t = np.arange(0, len(a_signal) * (1 / self.config.FS), (1 / self.config.FS))
+        t = np.arange(len(a_signal)) / self.config.FS
         doppler_signal = np.exp(-2 * np.pi * 1j * doppler_freq * t)
         # Mix signals
         return a_signal * doppler_signal
@@ -124,16 +124,19 @@ class SoftFMCWModel:
             a_tx_signal=tx_signal, a_rx_signal=rx_signal
         )
 
-        # 4. Downmix
+        # 4. Build CPI context for processing
+        cpi_ctx = dsp.build_cpi_context(a_config=self.config)
+
+        # 5. Downmix
         if_signal = dsp.mix_signal(
-            a_rx_signal=rx_signal_realistic, a_tx_signal=tx_signal
+            a_rx_signal=rx_signal_realistic, a_tx_signal=cpi_ctx.tx_seq
         )
 
-        # 5. Process IF signal
+        # 6. Process IF signal
         rd_map_db_up, rd_map_db_down, targets, ranges, velocities = dsp.process_cpi(
             a_if_signal=if_signal,
             a_config=self.config,
-            a_ctx=dsp.build_cpi_context(a_config=self.config),
+            a_ctx=cpi_ctx,
         )
 
         return (

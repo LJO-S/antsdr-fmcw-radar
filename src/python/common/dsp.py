@@ -9,7 +9,8 @@ from .config import RadarConfig, c
 
 # ===================================================================================
 def generate_chirp(a_config: RadarConfig):
-    t = np.arange(0, a_config.CHIRP_DUR_S, 1 / a_config.FS)
+    n = int(round(a_config.CHIRP_DUR_S * a_config.FS))
+    t = np.arange(n) / a_config.FS
     # Baseband up-chirp: instantaneous freq sweeps -B/2 -> +B/2
     phase_up = (
         -0.5 * a_config.CHIRP_BW_HZ * t
@@ -209,6 +210,7 @@ def mix_signal(a_rx_signal: np.ndarray, a_tx_signal: np.ndarray):
 @dataclass
 class CPIContext:
     tx_chirp: np.ndarray
+    tx_seq: np.ndarray
     N_chirp_samples: int
     T_rep: float
     ranges_pos: np.ndarray
@@ -219,7 +221,8 @@ class CPIContext:
 
 def build_cpi_context(a_config: RadarConfig) -> CPIContext:
     tx_chirp = generate_chirp(a_config=a_config)
-    N_chirp_samples = len(np.arange(0, a_config.CHIRP_DUR_S, 1 / a_config.FS))
+    tx_seq = generate_chirp_sequence(a_config=a_config)
+    N_chirp_samples = int(round(a_config.CHIRP_DUR_S * a_config.FS))
     T_rep = 2 * a_config.CHIRP_DUR_S if a_config.TRIANGLE_EN else a_config.CHIRP_DUR_S
 
     range_freqs = np.fft.fftfreq(N_chirp_samples, d=1 / a_config.FS)
@@ -236,7 +239,14 @@ def build_cpi_context(a_config: RadarConfig) -> CPIContext:
     window_2d = doppler_window[:, np.newaxis] * range_window[np.newaxis, :]
 
     return CPIContext(
-        tx_chirp, N_chirp_samples, T_rep, ranges[pos], velocities, pos, window_2d
+        tx_chirp,
+        tx_seq,
+        N_chirp_samples,
+        T_rep,
+        ranges[pos],
+        velocities,
+        pos,
+        window_2d,
     )
 
 

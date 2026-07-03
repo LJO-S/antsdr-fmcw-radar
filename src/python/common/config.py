@@ -16,14 +16,17 @@ class RadarConfig:
     CHIRP_DUR_S: float = 100e-6
     CHIRP_REPS: int = 32
 
-    # Frontend
+    # Software Frontend
     TX_PWR_DBM: float = 10.0
     TX_GAIN_DB: float = 13.0
     RX_GAIN_DB: float = 14.0
 
+    # Hardware Frontend
+    # TODO
+
     # Sampling
     FS: float = 56.6e6
-    TRIANGLE_EN: bool = True
+    TRIANGLE_EN: bool = False
 
     # CFAR
     CFAR_GUARD_LEN: int = 4
@@ -33,7 +36,7 @@ class RadarConfig:
     # Miscellaneuous
     OP_RANGE_FACTOR = 0.15
 
-    # Hardware (approximations)
+    # Software (approximations)
     ISOLATION_DB: float = 40.0
     DC_I: float = 0.0
     DC_Q: float = 0.0
@@ -41,6 +44,13 @@ class RadarConfig:
     IQ_PHASE_ERR_DEG: float = 0.0
     # IQ_AMPL_ERR: float = 1e-6
     # IQ_PHASE_ERR_DEG: float = 0.1
+
+    # SDR
+    SDR_IP: str = "192.168.5.10"
+    SDR_TX_GAIN_DB: float = -30.0
+    SDR_RX_GAIN_MODE: str = "manual"
+    SDR_RX_GAIN_DB: float = 20.0
+    SDR_RX_MARGIN_PERIODS: int = 1
 
     # CHARACTERISTICS
     MAX_RANGE = OP_RANGE_FACTOR * (c * CHIRP_DUR_S) / 2
