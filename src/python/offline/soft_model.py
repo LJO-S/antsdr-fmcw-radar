@@ -151,6 +151,7 @@ if __name__ == "__main__":
     # ===============================================================================
     # 1. Fetch config
     radar_config = config.RadarConfig()
+    radar_config.describe()
 
     # 2. Create soft FMCW model
     soft_fmcw_model = SoftFMCWModel(a_config=radar_config)

@@ -71,6 +71,7 @@ def main():
     display = gui.RadarDisplay()
 
     worker = RadarWorker(a_config=config.RadarConfig())
+    worker.config.describe()
     worker.results.connect(
         lambda rd_map_db_up, rd_map_db_down, detections, ranges, velocities: display.update(
             rd_map_db_up, rd_map_db_down, ranges, velocities, detections

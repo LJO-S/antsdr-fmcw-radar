@@ -1,26 +1,30 @@
 import sys
 import numpy as np
-from PySide6.QtCore import QRectF
+from PySide6.QtCore import QRectF, Qt
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
     QMainWindow,
     QWidget,
     QTabWidget,
+    QTableWidget,
+    QTableWidgetItem,
+    QHeaderView,
     QHBoxLayout,
     QVBoxLayout,
 )
+from PySide6.QtGui import QBrush, QColor
 import pyqtgraph as pg
 
 
 class RadarDisplay(QMainWindow):
     """
     Tab 0 — Radar:
-    ┌─────────────────────────┬───────────────┐
-    │  Up-chirp RD map        │               │
-    ├─────────────────────────┤  Detections   │
-    │  Down-chirp RD map      │               │
-    └─────────────────────────┴───────────────┘
+    ┌─────────────────────────┬─────────────────────────┐
+    │  Up-chirp RD map        │            │            │
+    ├─────────────────────────┤ Detections │ Detections │
+    │  Down-chirp RD map      │    Plot    │    List    │
+    └─────────────────────────┴─────────────────────────┘
 
     Tab 1 — Signals:
     ┌─────────────────────────────────────────┐
@@ -44,7 +48,9 @@ class RadarDisplay(QMainWindow):
         tabs.addTab(radar_tab, "Radar")
         radar_layout = QHBoxLayout(radar_tab)
 
+        # ---------------------------------
         # A. Left column = up/down RD maps
+        # ---------------------------------
         left_col = QVBoxLayout()
         radar_layout.addLayout(left_col, stretch=2)
 
@@ -64,20 +70,22 @@ class RadarDisplay(QMainWindow):
         self.rd_down_plot.addItem(self.rd_down_image)
         left_col.addWidget(self.rd_down_plot)
 
-        # B. Right column = detections scatter + toggle
-        right_col = QVBoxLayout()
-        radar_layout.addLayout(right_col, stretch=1)
+        # ---------------------------------
+        # B. Middle column = detections scatter + toggle
+        # ---------------------------------
+        middle_col = QVBoxLayout()
+        radar_layout.addLayout(middle_col, stretch=1)
 
         self.det_plot = pg.PlotWidget(title="Detections")
         self.det_plot.setLabel("left", "Range", units="m")
         self.det_plot.setLabel("bottom", "Velocity", units="m/s")
         self.det_plot.setBackground("#0a1628")
         self.det_plot.showGrid(x=True, y=True, alpha=0.3)
-        right_col.addWidget(self.det_plot)
+        middle_col.addWidget(self.det_plot)
 
         self.xs_toggle = QCheckBox("Up/Down Detections")
         self.xs_toggle.setChecked(False)
-        right_col.addWidget(self.xs_toggle)
+        middle_col.addWidget(self.xs_toggle)
 
         self.scatter_both = pg.ScatterPlotItem(
             size=10, symbol="o", pen=pg.mkPen(None), brush=pg.mkBrush("yellow")
@@ -91,6 +99,18 @@ class RadarDisplay(QMainWindow):
         self.det_plot.addItem(self.scatter_both)
         self.det_plot.addItem(self.scatter_up)
         self.det_plot.addItem(self.scatter_down)
+
+        # ---------------------------------
+        # C. Right column = detections list
+        # ---------------------------------
+        self.det_table = QTableWidget(0, 4)
+        self.det_table.setHorizontalHeaderLabels(
+            ["#", "Range [m]", "Velocity [m/s]", "RCS [m²]"]
+        )
+        self.det_table.verticalHeader().setVisible(False)
+        self.det_table.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.det_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        radar_layout.addWidget(self.det_table, stretch=1)
 
         # --------- Tab 1: Signals ---------
         signals_tab = QWidget()
@@ -123,6 +143,9 @@ class RadarDisplay(QMainWindow):
         )
 
     def update(self, a_rd_up_db, a_rd_down_db, a_ranges, a_velocities, a_targets):
+        # -------------------------
+        # Update RD Maps
+        # -------------------------
         rect_up = QRectF(
             float(a_velocities[0]),
             float(a_ranges[0]),
@@ -143,8 +166,14 @@ class RadarDisplay(QMainWindow):
             self.rd_down_image.setImage(a_rd_down_db, levels=(-80, 0))
             self.rd_down_image.setRect(rect_down)
 
+        # -------------------------
+        # Toggle UP/DOWN detections plot
+        # -------------------------
         show_xs = self.xs_toggle.isChecked()
 
+        # -------------------------
+        # Update detections
+        # -------------------------
         both = [(t["v"], t["r"]) for t in a_targets if t["kind"] == "both"]
         up = [(t["v"], t["r"]) for t in a_targets if t["kind"] == "up"]
         down = [(t["v"], t["r"]) for t in a_targets if t["kind"] == "down"]
@@ -160,6 +189,25 @@ class RadarDisplay(QMainWindow):
         self.scatter_both.setVisible(len(both) > 0)
         self.scatter_up.setVisible(show_xs and len(up) > 0)
         self.scatter_down.setVisible(show_xs and len(down) > 0)
+
+        # -------------------------
+        # Update target list
+        # -------------------------
+        # vel_res = float(a_velocities[1] - a_velocities[0])
+        self.det_table.setRowCount(len(a_targets))  # Flush rows
+        for i, t in enumerate(a_targets):
+            for col, item in enumerate((str(i), f'{t["r"]:.1f}', f'{t["v"]:.2f}', "-")):
+                table_item = QTableWidgetItem(item)
+                table_item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+                table_item.setForeground(QBrush(QColor("white")))
+                # if t["v"] > 2 * vel_res and col == 2:
+                if t["v"] > 5 and col == 2:
+                    table_item.setBackground(QBrush(QColor("#5c2a2a")))
+                    table_item.setForeground(QBrush(QColor("white")))
+                # elif t["v"] < -2 * vel_res and col == 2:
+                elif t["v"] < -5 and col == 2:
+                    table_item.setBackground(QBrush(QColor("#25415c")))
+                self.det_table.setItem(i, col, table_item)
 
     def update_signals(self, a_tx_spec, a_rx_spec, a_if_spec, a_t, a_f):
         rect = QRectF(
