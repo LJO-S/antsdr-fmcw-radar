@@ -9,6 +9,7 @@ class AntSDR:
         self.config = a_radar_config
         self.full_scale = 2**15 - 1
         self.active = False
+
         # --------------------
         # Connect
         # --------------------
@@ -25,6 +26,11 @@ class AntSDR:
         self.ctrl = self.ctx.find_device("ad9361-phy")
         self.tx = self.ctx.find_device("cf-ad9361-dds-core-lpc")
         self.rx = self.ctx.find_device("cf-ad9361-lpc")
+
+    def start(self):
+        """
+        Start TX and RX DMA for one CPI of data.
+        """
 
         # --------------------
         # Configure TX
@@ -69,10 +75,9 @@ class AntSDR:
         self.tx.find_channel("TX1_I_F2", is_output=True).attrs["raw"].value = str(0)
         self.tx.find_channel("TX1_Q_F2", is_output=True).attrs["raw"].value = str(0)
 
-    def start(self):
-        """
-        Start TX and RX DMA for one CPI of data.
-        """
+        # --------------------
+        # Enable TX and RX channels
+        # --------------------
         chirp = dsp.generate_chirp(a_config=self.config)
         self.active = True
 
@@ -86,13 +91,17 @@ class AntSDR:
         self.rx.find_channel("voltage0").enabled = True
         self.rx.find_channel("voltage1").enabled = True
 
-        # RX buffer = one CPI + margin
+        # --------------------
+        # RX buffer (= one CPI + margin)
+        # --------------------
         rx_buf_samples = (
             self.config.CHIRP_REPS + self.config.SDR_RX_MARGIN_PERIODS
         ) * len(chirp)
         self.rx_buff = iio.Buffer(self.rx, samples_count=rx_buf_samples, cyclic=False)
 
+        # --------------------
         # Start TX cyclic DMA
+        # --------------------
         self.tx.find_channel("voltage0", is_output=True).enabled = True
         self.tx.find_channel("voltage1", is_output=True).enabled = True
         self.tx_buff = iio.Buffer(self.tx, samples_count=len(chirp), cyclic=True)
@@ -100,10 +109,12 @@ class AntSDR:
         print(f"TX write: {written} bytes")
         self.tx_buff.push()
 
+        # --------------------
         # Flush stale pre-TX RX frames
+        # --------------------
         print("Flushing stale RX frames...")
         for _ in range(32):
-            if np.max(np.abs(self._read_raw())) >= 0.01:
+            if np.max(np.abs(self._read_deinterleaved())) >= 0.01:
                 break
         else:
             self.close()
@@ -114,21 +125,31 @@ class AntSDR:
 
     def _read_raw(self):
         """
-        Refill RX buffer and return normalized complex64 array.
+        Refill RX buffer and return raw bytes.
         """
         self.rx_buff.refill()
-        data = self.rx_buff.read()
-        # TODO is the scaling correct?
+        return self.rx_buff.read()
+
+    def _read_deinterleaved(self):
+        """
+        Refill RX buffer and return normalized+de-interlweaved complex64 array.
+        """
+        data = self._read_raw()
         raw = np.frombuffer(data, dtype=np.int16).astype(np.float32) / (2**11 - 1)
         return raw[0::2] + 1j * raw[1::2]
 
     def read_block(self):
-        """Return one CPI block as a complex64 array (length = rx_buf_samples)."""
-        return self._read_raw()
+        """
+        Same as _read_deinterleaved() but public.
+        """
+        return self._read_deinterleaved()
 
     def set_loopback(self, a_en: bool):
         self.ctrl.debug_attrs["loopback"].value = str(int(a_en))
-        print(f"Loopback={self.ctrl.debug_attrs['loopback'].value}")
+        if int(self.ctrl.debug_attrs["loopback"].value) == 0:
+            print("Loopback OFF!")
+        else:
+            print("Loopback ON!")
 
     def close(self):
         if self.active:

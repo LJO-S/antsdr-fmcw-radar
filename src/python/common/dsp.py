@@ -67,14 +67,28 @@ def estimate_chirp_offset(a_rx, a_ref_period, a_n_periods=8):
 
 
 # ===================================================================================
-def frame_sync(a_rx, a_config, a_ctx):
+def frame_sync_circ(a_rx, a_config, a_ctx):
     """
-    Rotate a raw RX capture so sample 0 is a chirp boundary
+    Rotate a raw RX capture so sample 0 is a chirp boundary.
+    Works for purely simulated testing due to the circular nature of the simulation. For real hardware, use frame_sync_linear().
     """
     ref = a_ctx.tx_chirp
     P = len(ref)
     m_offset = estimate_chirp_offset(a_rx=a_rx, a_ref_period=ref)
     return np.roll(a_rx, -m_offset)[: a_config.CHIRP_REPS * P]
+
+
+def frame_sync_linear(a_rx, a_config, a_ctx, a_delay_samples=0):
+    """
+    Rotate a raw RX capture so sample 0 is a chirp boundary.
+    Hardware Rx captures are linear, so the circ frame sync would put garbage at the beginning of the return
+    """
+    ref = a_ctx.tx_chirp
+    P = len(ref)
+    n_cpi = a_config.CHIRP_REPS * P
+    m_offset = estimate_chirp_offset(a_rx=a_rx, a_ref_period=ref)
+    start = (m_offset - a_delay_samples) % P
+    return a_rx[start : start + n_cpi]
 
 
 # ===================================================================================
@@ -311,6 +325,13 @@ def process_cpi(a_if_signal: np.ndarray, a_config: RadarConfig, a_ctx: CPIContex
         down_matrix_rd = np.fft.fftshift(np.fft.fft2(np.conj(down_matrix_iq)), axes=0)
         magnitude_db_rd_down = 20 * np.log10(np.abs(down_matrix_rd[:, pos]) + 1e-12)
 
+    # Normalize
+    max_val = np.max(magnitude_db_rd_up)
+    if a_config.TRIANGLE_EN:
+        max_val_2 = np.max(magnitude_db_rd_down)
+        max_val = max(max_val, max_val_2)
+        magnitude_db_rd_down -= max_val
+    magnitude_db_rd_up -= max_val
     # ---------------------------------------------
     # 5. Generate detections
     # ---------------------------------------------
@@ -399,6 +420,33 @@ def process_cpi(a_if_signal: np.ndarray, a_config: RadarConfig, a_ctx: CPIContex
 
     down_db = magnitude_db_rd_down if a_config.TRIANGLE_EN else None
     return magnitude_db_rd_up, down_db, targets, rng, vel
+
+
+# ===================================================================================
+def apply_doppler_shift(a_signal: np.ndarray, a_velocity: float, a_config: RadarConfig):
+    """
+    Simulate Doppler shift on a raw RX capture
+    """
+    # Doppler shift = 2*v/c * f_c
+    doppler_hz = 2 * a_velocity * a_config.CHIRP_FC_HZ / c
+    t = np.arange(len(a_signal)) / a_config.FS
+    return a_signal * np.exp(-2j * np.pi * doppler_hz * t)
+
+
+# ===================================================================================
+def apply_noise(a_signal: np.ndarray, a_snr_db: float):
+    """
+    Simulate additive white Gaussian noise on a signal
+    """
+    if a_snr_db <= 0:
+        return a_signal
+
+    sig_rms = np.sqrt(np.mean(np.abs(a_signal) ** 2))
+    noise_std = sig_rms / (10 ** (a_snr_db / 20)) / np.sqrt(2)  # Split across I and Q
+    noise = noise_std * (
+        np.random.randn(*a_signal.shape) + 1j * np.random.randn(*a_signal.shape)
+    )
+    return a_signal + noise
 
 
 # ===================================================================================

@@ -112,7 +112,7 @@ def recover_with_offset(a_targets_truth, a_cfg, seed=0, n_offsets=5):
             P - 1,
         )
 
-        rx_aligned = dsp.frame_sync(a_rx=rx_rolled, a_config=a_cfg, a_ctx=ctx)
+        rx_aligned = dsp.frame_sync_circ(a_rx=rx_rolled, a_config=a_cfg, a_ctx=ctx)
 
         # import matplotlib.pyplot as plt
 

@@ -32,18 +32,6 @@ class SoftFMCWModel:
 
         return a_signal * amplitude
 
-    def add_velocity(self, a_signal, a_velocity):
-        """
-        Add Doppler shift
-        """
-        # Calculate Doppler shift
-        doppler_freq = 2 * a_velocity * self.config.CHIRP_FC_HZ / dsp.c
-        # Create signal
-        t = np.arange(len(a_signal)) / self.config.FS
-        doppler_signal = np.exp(-2 * np.pi * 1j * doppler_freq * t)
-        # Mix signals
-        return a_signal * doppler_signal
-
     def add_delay(self, a_signal, a_range):
         tau_s = 2 * a_range / dsp.c
         tau_samples = int(np.ceil(tau_s * self.config.FS))
@@ -64,8 +52,10 @@ class SoftFMCWModel:
         rx_signal = np.zeros(len(a_tx_signal), dtype=complex)
         for target in a_targets:
             # 1. Add Velocity
-            rx_signal_doppler = self.add_velocity(
-                a_signal=a_tx_signal, a_velocity=target["velocity"]
+            rx_signal_doppler = dsp.apply_doppler_shift(
+                a_signal=a_tx_signal,
+                a_velocity=target["velocity"],
+                a_config=self.config,
             )
             # 2. Echo
             rx_signal_echo = self.add_delay(
