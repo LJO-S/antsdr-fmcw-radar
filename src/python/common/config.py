@@ -21,7 +21,7 @@ class RadarConfig:
 
     # Sampling
     FS: float = 56.6e6
-    TRIANGLE_EN: bool = False
+    TRIANGLE_EN: bool = True
 
     # CFAR
     CFAR_GUARD_LEN: int = 4
@@ -44,9 +44,9 @@ class RadarConfig:
     SDR_RX_GAIN_DB: float = 20.0
     SDR_RX_MARGIN_PERIODS: int = 1
     SDR_LOOPBACK_EN: bool = True
-    SDR_LOOPBACK_DELAY_SAMPLES: int = 600  # ~ c*D/(2*fs)
-    SDR_LOOPBACK_VELOCITY_MPS: float = 10.0
-    SDR_LOOPBACK_NOISE_SNR_DB: float = 5.0
+    SDR_LOOPBACK_DELAY_M: int = 1000
+    SDR_LOOPBACK_VELOCITY_MPS: float = 200.0
+    SDR_LOOPBACK_NOISE_SNR_DB: float = 1.0
 
     # --------------------------------
     # Miscellaneous

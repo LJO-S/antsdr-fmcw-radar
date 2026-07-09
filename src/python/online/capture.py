@@ -15,11 +15,12 @@ def capture_rx_data(
     # 2. Frame sync
     if a_config.SDR_LOOPBACK_EN:
         # 2A. Simulate delay etc if enabled
+        sample_delay = int(round(2 * a_config.FS * a_config.SDR_LOOPBACK_DELAY_M / dsp.c)) # D ~ (2*fs*R)/c
         rx_aligned = dsp.frame_sync_linear(
             a_rx=rx,
             a_config=a_config,
             a_ctx=a_ctx,
-            a_delay_samples=a_config.SDR_LOOPBACK_DELAY_SAMPLES,
+            a_delay_samples=sample_delay,
         )
         rx_aligned = dsp.apply_doppler_shift(
             a_signal=rx_aligned,
