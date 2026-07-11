@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import numpy as np
 
 c = 3e8  # Speed of light in m/s
@@ -14,48 +14,79 @@ class RadarConfig:
     # GLOBAL PARAMETERS
     # --------------------------------
     # Chirp
-    CHIRP_FC_HZ: float = 900e6
-    CHIRP_BW_HZ: float = 50e6
-    CHIRP_DUR_S: float = 100e-6
-    CHIRP_REPS: int = 32
+    CHIRP_FC_HZ: float = field(
+        default=900e6,
+        metadata={"label": "Carrier LO", "unit": "MHz", "scale": 1e6, "group": "chirp"},
+    )
+    CHIRP_BW_HZ: float = field(
+        default=50e6,
+        metadata={"label": "BW", "unit": "MHz", "scale": 1e6, "group": "chirp"},
+    )
+    CHIRP_DUR_S: float = field(
+        default=100e-6,
+        metadata={"label": "Duration", "unit": "us", "scale": 1e-6, "group": "chirp"},
+    )
+    CHIRP_REPS: int = field(
+        default=32,
+        metadata={"label": "Chirps", "unit": "", "scale": 1, "group": "chirp"},
+    )
+    TRIANGLE_EN: bool = field(
+        default=False,
+        metadata={
+            "label": "Waveform",
+            "unit": "",
+            "scale": 1,
+            "group": "chirp",
+        },
+    )
 
     # Sampling
-    FS: float = 56.6e6
-    TRIANGLE_EN: bool = True
+    FS: float = field(
+        default=56.6e6,
+        metadata={
+            "label": "Sampling Frequency",
+            "unit": "MHz",
+            "scale": 1e6,
+            "group": "sdr",
+        },
+    )
 
     # CFAR
-    CFAR_GUARD_LEN: int = 4
-    CFAR_TRAINING_LEN: int = 10
-    CFAR_PFA: float = 1e-6
+    CFAR_GUARD_LEN: int = field(
+        default=4,
+        metadata={
+            "label": "Guard Cells",
+            "unit": "N/A",
+            "scale": 1,
+            "group": "cfar",
+        },
+    )
+    CFAR_TRAINING_LEN: int = field(
+        default=10,
+        metadata={
+            "label": "Training Cells",
+            "unit": "N/A",
+            "scale": 1,
+            "group": "cfar",
+        },
+    )
+    CFAR_PFA: float = field(
+        default=1e-6,
+        metadata={
+            "label": "False Alarm Rate",
+            "unit": "N/A",
+            "scale": 1,
+            "group": "cfar",
+        },
+    )
 
     # --------------------------------
     # Software
     # --------------------------------
+    # GUI-untagged
     TX_PWR_DBM: float = 10.0
     TX_GAIN_DB: float = 13.0
     RX_GAIN_DB: float = 14.0
-
-    # --------------------------------
-    # Hardware
-    # --------------------------------
-    SDR_IP: str = "192.168.5.10"
-    SDR_TX_GAIN_DB: float = -30.0
-    SDR_RX_GAIN_MODE: str = "manual"
-    SDR_RX_GAIN_DB: float = 20.0
-    SDR_RX_MARGIN_PERIODS: int = 1
-    SDR_LOOPBACK_EN: bool = True
-    SDR_LOOPBACK_DELAY_M: int = 1000
-    SDR_LOOPBACK_VELOCITY_MPS: float = 200.0
-    SDR_LOOPBACK_NOISE_SNR_DB: float = 1.0
-
-    # --------------------------------
-    # Miscellaneous
-    # --------------------------------
-    OP_RANGE_FACTOR: float = 0.15
-
-    # --------------------------------
-    # Software (approximations)
-    # --------------------------------
     ISOLATION_DB: float = 40.0
     DC_I: float = 0.0
     DC_Q: float = 0.0
@@ -63,6 +94,91 @@ class RadarConfig:
     IQ_PHASE_ERR_DEG: float = 0.0
     # IQ_AMPL_ERR: float = 1e-6
     # IQ_PHASE_ERR_DEG: float = 0.1
+
+    # --------------------------------
+    # Hardware
+    # --------------------------------
+    SDR_IP: str = field(
+        default="192.168.5.10",
+        metadata={
+            "label": "IP",
+            "unit": "",
+            "scale": 1,
+            "group": "sdr",
+            "readonly": True,
+        },
+    )
+    SDR_TX_GAIN_DB: float = field(
+        default=-30.0,
+        metadata={
+            "label": "Tx Gain",
+            "unit": "dB",
+            "scale": 1,
+            "group": "sdr",
+        },
+    )
+    SDR_RX_GAIN_MODE: str = "manual"  # untagged, must stay "manual"
+    SDR_RX_GAIN_DB: float = field(
+        default=20.0,
+        metadata={
+            "label": "Rx Gain",
+            "unit": "dB",
+            "scale": 1,
+            "group": "sdr",
+        },
+    )
+
+    SDR_RX_MARGIN_PERIODS: int = 1  # untagged, I like 1 period
+
+    SDR_LOOPBACK_EN: bool = field(
+        default=True,
+        metadata={
+            "label": "Loopback",
+            "unit": "",
+            "scale": 1,
+            "group": "sdr",
+        },
+    )
+    SDR_LOOPBACK_DELAY_M: float = field(
+        default=1000.0,
+        metadata={
+            "label": "Loopback Target Delay",
+            "unit": "m",
+            "scale": 1,
+            "group": "loopback",
+        },
+    )
+    SDR_LOOPBACK_VELOCITY_MPS: float = field(
+        default=10.0,
+        metadata={
+            "label": "Loopback Target Velocity",
+            "unit": "m/s",
+            "scale": 1,
+            "group": "loopback",
+        },
+    )
+    SDR_LOOPBACK_NOISE_SNR_DB: float = field(
+        default=1.0,
+        metadata={
+            "label": "Loopback SNR",
+            "unit": "dB",
+            "scale": 1,
+            "group": "loopback",
+        },
+    )
+
+    # --------------------------------
+    # Miscellaneous
+    # --------------------------------
+    OP_RANGE_FACTOR: float = field(
+        default=0.15,
+        metadata={
+            "label": "Operational Range Factor",
+            "unit": "%",
+            "scale": 100,
+            "group": "misc",
+        },
+    )
 
     # CHARACTERISTICS
     @property
@@ -89,9 +205,3 @@ class RadarConfig:
         print(
             f"Processing Gain: {10 * np.log10(self.CHIRP_DUR_S * self.FS * self.CHIRP_REPS)}"
         )
-
-
-# TODO
-#   One config.py heads-up for later:
-# MAX_RANGE, MAX_VELOCITY and the rest sit directly in the class body and execute once at import time using the default values. A reconfigured instance with a new CHIRP_DUR_S will still report the old MAX_RANGE. Turn them
-#   into @property methods (and move the printout into a def describe(self)).

@@ -1,9 +1,10 @@
 import sys
 import numpy as np
-from PySide6.QtCore import QRectF, Qt
+import dataclasses
+from collections import defaultdict
+from PySide6.QtCore import QRectF, Qt, QLocale, Signal
 from PySide6.QtWidgets import (
     QApplication,
-    QCheckBox,
     QMainWindow,
     QWidget,
     QTabWidget,
@@ -12,37 +13,54 @@ from PySide6.QtWidgets import (
     QHeaderView,
     QHBoxLayout,
     QVBoxLayout,
+    QScrollArea,
+    QFormLayout,
+    QCheckBox,
+    QSpinBox,
+    QLineEdit,
+    QGroupBox,
+    QPushButton,
 )
-from PySide6.QtGui import QBrush, QColor
+from PySide6.QtGui import QBrush, QColor, QDoubleValidator
 import pyqtgraph as pg
+
+import common.dsp as dsp
 
 
 class RadarDisplay(QMainWindow):
     """
-    Tab 0 — Radar:
+    Tab 0 - Radar:
     ┌─────────────────────────┬─────────────────────────┐
     │  Up-chirp RD map        │            │            │
     ├─────────────────────────┤ Detections │ Detections │
     │  Down-chirp RD map      │    Plot    │    List    │
     └─────────────────────────┴─────────────────────────┘
 
-    Tab 1 — Signals:
+    Tab 1 - Signals:
     ┌─────────────────────────────────────────┐
-    │  TX spectrogram                         │
-    ├─────────────────────────────────────────┤
     │  RX spectrogram                         │
     ├─────────────────────────────────────────┤
     │  IF spectrogram                         │
     └─────────────────────────────────────────┘
+
+    Tab 2 - Config:
+    ┌─────────────────────────┬─────────────┐
+    │  Tx Spectrogram         │ Cfg Params  │
+    ├─────────────────────────├─────────────┤
+    │  Radar Parameters       │ Cfg Button  │
+    └─────────────────────────┴─────────────┘
     """
 
-    def __init__(self):
+    reconfigure_requested = Signal(object)
+
+    def __init__(self, a_config):
         super().__init__()
         self.setWindowTitle("FMCW Radar")
 
         tabs = QTabWidget()
         self.setCentralWidget(tabs)
 
+        self._config = a_config
         # --------- Tab 0: Radar ---------
         radar_tab = QWidget()
         tabs.addTab(radar_tab, "Radar")
@@ -117,7 +135,7 @@ class RadarDisplay(QMainWindow):
         tabs.addTab(signals_tab, "Signals")
         signals_layout = QVBoxLayout(signals_tab)
 
-        for title, attr in [("TX", "tx"), ("RX", "rx"), ("IF", "if")]:
+        for title, attr in [("RX", "rx"), ("IF", "if")]:
             plot = pg.PlotWidget(title=f"{title} Spectrogram")
             plot.setLabel("left", "Frequency", units="Hz")
             plot.setLabel("bottom", "Time", units="s")
@@ -127,6 +145,139 @@ class RadarDisplay(QMainWindow):
             setattr(self, f"{attr}_spec_plot", plot)
             setattr(self, f"{attr}_spec_image", image)
             signals_layout.addWidget(plot)
+
+        # --------- Tab 2: Config ---------
+        config_tab = QWidget()
+        tabs.addTab(config_tab, "Configuration")
+        config_layout = QHBoxLayout(config_tab)
+        # ---  Tx Chirps & Radar Parameters ---
+        config_layout_left_col = QVBoxLayout()
+
+        plot = pg.PlotWidget(title="Tx Instantaneous Frequency")
+        plot.setLabel("left", "Frequency", units="Hz")
+        plot.setLabel("bottom", "Time", units="s")
+        self.tx_curve = plot.plot(pen="y")
+        self.tx_curve.setDownsampling(auto=True)
+        self.tx_curve.setClipToView(True)
+        setattr(self, "tx_spec_plot", plot)
+        config_layout_left_col.addWidget(plot)
+        # TODO should probably run Tx once?
+
+        # TODO need config.describe() parameters too
+        config_layout.addLayout(config_layout_left_col, stretch=1)
+
+        # --- Configuration ---
+        config_layout_right_col = QVBoxLayout()
+
+        # Create scroll
+        config_scroll = QScrollArea()
+        config_scroll.setWidgetResizable(True)
+        # Form layout inside a widget
+        form_widget = QWidget()
+        form_layout = QFormLayout(form_widget)  # this is used by commands
+        # Set Widget to scroller
+        config_scroll.setWidget(form_widget)
+        # Add widget
+        config_layout_right_col.addWidget(config_scroll)
+
+        # Create groups containing the Config parameters
+        groups = defaultdict(list)
+        for field in dataclasses.fields(a_config):
+            if not field.metadata:
+                continue
+            groups[field.metadata["group"]].append(field)
+
+        # Create helper functions
+        def _make_widget(a_field, a_value):
+            if a_field.type is bool:
+                w = QCheckBox()
+                w.setChecked(a_value)
+            elif a_field.type is int:
+                w = QSpinBox()
+                w.setRange(-1_000_000, 1_000_000)
+                w.setValue(a_value)
+            elif a_field.type is float:
+                scale = a_field.metadata.get("scale", 1)
+                w = QLineEdit(str(a_value / scale))
+                validator = QDoubleValidator(
+                    bottom=-1_000_000, top=1_000_000, decimals=3
+                )
+                validator.setNotation(QDoubleValidator.ScientificNotation)
+                validator.setLocale(QLocale.c())
+                w.setValidator(validator)
+            else:
+                # string
+                w = QLineEdit(str(a_value))
+            if a_field.metadata.get("readonly"):
+                w.setEnabled(False)
+            return w
+
+        self._cfg_widgets = {}
+        self._cfg_fields = {}
+        for group_name, group_fields in groups.items():
+            box = QGroupBox(group_name.upper())
+            box_form = QFormLayout(box)
+            for f in group_fields:
+                widget = _make_widget(a_field=f, a_value=getattr(a_config, f.name))
+                self._cfg_widgets[f.name] = widget
+                self._cfg_fields[f.name] = f
+                box_form.addRow(f.metadata["label"], widget)
+            form_layout.addRow(box)
+
+        # Grey out
+        loopback_names = [
+            f.name
+            for f in self._cfg_fields.values()
+            if f.metadata["group"] == "loopback"
+        ]
+
+        loopback_ctrl = self._cfg_widgets["SDR_LOOPBACK_EN"]
+
+        def _apply_loopback(a_on):
+            for n in loopback_names:
+                self._cfg_widgets[n].setEnabled(a_on)
+
+        loopback_ctrl.toggled.connect(_apply_loopback)
+        _apply_loopback(loopback_ctrl.isChecked())
+
+        # Create RE-CONFIGURE button
+        self.re_cfg_button = QPushButton("RE-CONFIGURE")
+        self.re_cfg_button.clicked.connect(self.reconfigure())
+        config_layout_right_col.addWidget(self.re_cfg_button)
+
+        config_layout.addLayout(config_layout_right_col, stretch=1)
+
+        # Setup GUI
+        self.set_config(a_config)
+
+    def reconfigure(self):
+        values = {}
+        for name, f in self._cfg_fields.items():
+            if f.metadata.get("readonly"):
+                continue
+            try:
+                values[name] = self.read_cfg_reg(f)
+                self._cfg_widgets[name].setStyleSheet("")
+            except ValueError:
+                self._cfg_widgets[name].setStyleSheet("border: 1px solid red")
+                return
+        new_cfg = dataclasses.replace(self._config, **values)
+        self.reconfigure_requested.emit(new_cfg)
+        self.set_config(new_cfg)
+
+    def read_cfg_reg(self, a_field):
+        if a_field.type is bool:
+            w = self._cfg_widgets[a_field.name].isChecked()
+        elif a_field.type is int:
+            w = self._cfg_widgets[a_field.name].value()
+        elif a_field.type is float:
+            w = float(self._cfg_widgets[a_field.name].text()) * a_field.metadata.get(
+                "scale", 1
+            )
+        else:
+            # string
+            w = self._cfg_widgets[a_field.name].text()
+        return w
 
     def set_detection_limits(self, r_min, r_max, v_min, v_max):
         self.det_plot.setXRange(v_min, v_max, padding=0)
@@ -209,7 +360,7 @@ class RadarDisplay(QMainWindow):
                     table_item.setBackground(QBrush(QColor("#25415c")))
                 self.det_table.setItem(i, col, table_item)
 
-    def update_signals(self, a_tx_spec, a_rx_spec, a_if_spec, a_t, a_f):
+    def update_signals(self, a_rx_spec, a_if_spec, a_t, a_f):
         rect = QRectF(
             float(a_t[0]),
             float(a_f[0]),
@@ -217,12 +368,31 @@ class RadarDisplay(QMainWindow):
             float(a_f[-1] - a_f[0]),
         )
         for image, spec in [
-            (self.tx_spec_image, a_tx_spec),
             (self.rx_spec_image, a_rx_spec),
             (self.if_spec_image, a_if_spec),
         ]:
             image.setImage(spec)
             image.setRect(rect)
+
+    def set_config(self, a_config):
+        # Store new config
+        self._config = a_config
+
+        # Populate widgets
+
+        # Store 2 chirp Tx curve
+        tx_seq = np.tile(dsp.generate_chirp(a_config=a_config), 2)
+        f = dsp.inst_freq(a_signal=tx_seq, a_radar_config=a_config)
+        t = np.arange(len(tx_seq)) / a_config.FS
+        self.tx_curve.setData(t[: len(f)], f)
+
+        # Set detections limits
+        self.set_detection_limits(
+            r_min=0,
+            r_max=a_config.MAX_RANGE,
+            v_min=-a_config.MAX_VELOCITY / 2,
+            v_max=a_config.MAX_VELOCITY / 2,
+        )
 
 
 # Pseudo-data helpers
@@ -242,9 +412,17 @@ def _make_spectrogram(n_time, n_freq):
     return spec
 
 
+def _make_tx_freq(n_time):
+    # Fake triangle-mode instantaneous frequency, just to exercise the plot
+    t = np.linspace(-1, 1, n_time)
+    return (1 - np.abs(t)) * 28e6 - 14e6
+
+
 if __name__ == "__main__":
+    from .config import RadarConfig
+
     app = QApplication(sys.argv)
-    window = RadarDisplay()
+    window = RadarDisplay(a_config=RadarConfig())
     window.show()
 
     n_doppler, n_range = 64, 300
@@ -267,7 +445,7 @@ if __name__ == "__main__":
     t_ax = np.linspace(0, 6.4e-3, n_time)
     f_ax = np.linspace(-28e6, 28e6, n_freq)
     window.update_signals(
-        _make_spectrogram(n_time, n_freq),
+        _make_tx_freq(n_time),
         _make_spectrogram(n_time, n_freq),
         _make_spectrogram(n_time, n_freq),
         t_ax,

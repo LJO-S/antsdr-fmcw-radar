@@ -174,10 +174,6 @@ if __name__ == "__main__":
         )
         return a_signal + noise
 
-    def inst_freq(x):
-        # derivative of unwrapped phase -> Hz
-        return np.diff(np.unwrap(np.angle(x))) * radar_config.FS / (2 * np.pi)
-
     # Run a loopback test if this script is executed directly
     radar_config = config.RadarConfig()
     D = 400  # samples
@@ -231,15 +227,21 @@ if __name__ == "__main__":
                 win = 2 * len(ctx.tx_chirp)
                 fig, axs = plt.subplots(2, 3)
 
-                axs[0, 0].plot(inst_freq(ctx.tx_seq[:win]), lw=0.6)
+                axs[0, 0].plot(
+                    dsp.inst_freq(ctx.tx_seq[:win], a_radar_config=radar_config), lw=0.6
+                )
                 axs[0, 0].set_title("TX reference")
                 axs[0, 0].set_xlabel("sample")
 
-                axs[0, 1].plot(inst_freq(rx_delayed)[:win], lw=0.6)
+                axs[0, 1].plot(
+                    dsp.inst_freq(rx_delayed, a_radar_config=radar_config)[:win], lw=0.6
+                )
                 axs[0, 1].set_title(f"Delayed RX")
                 axs[0, 1].set_xlabel("sample")
 
-                axs[0, 2].plot(inst_freq(if_signal)[:win], lw=0.6)
+                axs[0, 2].plot(
+                    dsp.inst_freq(if_signal, a_radar_config=radar_config)[:win], lw=0.6
+                )
                 axs[0, 2].set_title(f"IF Signal")
                 axs[0, 2].set_xlabel("sample")
 

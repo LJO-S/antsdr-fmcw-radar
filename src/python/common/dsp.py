@@ -450,6 +450,12 @@ def apply_noise(a_signal: np.ndarray, a_snr_db: float):
 
 
 # ===================================================================================
+def inst_freq(a_signal: np.ndarray, a_radar_config: RadarConfig):
+    # derivative of unwrapped phase -> Hz
+    return np.diff(np.unwrap(np.angle(a_signal))) * a_radar_config.FS / (2 * np.pi)
+
+
+# ===================================================================================
 
 if __name__ == "__main__":
     print("Hello world!")
