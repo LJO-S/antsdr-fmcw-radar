@@ -79,7 +79,6 @@ class AntSDR:
         # Enable TX and RX channels
         # --------------------
         chirp = dsp.generate_chirp(a_config=self.config)
-        self.active = True
 
         # Prepare TX int16 payload: scale then interleave I/Q
         scaled = chirp * self.full_scale
@@ -123,6 +122,8 @@ class AntSDR:
             )
         print("RX live!")
 
+        self.active = True
+
     def _read_raw(self):
         """
         Refill RX buffer and return raw bytes.
@@ -152,16 +153,17 @@ class AntSDR:
             print("Loopback ON!")
 
     def close(self):
-        if self.active:
+        if getattr(self, "rx_buff", None):
             self.rx_buff.cancel()
-            self.tx_buff.cancel()
             del self.rx_buff
+        if getattr(self, "tx_buff", None):
+            self.tx_buff.cancel()
             del self.tx_buff
-            self.tx.find_channel("voltage0", is_output=True).enabled = False
-            self.tx.find_channel("voltage1", is_output=True).enabled = False
-            self.rx.find_channel("voltage0").enabled = False
-            self.rx.find_channel("voltage1").enabled = False
-            self.active = False
+        self.tx.find_channel("voltage0", is_output=True).enabled = False
+        self.tx.find_channel("voltage1", is_output=True).enabled = False
+        self.rx.find_channel("voltage0").enabled = False
+        self.rx.find_channel("voltage1").enabled = False
+        self.active = False
 
 
 if __name__ == "__main__":

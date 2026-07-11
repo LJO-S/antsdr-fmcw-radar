@@ -136,7 +136,7 @@ class RadarDisplay(QMainWindow):
         signals_layout = QVBoxLayout(signals_tab)
 
         for title, attr in [("RX", "rx"), ("IF", "if")]:
-            plot = pg.PlotWidget(title=f"{title} Spectrogram")
+            plot = pg.PlotWidget(title=f"{title} Instantaneuous Freq")
             plot.setLabel("left", "Frequency", units="Hz")
             plot.setLabel("bottom", "Time", units="s")
             image = pg.ImageItem()
@@ -281,8 +281,14 @@ class RadarDisplay(QMainWindow):
                 self._cfg_widgets[name].setStyleSheet("border: 1px solid red")
                 return
         new_cfg = dataclasses.replace(self._config, **values)
+        self.re_cfg_button.setEnabled(False)  # Disable button until ACK
         self.reconfigure_requested.emit(new_cfg)
         self.set_config(new_cfg)
+
+    def on_reconfigure_done(self, a_ok, a_config):
+        self.re_cfg_button.setEnabled(True)
+        if not a_ok:
+            self.set_config(a_config)
 
     def read_cfg_reg(self, a_field):
         if a_field.type is bool:
@@ -436,9 +442,6 @@ class RadarDisplay(QMainWindow):
             v_min=-a_config.MAX_VELOCITY / 2,
             v_max=a_config.MAX_VELOCITY / 2,
         )
-
-        # Disable button until ACK
-        self.re_cfg_button.setEnabled(False)
 
 
 # Pseudo-data helpers

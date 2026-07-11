@@ -5,7 +5,6 @@ The main application file. Enjoy!
 
 import sys
 import traceback
-import numpy as np
 from PySide6.QtCore import QThread, Signal
 from PySide6.QtWidgets import QApplication
 
@@ -20,6 +19,7 @@ class RadarWorker(QThread):
     # 'object' lets us pass numpy arrays / lists / None through untouched
     results = Signal(object, object, object, object, object)
     error = Signal(str)
+    reconfigure_done = Signal(bool, object)
 
     def __init__(self, a_config: config.RadarConfig):
         super().__init__()
@@ -36,12 +36,25 @@ class RadarWorker(QThread):
             radio.start()
             while self._running:
                 if self.pending_cfg is not None:
-                    self.config, self.pending_cfg = self.pending_cfg, None
-                    ctx = dsp.build_cpi_context(a_config=self.config)
+                    new_cfg, self.pending_cfg = self.pending_cfg, None
+                    old_cfg = self.config
                     radio.close()
-                    radio.set_loopback(self.config.SDR_LOOPBACK_EN)
-                    radio.config = self.config
-                    radio.start()
+                    try:
+                        self.config = new_cfg
+                        ctx = dsp.build_cpi_context(a_config=new_cfg)
+                        radio.config = new_cfg
+                        radio.set_loopback(new_cfg.SDR_LOOPBACK_EN)
+                        radio.start()
+                        self.reconfigure_done.emit(True, new_cfg)
+                    except Exception:
+                        self.error.emit(traceback.format_exc())
+                        self.config = old_cfg
+                        ctx = dsp.build_cpi_context(a_config=old_cfg)
+                        radio.config = old_cfg
+                        radio.close()
+                        radio.set_loopback(old_cfg.SDR_LOOPBACK_EN)
+                        radio.start()
+                        self.reconfigure_done.emit(False, old_cfg)
                 rx = capture.capture_rx_data(
                     a_config=self.config, a_ctx=ctx, a_sdr=radio
                 )
@@ -59,6 +72,9 @@ class RadarWorker(QThread):
                 radio.close()
                 print("Successfully stopped SDR!")
 
+    def request_reconfigure(self, a_config):
+        self.pending_cfg = a_config
+
     def stop(self):
         print("Stopping app...")
         self._running = False
@@ -68,10 +84,10 @@ class RadarWorker(QThread):
 
 def main():
     app = QApplication(sys.argv)
-    display = gui.RadarDisplay()
-    display.set_config(a_config=config.RadarConfig())
+    cfg = config.RadarConfig()
+    display = gui.RadarDisplay(a_config=cfg)
 
-    worker = RadarWorker(a_config=config.RadarConfig())
+    worker = RadarWorker(a_config=cfg)
     worker.config.describe()
     worker.results.connect(
         lambda rd_map_db_up, rd_map_db_down, detections, ranges, velocities: display.update(
@@ -82,13 +98,15 @@ def main():
         print
     )  # slot runs on the GUI thread and Qt queues it because the emit came from the worker
 
-    display.show()
-    display.set_detection_limits(
-        r_min=0,
-        r_max=worker.config.MAX_RANGE,
-        v_min=-worker.config.MAX_VELOCITY / 2,
-        v_max=worker.config.MAX_VELOCITY / 2,
+    display.reconfigure_requested.connect(
+        worker.request_reconfigure
+    )  # slot runs on the GUI thread and run() stalls a bit
+
+    worker.reconfigure_done.connect(
+        lambda ok, cfg: display.on_reconfigure_done(ok, cfg)
     )
+
+    display.show()
     worker.start()
     app.aboutToQuit.connect(worker.stop)
     sys.exit(app.exec())
