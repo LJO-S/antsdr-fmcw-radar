@@ -153,21 +153,32 @@ class RadarDisplay(QMainWindow):
         # ---  Tx Chirps & Radar Parameters ---
         config_layout_left_col = QVBoxLayout()
 
+        # -- Tx Freq vs Time --
         plot = pg.PlotWidget(title="Tx Instantaneous Frequency")
         plot.setLabel("left", "Frequency", units="Hz")
         plot.setLabel("bottom", "Time", units="s")
         self.tx_curve = plot.plot(pen="y")
-        self.tx_curve.setDownsampling(auto=True)
-        self.tx_curve.setClipToView(True)
+        self.tx_curve.setDownsampling(auto=False)
+        self.tx_curve.setClipToView(False)
         setattr(self, "tx_spec_plot", plot)
         config_layout_left_col.addWidget(plot)
-        # TODO should probably run Tx once?
 
-        # TODO need config.describe() parameters too
+        # -- Show Radar Params --
+        box = QGroupBox("Radar Characteristics")
+        param_box = QVBoxLayout(box)
+        self.param_widget = QTableWidget(0, 3)
+        self.param_widget.setHorizontalHeaderLabels(["Name", "Value", "Unit"])
+        self.param_widget.verticalHeader().setVisible(False)
+        self.param_widget.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.param_widget.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        param_box.addWidget(self.param_widget)
+        config_layout_left_col.addWidget(box)
+
         config_layout.addLayout(config_layout_left_col, stretch=1)
 
         # --- Configuration ---
-        config_layout_right_col = QVBoxLayout()
+        cfg_box = QGroupBox("Configuration")
+        config_layout_right_col = QVBoxLayout(cfg_box)
 
         # Create scroll
         config_scroll = QScrollArea()
@@ -188,26 +199,23 @@ class RadarDisplay(QMainWindow):
             groups[field.metadata["group"]].append(field)
 
         # Create helper functions
-        def _make_widget(a_field, a_value):
+        def _make_widget(a_field):
             if a_field.type is bool:
                 w = QCheckBox()
-                w.setChecked(a_value)
             elif a_field.type is int:
                 w = QSpinBox()
                 w.setRange(-1_000_000, 1_000_000)
-                w.setValue(a_value)
             elif a_field.type is float:
-                scale = a_field.metadata.get("scale", 1)
-                w = QLineEdit(str(a_value / scale))
+                w = QLineEdit()
                 validator = QDoubleValidator(
-                    bottom=-1_000_000, top=1_000_000, decimals=3
+                    bottom=-1_000_000, top=1_000_000, decimals=10
                 )
                 validator.setNotation(QDoubleValidator.ScientificNotation)
                 validator.setLocale(QLocale.c())
                 w.setValidator(validator)
             else:
                 # string
-                w = QLineEdit(str(a_value))
+                w = QLineEdit()
             if a_field.metadata.get("readonly"):
                 w.setEnabled(False)
             return w
@@ -218,10 +226,14 @@ class RadarDisplay(QMainWindow):
             box = QGroupBox(group_name.upper())
             box_form = QFormLayout(box)
             for f in group_fields:
-                widget = _make_widget(a_field=f, a_value=getattr(a_config, f.name))
+                widget = _make_widget(a_field=f)
                 self._cfg_widgets[f.name] = widget
                 self._cfg_fields[f.name] = f
-                box_form.addRow(f.metadata["label"], widget)
+                unit = f.metadata.get("unit", "")
+                label = (
+                    f'{f.metadata["label"]} [{unit}]' if unit else f.metadata["label"]
+                )
+                box_form.addRow(label, widget)
             form_layout.addRow(box)
 
         # Grey out
@@ -242,10 +254,17 @@ class RadarDisplay(QMainWindow):
 
         # Create RE-CONFIGURE button
         self.re_cfg_button = QPushButton("RE-CONFIGURE")
-        self.re_cfg_button.clicked.connect(self.reconfigure())
+        self.re_cfg_button.clicked.connect(
+            self.reconfigure
+        )  # connect method (no parentheses)
+        self.re_cfg_button.setStyleSheet(
+            "QPushButton { background-color: #2e7d32; color: white;"
+            " font-weight: bold; padding: 6px; }"
+            "QPushButton:disabled { background-color: #555555; color: #aaaaaa; }"
+        )
         config_layout_right_col.addWidget(self.re_cfg_button)
 
-        config_layout.addLayout(config_layout_right_col, stretch=1)
+        config_layout.addWidget(cfg_box, stretch=1)
 
         # Setup GUI
         self.set_config(a_config)
@@ -278,6 +297,17 @@ class RadarDisplay(QMainWindow):
             # string
             w = self._cfg_widgets[a_field.name].text()
         return w
+
+    def write_cfg_reg(self, a_field, a_value):
+        w = self._cfg_widgets[a_field.name]
+        if a_field.type is bool:
+            w.setChecked(a_value)
+        elif a_field.type is int:
+            w.setValue(a_value)
+        elif a_field.type is float:
+            w.setText(str(a_value / a_field.metadata.get("scale", 1)))
+        else:
+            w.setText(str(a_value))
 
     def set_detection_limits(self, r_min, r_max, v_min, v_max):
         self.det_plot.setXRange(v_min, v_max, padding=0)
@@ -378,7 +408,20 @@ class RadarDisplay(QMainWindow):
         # Store new config
         self._config = a_config
 
+        # Update radar params
+        radar_params = a_config.derived_params()
+        self.param_widget.setRowCount(len(radar_params))  # Flush rows
+        for i, (name, (value, unit)) in enumerate(radar_params.items()):
+            for col, item in enumerate((name, f"{value:.1f}", unit)):
+                table_item = QTableWidgetItem(item)
+                table_item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+                table_item.setForeground(QBrush(QColor("white")))
+                self.param_widget.setItem(i, col, table_item)
+
         # Populate widgets
+        for name, f in self._cfg_fields.items():
+            v = getattr(a_config, name)
+            self.write_cfg_reg(a_field=f, a_value=v)
 
         # Store 2 chirp Tx curve
         tx_seq = np.tile(dsp.generate_chirp(a_config=a_config), 2)
@@ -393,6 +436,9 @@ class RadarDisplay(QMainWindow):
             v_min=-a_config.MAX_VELOCITY / 2,
             v_max=a_config.MAX_VELOCITY / 2,
         )
+
+        # Disable button until ACK
+        self.re_cfg_button.setEnabled(False)
 
 
 # Pseudo-data helpers
@@ -445,7 +491,6 @@ if __name__ == "__main__":
     t_ax = np.linspace(0, 6.4e-3, n_time)
     f_ax = np.linspace(-28e6, 28e6, n_freq)
     window.update_signals(
-        _make_tx_freq(n_time),
         _make_spectrogram(n_time, n_freq),
         _make_spectrogram(n_time, n_freq),
         t_ax,

@@ -33,7 +33,7 @@ class RadarConfig:
     TRIANGLE_EN: bool = field(
         default=False,
         metadata={
-            "label": "Waveform",
+            "label": "Triangle",
             "unit": "",
             "scale": 1,
             "group": "chirp",
@@ -56,7 +56,7 @@ class RadarConfig:
         default=4,
         metadata={
             "label": "Guard Cells",
-            "unit": "N/A",
+            "unit": "",
             "scale": 1,
             "group": "cfar",
         },
@@ -65,7 +65,7 @@ class RadarConfig:
         default=10,
         metadata={
             "label": "Training Cells",
-            "unit": "N/A",
+            "unit": "",
             "scale": 1,
             "group": "cfar",
         },
@@ -74,7 +74,7 @@ class RadarConfig:
         default=1e-6,
         metadata={
             "label": "False Alarm Rate",
-            "unit": "N/A",
+            "unit": "",
             "scale": 1,
             "group": "cfar",
         },
@@ -142,7 +142,7 @@ class RadarConfig:
     SDR_LOOPBACK_DELAY_M: float = field(
         default=1000.0,
         metadata={
-            "label": "Loopback Target Delay",
+            "label": "Loopback Target Distance",
             "unit": "m",
             "scale": 1,
             "group": "loopback",
@@ -174,8 +174,8 @@ class RadarConfig:
         default=0.15,
         metadata={
             "label": "Operational Range Factor",
-            "unit": "%",
-            "scale": 100,
+            "unit": "",
+            "scale": 1,
             "group": "misc",
         },
     )
@@ -195,13 +195,24 @@ class RadarConfig:
         print(f"  Chirp Center Frequency: {self.CHIRP_FC_HZ / 1e9} GHz")
         print(f"  Chirp Bandwidth: {self.CHIRP_BW_HZ/ 1e6} MHz")
         print(f"  Chirp Duration: {self.CHIRP_DUR_S * 1e6} us")
-        print(f"  Range Resolution: {c / (2 * self.CHIRP_BW_HZ)} m")
-        print(
-            f"  Velocity Resolution: {(c/self.CHIRP_FC_HZ) / (2 * self.CHIRP_DUR_S * self.CHIRP_REPS)} m"
-        )
         print(f"  Theoretical Max Range: {(c * self.CHIRP_DUR_S) / 2} m")
-        print(f"  Operational Max Range: {self.MAX_RANGE} m")
-        print(f"  Max Velocity: {self.MAX_VELOCITY} m/s")
-        print(
-            f"Processing Gain: {10 * np.log10(self.CHIRP_DUR_S * self.FS * self.CHIRP_REPS)}"
+        for name, (value, unit) in self.derived_params().items():
+            print(f"\t{name}: {value:.1f} {unit}")
+
+    def derived_params(self):
+        r = {}
+        r["Range Resolution"] = (c / (2 * self.CHIRP_BW_HZ), "m")
+        r["Velocity Resolution"] = (
+            (c / self.CHIRP_FC_HZ) / (2 * self.CHIRP_DUR_S * self.CHIRP_REPS),
+            "m/s",
         )
+        r["Operational Max Range"] = (self.MAX_RANGE, "m")
+        r["Operational Max Velocity"] = (
+            (self.MAX_VELOCITY if not self.TRIANGLE_EN else self.MAX_VELOCITY / 2),
+            "m/s",
+        )
+        r["Processing Gain"] = (
+            10 * np.log10(self.CHIRP_DUR_S * self.FS * self.CHIRP_REPS),
+            "dB",
+        )
+        return r

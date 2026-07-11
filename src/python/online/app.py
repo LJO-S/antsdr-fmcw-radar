@@ -69,6 +69,7 @@ class RadarWorker(QThread):
 def main():
     app = QApplication(sys.argv)
     display = gui.RadarDisplay()
+    display.set_config(a_config=config.RadarConfig())
 
     worker = RadarWorker(a_config=config.RadarConfig())
     worker.config.describe()

@@ -213,12 +213,8 @@ if __name__ == "__main__":
     # 5. Start GUI
     app = QApplication(sys.argv)
     display = gui.RadarDisplay()
-    display.set_detection_limits(
-        r_min=0,
-        r_max=radar_config.MAX_RANGE,
-        v_min=-radar_config.MAX_VELOCITY,
-        v_max=radar_config.MAX_VELOCITY,
-    )
+    display.set_config(a_config=radar_config)
+
     display.update(
         a_rd_up_db=rd_map_db_up,
         a_rd_down_db=rd_map_db_down,
