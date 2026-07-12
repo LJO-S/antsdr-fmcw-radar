@@ -2,6 +2,7 @@ import numpy as np
 from scipy.ndimage import convolve
 from scipy.ndimage import maximum_filter
 from scipy.ndimage import binary_dilation
+from scipy.signal import stft
 from dataclasses import dataclass
 
 from .config import RadarConfig, c
@@ -453,6 +454,16 @@ def apply_noise(a_signal: np.ndarray, a_snr_db: float):
 def inst_freq(a_signal: np.ndarray, a_radar_config: RadarConfig):
     # derivative of unwrapped phase -> Hz
     return np.diff(np.unwrap(np.angle(a_signal))) * a_radar_config.FS / (2 * np.pi)
+
+
+# ===================================================================================
+def spectrogram(a_signal: np.ndarray, a_config: RadarConfig, a_nperseg=256):
+    f, t, S = stft(x=a_signal, fs=a_config.FS, nperseg=a_nperseg, return_onesided=False)
+    S = np.fft.fftshift(S, axes=0)
+    f = np.fft.fftshift(f)
+    S_db = 20 * np.log10(np.abs(S.T) + 1e-12)  # shape: (n_time, NFFT)
+    S_db -= S_db.max()
+    return S_db, t, f
 
 
 # ===================================================================================

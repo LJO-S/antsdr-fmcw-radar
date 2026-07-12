@@ -407,7 +407,7 @@ class RadarDisplay(QMainWindow):
             (self.rx_spec_image, a_rx_spec),
             (self.if_spec_image, a_if_spec),
         ]:
-            image.setImage(spec)
+            image.setImage(spec, levels=(-80, 0))
             image.setRect(rect)
 
     def set_config(self, a_config):
@@ -459,12 +459,6 @@ def _make_spectrogram(n_time, n_freq):
         fi = int(n_freq * i / n_time)
         spec[i, max(0, fi - 2) : fi + 3] += 30
     return spec
-
-
-def _make_tx_freq(n_time):
-    # Fake triangle-mode instantaneous frequency, just to exercise the plot
-    t = np.linspace(-1, 1, n_time)
-    return (1 - np.abs(t)) * 28e6 - 14e6
 
 
 if __name__ == "__main__":

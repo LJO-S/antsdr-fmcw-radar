@@ -4,7 +4,7 @@ from common import config, dsp
 
 def process_rx_data(
     a_rx: np.ndarray, a_config: config.RadarConfig, a_ctx: dsp.CPIContext
-) -> tuple[np.ndarray, np.ndarray, list[dict], np.ndarray, np.ndarray]:
+) -> tuple[np.ndarray, np.ndarray, list[dict], np.ndarray, np.ndarray, np.ndarray]:
     """
     Handle a single CPI of RX data, returning the RD maps and detected targets.
     """
@@ -15,7 +15,7 @@ def process_rx_data(
         a_if_signal=if_signal, a_config=a_config, a_ctx=a_ctx
     )
 
-    return rd_map_db_up, rd_map_db_down, detections, ranges, velocities
+    return rd_map_db_up, rd_map_db_down, detections, ranges, velocities, if_signal
 
 
 if __name__ == "__main__":

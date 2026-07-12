@@ -5,6 +5,7 @@ The main application file. Enjoy!
 
 import sys
 import traceback
+import time
 from PySide6.QtCore import QThread, Signal
 from PySide6.QtWidgets import QApplication
 
@@ -20,11 +21,13 @@ class RadarWorker(QThread):
     results = Signal(object, object, object, object, object)
     error = Signal(str)
     reconfigure_done = Signal(bool, object)
+    signals = Signal(object, object, object, object)  # rx, if, t, f
 
     def __init__(self, a_config: config.RadarConfig):
         super().__init__()
         self.config: config.RadarConfig = a_config
         self.pending_cfg: config.RadarConfig = None
+        self._last_spec_update: float = 0.0
         self._running: bool = True
 
     def run(self):
@@ -58,10 +61,27 @@ class RadarWorker(QThread):
                 rx = capture.capture_rx_data(
                     a_config=self.config, a_ctx=ctx, a_sdr=radio
                 )
-                results = processing.process_rx_data(
-                    a_rx=rx, a_config=self.config, a_ctx=ctx
+                (
+                    rd_map_db_up,
+                    rd_map_db_down,
+                    detections,
+                    ranges,
+                    velocities,
+                    if_signal,
+                ) = processing.process_rx_data(a_rx=rx, a_config=self.config, a_ctx=ctx)
+                self.results.emit(
+                    rd_map_db_up, rd_map_db_down, detections, ranges, velocities
                 )
-                self.results.emit(*results)
+                if time.monotonic() - self._last_spec_update > 0.5:
+                    n2 = 2 * len(ctx.tx_chirp)  # 2 chirps
+                    rx_spec, t, f = dsp.spectrogram(
+                        a_signal=rx[:n2], a_config=self.config
+                    )
+                    if_spec, _, _ = dsp.spectrogram(
+                        a_signal=if_signal[:n2], a_config=self.config
+                    )
+                    self.signals.emit(rx_spec, if_spec, t, f)
+                    self._last_spec_update = time.monotonic()
         except Exception as e:
             # never let an exception kill the thread silently
             self.error.emit(traceback.format_exc())
@@ -104,6 +124,10 @@ def main():
 
     worker.reconfigure_done.connect(
         lambda ok, cfg: display.on_reconfigure_done(ok, cfg)
+    )
+
+    worker.signals.connect(
+        lambda rx_spec, if_spec, t, f: display.update_signals(rx_spec, if_spec, t, f)
     )
 
     display.show()

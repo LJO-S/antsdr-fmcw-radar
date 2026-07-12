@@ -212,8 +212,7 @@ if __name__ == "__main__":
 
     # 5. Start GUI
     app = QApplication(sys.argv)
-    display = gui.RadarDisplay()
-    display.set_config(a_config=radar_config)
+    display = gui.RadarDisplay(a_config=radar_config)
 
     display.update(
         a_rd_up_db=rd_map_db_up,
@@ -223,32 +222,12 @@ if __name__ == "__main__":
         a_velocities=velocities,
     )
 
-    NFFT = 256
-    hop = NFFT // 2
-
-    # Frequency axis: -fs/2 ... +fs/2  (two-sided, IQ signal)
-    a_f = np.fft.fftshift(np.fft.fftfreq(NFFT, d=1 / radar_config.FS))
-
-    def make_spec(sig):
-        w = np.blackman(NFFT)
-        n = (len(sig) - NFFT) // hop + 1
-        frames = np.array(
-            [
-                np.fft.fftshift(np.fft.fft(sig[i * hop : i * hop + NFFT] * w))
-                for i in range(n)
-            ]
-        )
-        return 20 * np.log10(np.abs(frames) + 1e-12)  # shape: (n_time, NFFT)
-
-    tx_spec = make_spec(tx_signal)
-    rx_spec = make_spec(rx_signal)
-    if_spec = make_spec(if_signal)
+    rx_spec, t, f = dsp.spectrogram(rx_signal, radar_config)
+    if_spec, _, _ = dsp.spectrogram(if_signal, radar_config)
 
     # Time axis: one value per STFT window
-    n_time = tx_spec.shape[0]
-    a_t = np.arange(n_time) * hop / radar_config.FS  # seconds
 
-    display.update_signals(tx_spec, rx_spec, if_spec, a_t, a_f)
+    display.update_signals(rx_spec, if_spec, t, f)
 
     display.show()
     app.exec()
