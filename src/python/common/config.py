@@ -62,7 +62,7 @@ class RadarConfig:
         },
     )
     CFAR_TRAINING_LEN: int = field(
-        default=10,
+        default=5,
         metadata={
             "label": "Training Cells",
             "unit": "",
@@ -137,24 +137,6 @@ class RadarConfig:
             "unit": "",
             "scale": 1,
             "group": "sdr",
-        },
-    )
-    SDR_LOOPBACK_DELAY_M: float = field(
-        default=1000.0,
-        metadata={
-            "label": "Loopback Target Distance",
-            "unit": "m",
-            "scale": 1,
-            "group": "loopback",
-        },
-    )
-    SDR_LOOPBACK_VELOCITY_MPS: float = field(
-        default=10.0,
-        metadata={
-            "label": "Loopback Target Velocity",
-            "unit": "m/s",
-            "scale": 1,
-            "group": "loopback",
         },
     )
     SDR_LOOPBACK_NOISE_SNR_DB: float = field(

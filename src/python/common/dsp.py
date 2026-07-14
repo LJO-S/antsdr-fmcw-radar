@@ -431,7 +431,9 @@ def apply_doppler_shift(a_signal: np.ndarray, a_velocity: float, a_config: Radar
     # Doppler shift = 2*v/c * f_c
     doppler_hz = 2 * a_velocity * a_config.CHIRP_FC_HZ / c
     t = np.arange(len(a_signal)) / a_config.FS
-    return a_signal * np.exp(-2j * np.pi * doppler_hz * t)
+    # Phase computed in float64 then cast so complex64 captures stay complex64
+    phasor = np.exp(-2j * np.pi * doppler_hz * t).astype(a_signal.dtype, copy=False)
+    return a_signal * phasor
 
 
 # ===================================================================================
@@ -447,7 +449,7 @@ def apply_noise(a_signal: np.ndarray, a_snr_db: float):
     noise = noise_std * (
         np.random.randn(*a_signal.shape) + 1j * np.random.randn(*a_signal.shape)
     )
-    return a_signal + noise
+    return a_signal + noise.astype(a_signal.dtype, copy=False)
 
 
 # ===================================================================================

@@ -10,7 +10,7 @@ from PySide6.QtCore import QThread, Signal
 from PySide6.QtWidgets import QApplication
 
 from common import config, dsp, gui
-from online import capture, processing, sdr
+from online import capture, processing, sdr, target_sim
 
 
 class RadarWorker(QThread):
@@ -27,6 +27,7 @@ class RadarWorker(QThread):
         super().__init__()
         self.config: config.RadarConfig = a_config
         self.pending_cfg: config.RadarConfig = None
+        self.target_sim = target_sim.TargetSim()
         self._last_spec_update: float = 0.0
         self._running: bool = True
 
@@ -59,7 +60,10 @@ class RadarWorker(QThread):
                         radio.start()
                         self.reconfigure_done.emit(False, old_cfg)
                 rx = capture.capture_rx_data(
-                    a_config=self.config, a_ctx=ctx, a_sdr=radio
+                    a_config=self.config,
+                    a_ctx=ctx,
+                    a_sdr=radio,
+                    a_target_sim=self.target_sim,
                 )
                 (
                     rd_map_db_up,
@@ -95,6 +99,9 @@ class RadarWorker(QThread):
     def request_reconfigure(self, a_config):
         self.pending_cfg = a_config
 
+    def set_fake_targets(self, a_fake_targets: list):
+        self.target_sim.set_targets(a_targets=a_fake_targets)
+
     def stop(self):
         print("Stopping app...")
         self._running = False
@@ -121,6 +128,8 @@ def main():
     display.reconfigure_requested.connect(
         worker.request_reconfigure
     )  # slot runs on the GUI thread and run() stalls a bit
+
+    display.fake_targets_changed.connect(worker.set_fake_targets)
 
     worker.reconfigure_done.connect(
         lambda ok, cfg: display.on_reconfigure_done(ok, cfg)

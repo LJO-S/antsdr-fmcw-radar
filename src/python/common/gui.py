@@ -52,6 +52,14 @@ class RadarDisplay(QMainWindow):
     """
 
     reconfigure_requested = Signal(object)
+    fake_targets_changed = Signal(object)
+    FAKE_TGT_COLUMNS = [
+        ("r0", "Range [m]", 500.0),
+        ("v0", "Vel [m/s]", 0.0),
+        ("a0", "Accel [m/s2]", 0.0),
+        ("duration", "Duration [s]", 10.0),
+        ("amp", "Amp", 0.1),
+    ]
 
     def __init__(self, a_config):
         super().__init__()
@@ -190,6 +198,34 @@ class RadarDisplay(QMainWindow):
         config_scroll.setWidget(form_widget)
         # Add widget
         config_layout_right_col.addWidget(config_scroll)
+
+        # Create Fake Targets section
+        fake_target_box = QGroupBox("Fake Target Simulation")
+        fake_targets_layout = QVBoxLayout(fake_target_box)
+        # Targets
+        self.fake_targets_table = QTableWidget(0, 5)
+        self.fake_targets_table.setHorizontalHeaderLabels(
+            [c[1] for c in self.FAKE_TGT_COLUMNS]
+        )
+        self.fake_targets_table.verticalHeader().setVisible(False)
+        self.fake_targets_table.horizontalHeader().setSectionResizeMode(
+            QHeaderView.Stretch
+        )
+        self.fake_targets_table.setSelectionBehavior(QTableWidget.SelectRows)
+        fake_targets_layout.addWidget(self.fake_targets_table)
+        # +/- buttons
+        fake_targets_button_layout = QHBoxLayout()
+        fake_target_add_button = QPushButton("+")
+        fake_target_del_button = QPushButton("-")
+        fake_targets_button_layout.addWidget(fake_target_add_button)
+        fake_targets_button_layout.addWidget(fake_target_del_button)
+        fake_targets_layout.addLayout(fake_targets_button_layout)
+        config_layout_right_col.addWidget(fake_target_box)
+
+        # Connect fake target widgets
+        fake_target_add_button.clicked.connect(self._fake_target_add_row)
+        fake_target_del_button.clicked.connect(self._fake_target_del_row)
+        self.fake_targets_table.itemChanged.connect(self._fake_target_edited)
 
         # Create groups containing the Config parameters
         groups = defaultdict(list)
@@ -389,11 +425,11 @@ class RadarDisplay(QMainWindow):
                 table_item.setForeground(QBrush(QColor("white")))
                 # if t["v"] > 2 * vel_res and col == 2:
                 if t["v"] > 5 and col == 2:
-                    table_item.setBackground(QBrush(QColor("#5c2a2a")))
+                    table_item.setBackground(QBrush(QColor("#25415c")))
                     table_item.setForeground(QBrush(QColor("white")))
                 # elif t["v"] < -2 * vel_res and col == 2:
                 elif t["v"] < -5 and col == 2:
-                    table_item.setBackground(QBrush(QColor("#25415c")))
+                    table_item.setBackground(QBrush(QColor("#5c2a2a")))
                 self.det_table.setItem(i, col, table_item)
 
     def update_signals(self, a_rx_spec, a_if_spec, a_t, a_f):
@@ -409,6 +445,49 @@ class RadarDisplay(QMainWindow):
         ]:
             image.setImage(spec, levels=(-80, 0))
             image.setRect(rect)
+
+    def _fake_target_add_row(self):
+        t = self.fake_targets_table
+        t.blockSignals(True)
+        row = t.rowCount()
+        t.insertRow(row)
+
+        for col, (key, header, default) in enumerate(self.FAKE_TGT_COLUMNS):
+            t.setItem(row, col, QTableWidgetItem(str(default)))
+        t.blockSignals(False)
+        self._emit_fake_targets()
+
+    def _fake_target_del_row(self):
+        row = self.fake_targets_table.currentRow()
+        if row < 0:
+            return
+        self.fake_targets_table.removeRow(row)
+        self._emit_fake_targets()
+
+    def _fake_target_edited(self):
+        self._emit_fake_targets()
+
+    def _emit_fake_targets(self):
+        t = self.fake_targets_table
+        fake_targets = []
+        t.blockSignals(True)
+        try:
+            for row in range(self.fake_targets_table.rowCount()):
+                params = {}
+                for col, (key, header, default) in enumerate(self.FAKE_TGT_COLUMNS):
+                    item = self.fake_targets_table.item(row, col)
+                    try:
+                        params[key] = float(item.text())
+                        # reset to default
+                        item.setBackground(QBrush())
+                    except ValueError:
+                        # mark bad cell
+                        item.setBackground(QColor("#802020"))
+                        return
+                fake_targets.append(params)
+        finally:
+            t.blockSignals(False)
+        self.fake_targets_changed.emit(fake_targets)
 
     def set_config(self, a_config):
         # Store new config
