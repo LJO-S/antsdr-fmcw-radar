@@ -1,0 +1,131 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 860 640" font-family="Helvetica, Arial, sans-serif">
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="8" refX="9" refY="4" orient="auto">
+      <path d="M0,0 L10,4 L0,8 z" fill="#333"/>
+    </marker>
+  </defs>
+
+  <rect x="0" y="0" width="860" height="640" fill="#fafaf7"/>
+  <text x="430" y="34" text-anchor="middle" font-size="20" font-weight="bold" fill="#222">5.8 GHz FMCW Radar — Staring Sector-TX / Dish-RX</text>
+  <text x="430" y="54" text-anchor="middle" font-size="12" fill="#666">AntSDR E200 (AD9361), chirp BW ≤ 56 MHz → ΔR ≈ 2.7 m</text>
+
+  <!-- ================= TX CHAIN ================= -->
+  <text x="40" y="96" font-size="14" font-weight="bold" fill="#b03a2e">TX CHAIN</text>
+
+  <!-- AD9361 TX box -->
+  <rect x="40" y="110" width="130" height="70" rx="6" fill="#fdebd0" stroke="#b03a2e" stroke-width="1.5"/>
+  <text x="105" y="134" text-anchor="middle" font-size="12" font-weight="bold" fill="#222">E200 / AD9361</text>
+  <text x="105" y="150" text-anchor="middle" font-size="11" fill="#222">TX1A</text>
+  <text x="105" y="166" text-anchor="middle" font-size="10" fill="#555">~0 dBm @ 5.8 GHz</text>
+
+  <line x1="170" y1="145" x2="230" y2="145" stroke="#333" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+  <!-- TX LPF/BPF -->
+  <rect x="230" y="110" width="120" height="70" rx="6" fill="#fdebd0" stroke="#b03a2e" stroke-width="1.5"/>
+  <text x="290" y="134" text-anchor="middle" font-size="12" font-weight="bold" fill="#222">LPF / BPF</text>
+  <text x="290" y="150" text-anchor="middle" font-size="10" fill="#555">kills 11.6 GHz harmonic</text>
+  <text x="290" y="164" text-anchor="middle" font-size="10" fill="#555">+ DAC images</text>
+
+  <line x1="350" y1="145" x2="410" y2="145" stroke="#333" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+  <!-- PA -->
+  <rect x="410" y="110" width="140" height="70" rx="6" fill="#fdebd0" stroke="#b03a2e" stroke-width="1.5"/>
+  <text x="480" y="130" text-anchor="middle" font-size="12" font-weight="bold" fill="#222">PA (always-on)</text>
+  <text x="480" y="146" text-anchor="middle" font-size="10" fill="#555">FPV 5.8G amp 0.5–2 W</text>
+  <text x="480" y="160" text-anchor="middle" font-size="10" fill="#555">G ≈ +30 dB → +27..30 dBm</text>
+  <text x="480" y="174" text-anchor="middle" font-size="10" fill="#b03a2e">100% duty — heatsink!</text>
+
+  <line x1="550" y1="145" x2="620" y2="145" stroke="#333" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <text x="585" y="138" text-anchor="middle" font-size="9" fill="#555">N pigtail</text>
+
+  <!-- Sector antenna -->
+  <rect x="620" y="105" width="200" height="80" rx="6" fill="#fdebd0" stroke="#b03a2e" stroke-width="1.5"/>
+  <text x="720" y="128" text-anchor="middle" font-size="12" font-weight="bold" fill="#222">TX: Sector antenna</text>
+  <text x="720" y="144" text-anchor="middle" font-size="10" fill="#555">5 GHz sector, ~15 dBi</text>
+  <text x="720" y="158" text-anchor="middle" font-size="10" fill="#555">~90° az × 7° el  (the "fan")</text>
+  <text x="720" y="174" text-anchor="middle" font-size="10" fill="#333">EIRP ≈ +42..45 dBm ⚠ cage/licence</text>
+
+  <!-- PA enable control -->
+  <line x1="480" y1="230" x2="480" y2="180" stroke="#8e44ad" stroke-width="1.5" stroke-dasharray="5,3" marker-end="url(#arrow)"/>
+  <rect x="390" y="230" width="180" height="52" rx="6" fill="#f4ecf7" stroke="#8e44ad" stroke-width="1.5"/>
+  <text x="480" y="250" text-anchor="middle" font-size="11" font-weight="bold" fill="#222">Zynq GPIO: PA_EN</text>
+  <text x="480" y="266" text-anchor="middle" font-size="10" fill="#555">bias sequencer: Vg → Vd → enable</text>
+  <text x="480" y="278" text-anchor="middle" font-size="10" fill="#8e44ad">never enable without load</text>
+
+  <!-- ================= ISOLATION ================= -->
+  <rect x="620" y="215" width="200" height="66" rx="6" fill="#eaeded" stroke="#7f8c8d" stroke-width="1.5" stroke-dasharray="6,3"/>
+  <text x="720" y="238" text-anchor="middle" font-size="12" font-weight="bold" fill="#222">TX↔RX isolation</text>
+  <text x="720" y="254" text-anchor="middle" font-size="10" fill="#555">≥1–2 m spacing + absorber septum</text>
+  <text x="720" y="268" text-anchor="middle" font-size="10" fill="#555">target ≥ 60–80 dB total</text>
+
+  <line x1="720" y1="185" x2="720" y2="215" stroke="#7f8c8d" stroke-width="1.2" stroke-dasharray="4,3"/>
+  <line x1="720" y1="281" x2="720" y2="310" stroke="#7f8c8d" stroke-width="1.2" stroke-dasharray="4,3"/>
+
+  <!-- ================= RX CHAIN ================= -->
+  <text x="40" y="330" font-size="14" font-weight="bold" fill="#1a5276">RX CHAIN</text>
+
+  <!-- RX antenna -->
+  <rect x="620" y="310" width="200" height="80" rx="6" fill="#d6eaf8" stroke="#1a5276" stroke-width="1.5"/>
+  <text x="720" y="333" text-anchor="middle" font-size="12" font-weight="bold" fill="#222">RX: Grid / dish</text>
+  <text x="720" y="349" text-anchor="middle" font-size="10" fill="#555">TL-ANT5824B 24 dBi (~5°×8°)</text>
+  <text x="720" y="363" text-anchor="middle" font-size="10" fill="#555">or RD-5G30 / mANT30, 30 dBi ~5°</text>
+  <text x="720" y="379" text-anchor="middle" font-size="10" fill="#333">2nd RX later → interferometry</text>
+
+  <line x1="620" y1="350" x2="560" y2="350" stroke="#333" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+  <!-- RX BPF -->
+  <rect x="440" y="315" width="120" height="70" rx="6" fill="#d6eaf8" stroke="#1a5276" stroke-width="1.5"/>
+  <text x="500" y="338" text-anchor="middle" font-size="12" font-weight="bold" fill="#222">BPF</text>
+  <text x="500" y="354" text-anchor="middle" font-size="10" fill="#555">5725–5875 MHz</text>
+  <text x="500" y="368" text-anchor="middle" font-size="10" fill="#555">blocks 2.4G / LTE / TX harm.</text>
+
+  <line x1="440" y1="350" x2="380" y2="350" stroke="#333" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+  <!-- LNA -->
+  <rect x="250" y="315" width="130" height="70" rx="6" fill="#d6eaf8" stroke="#1a5276" stroke-width="1.5"/>
+  <text x="315" y="336" text-anchor="middle" font-size="12" font-weight="bold" fill="#222">LNA</text>
+  <text x="315" y="352" text-anchor="middle" font-size="10" fill="#555">ZX60-83LN-S+ / FPV LNA</text>
+  <text x="315" y="366" text-anchor="middle" font-size="10" fill="#555">G ≈ +20 dB, NF ≈ 1.3 dB</text>
+  <text x="315" y="380" text-anchor="middle" font-size="10" fill="#1a5276">sets system NF — mount at antenna</text>
+
+  <line x1="250" y1="350" x2="190" y2="350" stroke="#333" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <text x="220" y="343" text-anchor="middle" font-size="9" fill="#555">pad 3–6 dB</text>
+
+  <!-- AD9361 RX -->
+  <rect x="40" y="315" width="150" height="70" rx="6" fill="#d6eaf8" stroke="#1a5276" stroke-width="1.5"/>
+  <text x="115" y="338" text-anchor="middle" font-size="12" font-weight="bold" fill="#222">E200 / AD9361</text>
+  <text x="115" y="354" text-anchor="middle" font-size="11" fill="#222">RX1A</text>
+  <text x="115" y="370" text-anchor="middle" font-size="10" fill="#555">MGC (not AGC!) for radar</text>
+
+  <!-- ================= DIGITAL ================= -->
+  <rect x="40" y="440" width="780" height="120" rx="8" fill="#e8f8f5" stroke="#148f77" stroke-width="1.5"/>
+  <text x="430" y="464" text-anchor="middle" font-size="13" font-weight="bold" fill="#222">DIGITAL (Zynq PS/PL — your home turf)</text>
+
+  <rect x="60" y="478" width="170" height="62" rx="5" fill="#ffffff" stroke="#148f77"/>
+  <text x="145" y="500" text-anchor="middle" font-size="11" font-weight="bold">Chirp gen (DDS)</text>
+  <text x="145" y="515" text-anchor="middle" font-size="10" fill="#555">triangle up/down chirps</text>
+  <text x="145" y="529" text-anchor="middle" font-size="10" fill="#555">BW ≤ 56 MHz</text>
+
+  <rect x="250" y="478" width="170" height="62" rx="5" fill="#ffffff" stroke="#148f77"/>
+  <text x="335" y="500" text-anchor="middle" font-size="11" font-weight="bold">Deramp / mix</text>
+  <text x="335" y="515" text-anchor="middle" font-size="10" fill="#555">TX replica × RX (digital)</text>
+  <text x="335" y="529" text-anchor="middle" font-size="10" fill="#555">+ IQ imbalance corr.</text>
+
+  <rect x="440" y="478" width="170" height="62" rx="5" fill="#ffffff" stroke="#148f77"/>
+  <text x="525" y="500" text-anchor="middle" font-size="11" font-weight="bold">Range–Doppler</text>
+  <text x="525" y="515" text-anchor="middle" font-size="10" fill="#555">2D FFT, dop_negate on</text>
+  <text x="525" y="529" text-anchor="middle" font-size="10" fill="#555">down-chirps (as before)</text>
+
+  <rect x="630" y="478" width="170" height="62" rx="5" fill="#ffffff" stroke="#148f77"/>
+  <text x="715" y="500" text-anchor="middle" font-size="11" font-weight="bold">CFAR detect</text>
+  <text x="715" y="515" text-anchor="middle" font-size="10" fill="#555">leakage notch @ R≈0</text>
+  <text x="715" y="529" text-anchor="middle" font-size="10" fill="#555">clutter map / MTI</text>
+
+  <line x1="115" y1="440" x2="115" y2="385" stroke="#148f77" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <line x1="105" y1="180" x2="105" y2="440" stroke="#148f77" stroke-width="1.5" stroke-dasharray="5,3"/>
+  <text x="95" y="415" text-anchor="middle" font-size="9" fill="#148f77" transform="rotate(-90 95 415)">chirp out</text>
+
+  <!-- footer -->
+  <text x="430" y="592" text-anchor="middle" font-size="11" fill="#555">Shared AD9361 ref clock keeps TX/RX chirps coherent — no external LO needed.</text>
+  <text x="430" y="610" text-anchor="middle" font-size="11" fill="#b03a2e">⚠ EU 5.8 GHz SRD ≈ 25 mW EIRP. This chain far exceeds it — Faraday cage for dev, amateur 5.65–5.85 GHz if licensed.</text>
+</svg>
