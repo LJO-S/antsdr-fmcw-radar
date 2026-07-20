@@ -15,10 +15,9 @@ def capture_rx_data(
     """
     # 1. Capture
     rx = a_sdr.read_block()
-    # 2. Frame sync
-    if a_config.SDR_LOOPBACK_EN:
-        # 2A. Simulate fake targets
-        rx = a_target_sim.apply(a_rx_raw=rx, a_config=a_config)
+    # 2. Simulate fake targets (if applicable)
+    rx = a_target_sim.apply(a_rx_raw=rx, a_config=a_config)
+    # 3. Frame sync
     rx_aligned = dsp.frame_sync_linear(a_rx=rx, a_config=a_config, a_ctx=a_ctx)
     return rx_aligned
 

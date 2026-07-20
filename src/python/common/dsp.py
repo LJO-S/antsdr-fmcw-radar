@@ -205,19 +205,7 @@ def mix_signal(a_rx_signal: np.ndarray, a_tx_signal: np.ndarray):
     """
     Mix input and output signal
     """
-    # import matplotlib.pyplot as plt
-
-    # test = RadarConfig()
-    # return a_tx_signal * np.conj(a_rx_signal)
     if_signal = a_tx_signal * np.conj(a_rx_signal)
-    # fig, (ax1, ax2, ax3) = plt.subplots(nrows=3, sharex=True)
-    # # Plot signal using spectrogram
-    # ax1.specgram(a_tx_signal, NFFT=256, Fs=test.FS)
-    # ax2.specgram(a_rx_signal, NFFT=256, Fs=test.FS)
-    # ax3.specgram(if_signal, NFFT=256, Fs=test.FS)
-    # ax1.set_ylim(-test.CHIRP_BW_HZ / 2 - 1e3, test.CHIRP_BW_HZ / 2 + 1e3)
-    # ax2.set_ylim(-test.CHIRP_BW_HZ / 2 - 1e3, test.CHIRP_BW_HZ / 2 + 1e3)
-    # plt.show()
     return if_signal
 
 
@@ -302,23 +290,32 @@ def process_cpi(a_if_signal: np.ndarray, a_config: RadarConfig, a_ctx: CPIContex
         )
 
     # ---------------------------------------------
-    # 2. Fast-time DC / TX-leakage removal
+    # 2. DC offset removal
     # ---------------------------------------------
-    # TX self-leakage dechirps to a constant across each chirp's fast-time samples
-    # i.e. a DC term landing in range bin 0. Subtract each chirp's mean (per row) to remove it.
+    # LO self-mixing residuals, ADC offset bullscheiss
     up_matrix_iq -= up_matrix_iq.mean(axis=1, keepdims=True)
     if a_config.TRIANGLE_EN:
         down_matrix_iq -= down_matrix_iq.mean(axis=1, keepdims=True)
 
     # ---------------------------------------------
-    # 3. Apply windows
+    # 3. Stationary Clutter Removal / MTI
+    # ---------------------------------------------
+    # Same as fast-time DC removal, a 0 Hz Doppler is a constant appearing down all columns
+    # Remove found constant from all range bins :-)
+    if a_config.MTI_EN:
+        up_matrix_iq -= up_matrix_iq.mean(axis=0, keepdims=True)
+        if a_config.TRIANGLE_EN:
+            down_matrix_iq -= down_matrix_iq.mean(axis=0, keepdims=True)
+
+    # ---------------------------------------------
+    # 4. Apply windows
     # ---------------------------------------------
     up_matrix_iq *= a_ctx.window_2d
     if a_config.TRIANGLE_EN:
         down_matrix_iq *= a_ctx.window_2d
 
     # ---------------------------------------------
-    # 4. Generate RD map
+    # 5. Generate RD map
     # ---------------------------------------------
     up_matrix_rd = np.fft.fftshift(np.fft.fft2(up_matrix_iq), axes=0)
     magnitude_db_rd_up = 20 * np.log10(np.abs(up_matrix_rd[:, pos]) + 1e-12)
@@ -334,7 +331,7 @@ def process_cpi(a_if_signal: np.ndarray, a_config: RadarConfig, a_ctx: CPIContex
         magnitude_db_rd_down -= max_val
     magnitude_db_rd_up -= max_val
     # ---------------------------------------------
-    # 5. Generate detections
+    # 6. Generate detections
     # ---------------------------------------------
     # (TX-leakage DC was removed on the fast-time axis in step 2, so no range-bin-0
     # blanking is needed here.)
@@ -352,7 +349,7 @@ def process_cpi(a_if_signal: np.ndarray, a_config: RadarConfig, a_ctx: CPIContex
         )
 
     # ---------------------------------------------
-    # 6. Perform point-cloud reduction on combined detections
+    # 7. Perform point-cloud reduction on combined detections
     # ---------------------------------------------
     if a_config.TRIANGLE_EN:
         # Bring the down map onto the up map's Doppler convention, then operate in the
@@ -378,7 +375,7 @@ def process_cpi(a_if_signal: np.ndarray, a_config: RadarConfig, a_ctx: CPIContex
         down_mask = down_mask_full & ~both_dil
 
     # ---------------------------------------------
-    # 7. Target readout
+    # 8. Target readout
     # ---------------------------------------------
     rng_bw = rng[1] - rng[0]
     vel_bw = vel[1] - vel[0]

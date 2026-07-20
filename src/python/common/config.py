@@ -15,7 +15,7 @@ class RadarConfig:
     # --------------------------------
     # Chirp
     CHIRP_FC_HZ: float = field(
-        default=900e6,
+        default=5800e6,
         metadata={"label": "Carrier LO", "unit": "MHz", "scale": 1e6, "group": "chirp"},
     )
     CHIRP_BW_HZ: float = field(
@@ -27,7 +27,7 @@ class RadarConfig:
         metadata={"label": "Duration", "unit": "us", "scale": 1e-6, "group": "chirp"},
     )
     CHIRP_REPS: int = field(
-        default=32,
+        default=128,
         metadata={"label": "Chirps", "unit": "", "scale": 1, "group": "chirp"},
     )
     TRIANGLE_EN: bool = field(
@@ -39,6 +39,8 @@ class RadarConfig:
             "group": "chirp",
         },
     )
+
+    MTI_EN: bool = False
 
     # Sampling
     FS: float = field(

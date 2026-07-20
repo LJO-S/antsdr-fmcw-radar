@@ -28,6 +28,7 @@ class RadarWorker(QThread):
         self.config: config.RadarConfig = a_config
         self.pending_cfg: config.RadarConfig = None
         self.target_sim = target_sim.TargetSim()
+        self._mti_en = a_config.MTI_EN
         self._last_spec_update: float = 0.0
         self._running: bool = True
 
@@ -59,6 +60,10 @@ class RadarWorker(QThread):
                         radio.set_loopback(old_cfg.SDR_LOOPBACK_EN)
                         radio.start()
                         self.reconfigure_done.emit(False, old_cfg)
+
+                # MTI is pure DSP and must survive config swaps
+                self.config.MTI_EN = self._mti_en
+
                 rx = capture.capture_rx_data(
                     a_config=self.config,
                     a_ctx=ctx,
@@ -102,6 +107,9 @@ class RadarWorker(QThread):
     def set_fake_targets(self, a_fake_targets: list):
         self.target_sim.set_targets(a_targets=a_fake_targets)
 
+    def set_mti(self, a_value: bool):
+        self._mti_en = a_value
+
     def stop(self):
         print("Stopping app...")
         self._running = False
@@ -130,6 +138,8 @@ def main():
     )  # slot runs on the GUI thread and run() stalls a bit
 
     display.fake_targets_changed.connect(worker.set_fake_targets)
+
+    display.mti_signal_changed.connect(worker.set_mti)
 
     worker.reconfigure_done.connect(
         lambda ok, cfg: display.on_reconfigure_done(ok, cfg)

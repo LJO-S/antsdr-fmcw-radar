@@ -34,6 +34,9 @@ class RadarDisplay(QMainWindow):
     │  Up-chirp RD map        │            │            │
     ├─────────────────────────┤ Detections │ Detections │
     │  Down-chirp RD map      │    Plot    │    List    │
+    │                         ├─────────────────────────┤
+    │                         │ [] MTI                  │
+    │                         │ [] Up-down detections   │
     └─────────────────────────┴─────────────────────────┘
 
     Tab 1 - Signals:
@@ -53,6 +56,8 @@ class RadarDisplay(QMainWindow):
 
     reconfigure_requested = Signal(object)
     fake_targets_changed = Signal(object)
+    mti_signal_changed = Signal(bool)
+
     FAKE_TGT_COLUMNS = [
         ("r0", "Range [m]", 500.0),
         ("v0", "Vel [m/s]", 0.0),
@@ -97,7 +102,7 @@ class RadarDisplay(QMainWindow):
         left_col.addWidget(self.rd_down_plot)
 
         # ---------------------------------
-        # B. Middle column = detections scatter + toggle
+        # B. Middle column = detections scatter + toggle + MTI
         # ---------------------------------
         middle_col = QVBoxLayout()
         radar_layout.addLayout(middle_col, stretch=1)
@@ -125,6 +130,11 @@ class RadarDisplay(QMainWindow):
         self.det_plot.addItem(self.scatter_both)
         self.det_plot.addItem(self.scatter_up)
         self.det_plot.addItem(self.scatter_down)
+
+        self.mti_en_box = QCheckBox("MTI")
+        self.mti_en_box.setChecked(a_config.MTI_EN)
+        middle_col.addWidget(self.mti_en_box)
+        self.mti_en_box.toggled.connect(self.mti_signal_changed)
 
         # ---------------------------------
         # C. Right column = detections list

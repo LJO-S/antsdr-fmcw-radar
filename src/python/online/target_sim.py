@@ -90,8 +90,11 @@ class TargetSim:
             # Sum
             ret += echo_w_doppler
 
-        # Add noise
-        ret = dsp.apply_noise(a_signal=ret, a_snr_db=a_config.SDR_LOOPBACK_NOISE_SNR_DB)
+        # Add noise if loopback enabled
+        if a_config.SDR_LOOPBACK_EN:
+            ret = dsp.apply_noise(
+                a_signal=ret, a_snr_db=a_config.SDR_LOOPBACK_NOISE_SNR_DB
+            )
 
         return ret
 
