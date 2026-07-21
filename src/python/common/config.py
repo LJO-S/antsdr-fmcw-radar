@@ -82,6 +82,16 @@ class RadarConfig:
         },
     )
 
+    CFAR_MASK_N: int = field(
+        default=5,
+        metadata={
+            "label": "Zero Bin Mask",
+            "unit": "",
+            "scale": 1,
+            "group": "cfar",
+        },
+    )
+
     # --------------------------------
     # Software
     # --------------------------------

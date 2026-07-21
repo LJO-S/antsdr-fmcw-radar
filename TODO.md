@@ -116,12 +116,12 @@ of. Four gaps that WILL bite on real RF, all fixable before hardware arrives:
    level and the AD9361 tracking loops (BBDC offset, quadrature) become real knobs.
 
 ### E1 - MTI: slow-time clutter removal in `dsp.process_cpi`
-- [ ] Subtract the per-range-bin slow-time mean: on the `[reps x N]` matrix that is
+- [X] Subtract the per-range-bin slow-time mean: on the `[reps x N]` matrix that is
       `mean(axis=0)` (compare: the existing leakage removal is `axis=1`). Placement:
       after step 2 (fast-time leakage removal), before step 3 (windowing) - the mean
       must be computed on unwindowed rows. Apply to BOTH up and down matrices when
       `TRIANGLE_EN`.
-- [ ] Understand what it is before coding it: mean subtraction across chirps is a
+- [X] Understand what it is before coding it: mean subtraction across chirps is a
       notch exactly at Doppler bin 0 - the DFT of `x[n] - mean(x)` has bin 0 forced
       to zero, everything else untouched. Consequences to reason through: (a) it
       removes the TX-leakage ridge too (leakage is stationary), partially overlapping
@@ -131,18 +131,18 @@ of. Four gaps that WILL bite on real RF, all fixable before hardware arrives:
       upgrades in order of effort are a 2-pulse canceller (`x[k] - x[k-1]` along slow
       time, wider notch, 3 dB SNR cost) and an exponential-average clutter map.
       Start with mean subtraction; revisit against real clutter in Part G.
-- [ ] Config flag `MTI_EN: bool` in `config.py`. Keep `dsp.process_cpi` reading it
+- [X] Config flag `MTI_EN: bool` in `config.py`. Keep `dsp.process_cpi` reading it
       from the config it already receives - offline soft model gets MTI for free.
 
 ### E2 - MTI live toggle in GUI
-- [ ] Checkbox on the Radar tab (next to the plots, not buried in the config form).
+- [X] Checkbox on the Radar tab (next to the plots, not buried in the config form).
       Recommended plumbing: the `targets_changed`/`set_targets` atomic pattern - a
       new signal -> worker method that flips `worker.cfg.MTI_EN` (a Python bool
       write is atomic; worker reads it next CPI). No radio restart, unlike
       RE-CONFIGURE - MTI is pure DSP, same argument as the target editor.
 
 ### E3 - 5.8 GHz defaults + CPI resize
-- [ ] `config.py`: `CHIRP_FC_HZ` default -> `5.8e9`, `CHIRP_REPS` default -> 128
+- [X] `config.py`: `CHIRP_FC_HZ` default -> `5.8e9`, `CHIRP_REPS` default -> 128
       (try 256 later). Sanity-check the derived-characteristics table in the GUI:
       vel_res 2.02 m/s @ 128 reps, MAX_VELOCITY 129 m/s, range res 3.0 m @ 50 MHz
       BW, MAX_RANGE 2250 m.
@@ -154,24 +154,24 @@ of. Four gaps that WILL bite on real RF, all fixable before hardware arrives:
       still verify `sdr.start()` accepts it against real hardware in Part F.
 
 ### E4 - Split loopback flag from target injection
-- [ ] `SDR_LOOPBACK_EN` currently gates BOTH the digital-loopback routing AND
+- [X] `SDR_LOOPBACK_EN` currently gates BOTH the digital-loopback routing AND
       `TargetSim.apply()` in `capture.py`. On a cable/antenna path (Part F/G) digital
       loopback is OFF but fake-target injection must still work - TargetSim injects
       on the raw block, so it rides ANY input, which is exactly what makes it useful
-      as a live test-signal generator on real RF. Add `SIM_TARGETS_EN` and gate
-      `target_sim.apply()` on it alone; `SDR_LOOPBACK_EN` keeps gating only
+      as a live test-signal generator on real RF. Don't gate
+      `target_sim.apply()`; `SDR_LOOPBACK_EN` keeps gating only
       `radio.set_loopback()`. Decide where `apply_noise` belongs (probably only when
       digital loopback is on - real RF brings its own noise).
 
 ### E5 - Close-in leakage/clutter handling (after F, informed by real data)
-- [ ] Optional CFAR mask for the first N range bins (motivated by gap 3 above).
+- [X] Optional CFAR mask for the first N range bins (motivated by gap 3 above).
       Make N a config field; verify against the real leakage spread seen in Part F
       before picking a default.
 
 ### E6 - Verification (all offline/loopback, no new hardware)
-- [ ] Fake target v=0 at 500 m: visible with MTI off, gone with MTI on; a moving
+- [X] Fake target v=0 at 500 m: visible with MTI off, gone with MTI on; a moving
       target in the same capture unaffected. Toggle live while running.
-- [ ] Slow target (v0 = 2-3 m/s) at 128+ reps: cleanly outside the MTI notch.
+- [X] Slow target (v0 = 2-3 m/s) at 128+ reps: cleanly outside the MTI notch.
 - [ ] Offline soft model runs with MTI_EN both ways (regression on detector
       self-test).
 

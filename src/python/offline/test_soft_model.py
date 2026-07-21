@@ -13,10 +13,10 @@ def compare_value(a_actual, a_reference, a_tol, a_string):
             f"{a_string} Mismatch! Reference={a_reference} vs Actual={a_actual} <===> %diff={diff_rel}"
         )
         return False
-    else:
-        print(
-            f"{a_string} Pass!! Reference={a_reference} vs Actual={a_actual} <===> %diff={diff_rel}"
-        )
+    # else:
+    #     # print(
+    #     #     f"{a_string} Pass!! Reference={a_reference} vs Actual={a_actual} <===> %diff={diff_rel}"
+    #     # )
     return True
 
 
@@ -57,7 +57,6 @@ def match_detections(a_detections, a_targets_truth, a_cfg):
         unmatched.remove(best)
         checker &= compare_value(best["r"], ref["range"], 2 * range_res, "Range   ")
         checker &= compare_value(best["v"], ref["velocity"], 2 * vel_res, "Velocity")
-        print()
 
     # Anything left over is a false alarm
     for d in unmatched:
@@ -114,36 +113,6 @@ def recover_with_offset(a_targets_truth, a_cfg, seed=0, n_offsets=5):
 
         rx_aligned = dsp.frame_sync_circ(a_rx=rx_rolled, a_config=a_cfg, a_ctx=ctx)
 
-        # import matplotlib.pyplot as plt
-
-        # if n == 0:
-
-        #     def inst_freq(x):
-        #         # derivative of unwrapped phase -> Hz
-        #         return np.diff(np.unwrap(np.angle(x))) * a_cfg.FS / (2 * np.pi)
-
-        #     win = 2 * len(ctx.tx_chirp)  # show ~2 chirp periods
-        #     fig, (ax1, ax2, ax3) = plt.subplots(3, 1, sharex=True, sharey=True)
-
-        #     ax1.plot(
-        #         inst_freq(ctx_seq := dsp.generate_chirp_sequence(a_cfg))[:win], lw=0.6
-        #     )
-        #     ax1.set_title("TX reference (boundary @ 0)")
-        #     ax1.axvline(0, color="g", ls="--")
-
-        #     ax2.plot(inst_freq(rx_rolled)[:win], lw=0.6)
-        #     ax2.set_title(f"misaligned RX (true boundary @ {offset_truth})")
-        #     ax2.axvline(offset_truth, color="r", ls="--")
-
-        #     ax3.plot(inst_freq(rx_aligned)[:win], lw=0.6)
-        #     ax3.set_title(f"aligned RX (recovered offset {offset_meas})")
-        #     ax3.axvline(0, color="g", ls="--")
-
-        #     ax3.set_xlabel("sample")
-        #     fig.supylabel("instantaneous freq [Hz]")
-        #     plt.tight_layout()
-        #     plt.show()
-
         if_signal = dsp.mix_signal(a_rx_signal=rx_aligned, a_tx_signal=ctx.tx_seq)
         _, _, detections, _, _ = dsp.process_cpi(
             a_if_signal=if_signal, a_config=a_cfg, a_ctx=ctx
@@ -166,9 +135,9 @@ if __name__ == "__main__":
 
     targets = []
     r = r_min
-    while r < 0.8 * a_cfg.MAX_RANGE:
+    while r < 0.6 * a_cfg.MAX_RANGE:
         v = rng.uniform(-0.5 * a_cfg.MAX_VELOCITY, 0.5 * a_cfg.MAX_VELOCITY)
-        targets.append({"range": float(r), "velocity": float(v), "rcs": 10.0})
+        targets.append({"range": float(r), "velocity": float(v), "rcs": 25.0})
         r += min_spacing + rng.uniform(0, 2 * min_spacing)
 
     print(f"Generated {len(targets)} targets:")

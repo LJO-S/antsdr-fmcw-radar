@@ -318,9 +318,20 @@ def process_cpi(a_if_signal: np.ndarray, a_config: RadarConfig, a_ctx: CPIContex
     # 5. Generate RD map
     # ---------------------------------------------
     up_matrix_rd = np.fft.fftshift(np.fft.fft2(up_matrix_iq), axes=0)
-    magnitude_db_rd_up = 20 * np.log10(np.abs(up_matrix_rd[:, pos]) + 1e-12)
     if a_config.TRIANGLE_EN:
         down_matrix_rd = np.fft.fftshift(np.fft.fft2(np.conj(down_matrix_iq)), axes=0)
+
+    # ---------------------------------------------
+    # 6. Remove Tx leakage
+    # ---------------------------------------------
+    # Tx leakage has analog group delay and multipath propagation.
+    # Thus bin 0-N will be useless for detection so zero them to not affect CFAR
+    up_matrix_rd_median = np.median(np.abs(up_matrix_rd))
+    up_matrix_rd[:, : a_config.CFAR_MASK_N] = up_matrix_rd_median
+    magnitude_db_rd_up = 20 * np.log10(np.abs(up_matrix_rd[:, pos]) + 1e-12)
+    if a_config.TRIANGLE_EN:
+        down_matrix_rd_median = np.median(np.abs(down_matrix_rd))
+        down_matrix_rd[:, : a_config.CFAR_MASK_N] = down_matrix_rd_median
         magnitude_db_rd_down = 20 * np.log10(np.abs(down_matrix_rd[:, pos]) + 1e-12)
 
     # Normalize
@@ -330,11 +341,10 @@ def process_cpi(a_if_signal: np.ndarray, a_config: RadarConfig, a_ctx: CPIContex
         max_val = max(max_val, max_val_2)
         magnitude_db_rd_down -= max_val
     magnitude_db_rd_up -= max_val
+
     # ---------------------------------------------
-    # 6. Generate detections
+    # 7. Generate detections
     # ---------------------------------------------
-    # (TX-leakage DC was removed on the fast-time axis in step 2, so no range-bin-0
-    # blanking is needed here.)
     if a_config.TRIANGLE_EN:
         # NMS each ramp independently so every target is a single clean peak before pairing
         up_detections, up_pwr = cfar_ca_2d(
@@ -349,7 +359,7 @@ def process_cpi(a_if_signal: np.ndarray, a_config: RadarConfig, a_ctx: CPIContex
         )
 
     # ---------------------------------------------
-    # 7. Perform point-cloud reduction on combined detections
+    # 8. Perform point-cloud reduction on combined detections
     # ---------------------------------------------
     if a_config.TRIANGLE_EN:
         # Bring the down map onto the up map's Doppler convention, then operate in the
@@ -375,7 +385,7 @@ def process_cpi(a_if_signal: np.ndarray, a_config: RadarConfig, a_ctx: CPIContex
         down_mask = down_mask_full & ~both_dil
 
     # ---------------------------------------------
-    # 8. Target readout
+    # 9. Target readout
     # ---------------------------------------------
     rng_bw = rng[1] - rng[0]
     vel_bw = vel[1] - vel[0]
