@@ -1,0 +1,4 @@
+[submodule "firmware"]
+	path = firmware
+	url = git@github.com:LJO-S/antsdr-fw-patch.git
+	branch = e200-custom
