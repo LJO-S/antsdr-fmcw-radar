@@ -4,3 +4,4 @@ pylibiio
 scipy
 PySide6
 pyqtgraph
+vunit

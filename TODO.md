@@ -5,12 +5,15 @@ are **done**: the SDR is up and running against raw libiio, the offline soft mod
 the online model (worker thread + GUI thread) both work, and results flow to the GUI
 via Qt signals. Part C (GUI refurbish + runtime reconfiguration) and Part D (moving
 fake targets) are **done**. The carrier moves from 0.9 GHz to **5.8 GHz** (cheap
-WiFi/FPV hardware). Next up: **Part E - real-world DSP hardening** (software, zero
-cost) while the Part F/G hardware kits are ordered and shipping. Parts E-I below
-form the road to real RF. Part J (synthetic wideband) and the FPGA-leverage
-appendix at the end are forward-looking studies that do not block E-I.
+WiFi/FPV hardware). Part E (real-world DSP hardening) is essentially done. Current
+state (2026-07): **Part F is the active hardware phase** (kit ordered/shipping),
+and **Part I has been promoted from "parked" to an active growth track** worked
+in the digital domain while orders ship - see the rewritten Part I. Part J
+(synthetic wideband) remains a forward-looking study that does not block E-I.
 
 See `src/python/` for the `common` / `offline` / `online` package split.
+
+See `firmware` for all things firmware related. In `firmware/plutosdr-fw/hdl/projects/e200` the custom HDL should reside, along with VUnit testbenches.
 
 ---
 
@@ -256,21 +259,52 @@ buys range^(1/4), NF buys it linearly in SNR).
 
 ---
 
-## Part I - HDL offload (parked; see AntSDR_Phase2_Custom_HDL_Guide.md)
+## Part I - HDL offload (growth track, active in parallel with F/G)
 
-Deliberately LAST. Two reasons it is not next: (1) never debug new RF and new HDL
-simultaneously; (2) it obsoletes far less of `dsp.py` than feared - an on-board
-deramp (mix with TX replica in fabric + decimate) replaces only `mix_signal` and
-frame sync (a hardware TX/RX trigger makes sync deterministic). `process_cpi`, the
-RD/CFAR/GUI chain, and the offline model all survive, and `dsp.py` becomes the
-golden model that verifies the fabric output sample-for-sample (the guide's ramp-test
-philosophy, applied to deramp).
+Reframed 2026-07-23: no longer parked. The old rule - never debug new RF and new
+HDL simultaneously - still stands, but it forbids *switching the radar over* to an
+unproven fabric path while the RF is also unproven. It does not forbid *developing*
+the fabric path: every step below is verified in the digital domain (simulation,
+ramp tests, digital loopback), making it ideal fill work while Phase F/G kit ships.
+The cutover to the fabric path still waits for F+G proven on real RF.
 
-Entry criteria: Parts F+G proven on real RF AND the GbE-limited frame rate (a few
-Hz at 56.6 MSPS raw IQ) is actually the pain point. The payoff is real: deramped IF
-needs only ~a few MSPS, so fabric deramp + decimation buys 10-50x frame rate and
-opens the door to on-board 2D FFT later. First fabric block should still be the
-guide's transparent `rx_tap` ramp test, unchanged.
+**Target architecture (decided 2026-07-23): chirp generation AND dechirp
+(down-mixing) live in PL fabric; Ethernet carries IF samples, not raw Rx.**
+Consequences: TX is fabric-generated (NCO) instead of the cyclic DMA buffer; the
+RX path dechirps + decimates in fabric and ships a few MSPS of IF through the
+existing cpack -> DMA -> libiio pipe; frame sync is deleted (TX and dechirp NCO
+share deterministic hardware timing); `process_cpi`, RD/CFAR/GUI, and the offline
+model all survive; `dsp.py` (`mix_signal` etc.) becomes the golden model verifying
+fabric output sample-for-sample. A bypass register keeps the raw-Rx path
+selectable so the Python-only radar keeps working throughout.
+
+**Status**: firmware Phase 1 (v0.39 built from source, SD boot) done. Phase 2
+sections 1-5 done: `rx_tap.vhd` module-reference block in the RX datapath,
+TEST_RAMP verified on hardware (`data/tap_test.iq`). Work lives on branches in the
+forked submodule stack - see `docs/firmware-branch-workflow.md`. Guides:
+`~/work/projects/sdr/AntSDR_Phase[1-3]*.md`.
+
+Ladder (each rung proven before the next; sim-first per the Phase 3 guide):
+
+- [ ] I1 - AXI-Lite register bank on `rx_tap` (Phase 3 guide): runtime ramp_en,
+      MAGIC/SCRATCH/COUNT registers, CDC discipline (2-flop + gray counter),
+      devmem smoke test, then device tree + UIO + cross-compiled peek/poke tool.
+      Exit: toggle the ramp live from a shell, no rebuild.
+- [ ] I2 - chirp NCO in fabric: phase-accumulator DDS with start/slope/sweep-len
+      registers (the I1 skeleton, more rows). Prove by muxing the NCO onto a
+      `rx_tap` output channel and watching the chirp in the existing GUI
+      spectrogram - the radar GUI becomes the fabric debug scope.
+- [ ] I3 - TX from fabric: NCO drives the DAC path (mux against `tx_upack` so the
+      DMA path stays selectable). From here TX timing is deterministic.
+- [ ] I4 - dechirp: complex multiply RX x conj(TX NCO replica) at the `rx_tap`
+      insertion point; verify against `dsp.mix_signal` sample-for-sample in
+      digital loopback (golden-model test, no RF needed).
+- [ ] I5 - decimation to IF rate (few MSPS): CIC or FIR after the mixer; only now
+      does the Ethernet stream become IF samples. Frame rate win: 10-50x, and
+      100% observation duty becomes reachable (see appendix).
+- [ ] I6 - integration: IF-mode in `online/sdr.py`/`capture.py` (skip frame sync,
+      skip `mix_signal`), register control from host Python over ssh/UIO, bypass
+      bit exposed in the GUI. Cutover gated on Parts F+G.
 
 ---
 
