@@ -1,0 +1,186 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1120 780" font-family="Helvetica, Arial, sans-serif">
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="8" refX="9" refY="4" orient="auto">
+      <path d="M0,0 L10,4 L0,8 z" fill="#333"/>
+    </marker>
+    <marker id="arrowp" markerWidth="10" markerHeight="8" refX="9" refY="4" orient="auto">
+      <path d="M0,0 L10,4 L0,8 z" fill="#8e44ad"/>
+    </marker>
+    <marker id="arrowg" markerWidth="10" markerHeight="8" refX="9" refY="4" orient="auto">
+      <path d="M0,0 L10,4 L0,8 z" fill="#7f8c8d"/>
+    </marker>
+  </defs>
+
+  <rect x="0" y="0" width="1120" height="780" fill="#fafaf7"/>
+  <text x="560" y="30" text-anchor="middle" font-size="20" font-weight="bold" fill="#222">E200 PL datapath - fmcw_core (TODO Part I)</text>
+  <text x="560" y="50" text-anchor="middle" font-size="12" fill="#666">Phase 4 builds: chirp NCO, tx_src mux, sync_src mux. Grey dashed = Phase 5 (dechirp + decimation -&gt; IF over Ethernet)</text>
+
+  <!-- ================= CONTROL PLANE (top strip) ================= -->
+  <rect x="40" y="75" width="240" height="70" rx="6" fill="#f4ecf7" stroke="#8e44ad" stroke-width="1.5"/>
+  <text x="160" y="95" text-anchor="middle" font-size="12" font-weight="bold" fill="#222">Host PC (Python)</text>
+  <text x="160" y="111" text-anchor="middle" font-size="10" fill="#555">RadarConfig -&gt; fabric_regs.register_image()</text>
+  <text x="160" y="126" text-anchor="middle" font-size="10" fill="#555">fabric_ctl: ssh -&gt; rxtap</text>
+
+  <line x1="280" y1="110" x2="338" y2="110" stroke="#8e44ad" stroke-width="1.5" marker-end="url(#arrowp)"/>
+  <text x="309" y="102" text-anchor="middle" font-size="9" fill="#555">ssh / GbE</text>
+
+  <rect x="340" y="75" width="240" height="70" rx="6" fill="#f4ecf7" stroke="#8e44ad" stroke-width="1.5"/>
+  <text x="460" y="95" text-anchor="middle" font-size="12" font-weight="bold" fill="#222">Zynq PS</text>
+  <text x="460" y="111" text-anchor="middle" font-size="10" fill="#555">rxtap via /dev/uio0 (generic-uio)</text>
+  <text x="460" y="126" text-anchor="middle" font-size="10" fill="#555">iiod / libiio buffers</text>
+
+  <line x1="460" y1="145" x2="460" y2="183" stroke="#8e44ad" stroke-width="1.5" stroke-dasharray="5,3" marker-end="url(#arrowp)"/>
+  <text x="470" y="168" font-size="9" fill="#8e44ad">AXI-Lite GP0 @ 0x43C10000</text>
+
+  <polyline points="580,110 1025,110 1025,263" fill="none" stroke="#8e44ad" stroke-width="1.5" stroke-dasharray="5,3" marker-end="url(#arrowp)"/>
+  <text x="805" y="103" text-anchor="middle" font-size="9" fill="#8e44ad">cyclic TX chirp (libiio) - still pushed; unused when tx_src = NCO</text>
+
+  <!-- ================= axi_ad9361 (left) ================= -->
+  <rect x="40" y="230" width="120" height="400" rx="6" fill="#eaeded" stroke="#7f8c8d" stroke-width="1.5"/>
+  <text x="100" y="255" text-anchor="middle" font-size="12" font-weight="bold" fill="#222">axi_ad9361</text>
+  <text x="100" y="271" text-anchor="middle" font-size="10" fill="#555">LVDS 2R2T</text>
+  <text x="100" y="286" text-anchor="middle" font-size="10" fill="#555">l_clk master</text>
+  <text x="100" y="318" text-anchor="middle" font-size="9" fill="#333">dac_data_i0/q0</text>
+  <text x="100" y="590" text-anchor="middle" font-size="9" fill="#333">adc ch0 (i/q)</text>
+
+  <!-- loopback arc on far left -->
+  <path d="M 40 300 C 8 340, 8 535, 40 575" fill="none" stroke="#7f8c8d" stroke-width="1.5" stroke-dasharray="6,3" marker-end="url(#arrowg)"/>
+
+  <!-- ================= TX LANE (right to left, y ~300) ================= -->
+  <rect x="960" y="265" width="130" height="70" rx="6" fill="#fdebd0" stroke="#b03a2e" stroke-width="1.5"/>
+  <text x="1025" y="292" text-anchor="middle" font-size="11" font-weight="bold" fill="#222">dac_dma (cyclic)</text>
+  <text x="1025" y="308" text-anchor="middle" font-size="10" fill="#555">axi_dmac</text>
+
+  <line x1="960" y1="300" x2="932" y2="300" stroke="#333" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+  <rect x="820" y="265" width="110" height="70" rx="6" fill="#fdebd0" stroke="#b03a2e" stroke-width="1.5"/>
+  <text x="875" y="304" text-anchor="middle" font-size="11" font-weight="bold" fill="#222">tx_upack</text>
+
+  <line x1="820" y1="300" x2="792" y2="300" stroke="#333" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+  <rect x="660" y="265" width="130" height="70" rx="6" fill="#fdebd0" stroke="#b03a2e" stroke-width="1.5"/>
+  <text x="725" y="296" text-anchor="middle" font-size="11" font-weight="bold" fill="#222">tx_fir_interpolator</text>
+  <text x="725" y="312" text-anchor="middle" font-size="9" fill="#555">rd_en loop untouched</text>
+
+  <line x1="660" y1="300" x2="622" y2="300" stroke="#333" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <text x="641" y="292" text-anchor="middle" font-size="9" fill="#555">i_dac_*</text>
+
+  <line x1="340" y1="300" x2="162" y2="300" stroke="#333" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <text x="250" y="292" text-anchor="middle" font-size="9" fill="#555">o_dac_data_0/1</text>
+
+  <!-- ================= fmcw_core ================= -->
+  <rect x="340" y="185" width="280" height="445" rx="8" fill="#fef9e7" stroke="#b7950b" stroke-width="2"/>
+  <text x="480" y="203" text-anchor="middle" font-size="13" font-weight="bold" fill="#222">fmcw_core</text>
+
+  <!-- reg bank -->
+  <rect x="355" y="210" width="250" height="55" rx="5" fill="#f4ecf7" stroke="#8e44ad" stroke-width="1.5"/>
+  <text x="480" y="227" text-anchor="middle" font-size="10" font-weight="bold" fill="#222">AXI-Lite reg bank (s_axi_aclk)</text>
+  <text x="480" y="241" text-anchor="middle" font-size="9" fill="#555">FMC1: CTRL, FTW_START/SLOPE, SWEEP_LEN</text>
+  <text x="480" y="254" text-anchor="middle" font-size="9" fill="#555">shadow regs + COMMIT toggle</text>
+
+  <line x1="440" y1="265" x2="440" y2="358" stroke="#8e44ad" stroke-width="1.5" stroke-dasharray="5,3" marker-end="url(#arrowp)"/>
+  <text x="434" y="345" text-anchor="end" font-size="9" fill="#8e44ad">latch at chirp boundary (CDC)</text>
+
+  <!-- tx mux -->
+  <rect x="520" y="275" width="100" height="50" rx="5" fill="#fdebd0" stroke="#b03a2e" stroke-width="1.5"/>
+  <text x="570" y="295" text-anchor="middle" font-size="10" font-weight="bold" fill="#222">tx_src mux</text>
+  <text x="570" y="309" text-anchor="middle" font-size="9" fill="#555">0: DMA  1: NCO</text>
+
+  <line x1="520" y1="300" x2="342" y2="300" stroke="#333" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+  <!-- NCO -->
+  <rect x="360" y="360" width="245" height="80" rx="5" fill="#fdebd0" stroke="#b03a2e" stroke-width="1.5"/>
+  <text x="482" y="380" text-anchor="middle" font-size="11" font-weight="bold" fill="#222">chirp NCO</text>
+  <text x="482" y="396" text-anchor="middle" font-size="9" fill="#555">2nd-order phase acc (32+32 bit)</text>
+  <text x="482" y="409" text-anchor="middle" font-size="9" fill="#555">quarter-wave sin/cos LUT, full-scale 16 bit</text>
+  <text x="482" y="422" text-anchor="middle" font-size="9" fill="#555">advances on valid strobe, phase=0 each period</text>
+
+  <line x1="570" y1="360" x2="570" y2="327" stroke="#333" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+  <!-- chirp_start to sync mux -->
+  <line x1="520" y1="440" x2="520" y2="468" stroke="#333" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <text x="528" y="458" font-size="9" fill="#555">chirp_start</text>
+
+  <!-- conj replica (phase 5) -->
+  <line x1="395" y1="440" x2="395" y2="548" stroke="#7f8c8d" stroke-width="1.5" stroke-dasharray="6,3" marker-end="url(#arrowg)"/>
+  <text x="389" y="500" text-anchor="end" font-size="9" fill="#7f8c8d">conj replica</text>
+  <text x="389" y="512" text-anchor="end" font-size="9" fill="#7f8c8d">(DECHIRP_DELAY)</text>
+
+  <!-- sync mux -->
+  <rect x="430" y="470" width="175" height="50" rx="5" fill="#eaeded" stroke="#7f8c8d" stroke-width="1.5"/>
+  <text x="517" y="489" text-anchor="middle" font-size="10" font-weight="bold" fill="#222">sync_src mux</text>
+  <text x="517" y="503" text-anchor="middle" font-size="9" fill="#555">0: TDD passthrough (default)</text>
+
+  <polyline points="605,495 875,495 875,543" fill="none" stroke="#333" stroke-width="1.5" stroke-dasharray="5,3" marker-end="url(#arrow)"/>
+  <text x="740" y="488" text-anchor="middle" font-size="9" fill="#555">o_dma_sync -&gt; SYNC_TRANSFER_START</text>
+  <text x="740" y="512" text-anchor="middle" font-size="9" fill="#555">every transfer starts at a chirp boundary (I6)</text>
+
+  <text x="480" y="541" text-anchor="middle" font-size="9" fill="#555">now: transparent pass-through; ramp_en / rx_dbg_mux</text>
+
+  <!-- RX internals (phase 5, grey) -->
+  <rect x="355" y="550" width="110" height="55" rx="5" fill="#eaeded" stroke="#7f8c8d" stroke-width="1.5" stroke-dasharray="6,3"/>
+  <text x="410" y="570" text-anchor="middle" font-size="9" font-weight="bold" fill="#555">dechirp</text>
+  <text x="410" y="583" text-anchor="middle" font-size="9" fill="#555">RX x conj(replica)</text>
+  <text x="410" y="596" text-anchor="middle" font-size="9" fill="#555">[Phase 5]</text>
+
+  <rect x="505" y="550" width="100" height="55" rx="5" fill="#eaeded" stroke="#7f8c8d" stroke-width="1.5" stroke-dasharray="6,3"/>
+  <text x="555" y="570" text-anchor="middle" font-size="9" font-weight="bold" fill="#555">CIC/FIR decim</text>
+  <text x="555" y="583" text-anchor="middle" font-size="9" fill="#555">+ IF_SEL</text>
+  <text x="555" y="596" text-anchor="middle" font-size="9" fill="#555">[Phase 5]</text>
+
+  <!-- ================= RX LANE (left to right, y ~575) ================= -->
+  <line x1="160" y1="575" x2="188" y2="575" stroke="#333" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+  <rect x="190" y="545" width="130" height="60" rx="6" fill="#d6eaf8" stroke="#2874a6" stroke-width="1.5"/>
+  <text x="255" y="571" text-anchor="middle" font-size="11" font-weight="bold" fill="#222">rx_fir_decimator</text>
+  <text x="255" y="587" text-anchor="middle" font-size="9" fill="#555">bypass at radar FS</text>
+
+  <line x1="320" y1="575" x2="338" y2="575" stroke="#333" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+  <line x1="620" y1="575" x2="658" y2="575" stroke="#333" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+  <rect x="660" y="545" width="100" height="60" rx="6" fill="#d6eaf8" stroke="#2874a6" stroke-width="1.5"/>
+  <text x="710" y="579" text-anchor="middle" font-size="11" font-weight="bold" fill="#222">util_cpack2</text>
+
+  <line x1="760" y1="575" x2="798" y2="575" stroke="#333" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+  <rect x="800" y="545" width="130" height="60" rx="6" fill="#d6eaf8" stroke="#2874a6" stroke-width="1.5"/>
+  <text x="865" y="566" text-anchor="middle" font-size="11" font-weight="bold" fill="#222">adc_dma</text>
+  <text x="865" y="581" text-anchor="middle" font-size="9" fill="#555">SYNC_TRANSFER_START=1</text>
+  <text x="865" y="595" text-anchor="middle" font-size="9" fill="#555">waits for sync high on a beat</text>
+
+  <line x1="930" y1="575" x2="963" y2="575" stroke="#333" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+  <rect x="965" y="545" width="130" height="60" rx="6" fill="#d6eaf8" stroke="#2874a6" stroke-width="1.5"/>
+  <text x="1030" y="566" text-anchor="middle" font-size="11" font-weight="bold" fill="#222">PS DDR / libiio</text>
+  <text x="1030" y="581" text-anchor="middle" font-size="9" fill="#555">GbE -&gt; host</text>
+  <text x="1030" y="595" text-anchor="middle" font-size="9" fill="#555">raw RX now; IF @ Phase 5</text>
+
+  <!-- ================= TDD (below core) ================= -->
+  <rect x="400" y="690" width="250" height="55" rx="6" fill="#eaeded" stroke="#7f8c8d" stroke-width="1.5"/>
+  <text x="525" y="710" text-anchor="middle" font-size="11" font-weight="bold" fill="#222">axi_tdd_0</text>
+  <text x="525" y="726" text-anchor="middle" font-size="9" fill="#555">tdd_channel_1 idles HIGH (default pol 0b010)</text>
+  <text x="525" y="738" text-anchor="middle" font-size="9" fill="#555">the reason RX streams today - MUX it, never OR</text>
+
+  <line x1="485" y1="690" x2="485" y2="522" stroke="#333" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <text x="493" y="650" font-size="9" fill="#555">i_sync_in</text>
+
+  <!-- ================= NOTES (bottom left) ================= -->
+  <text x="40" y="660" font-size="9" fill="#333" font-weight="bold">Notes</text>
+  <text x="40" y="675" font-size="9" fill="#555">- AD9361 loop (dashed, far left): DAC -&gt; BIST loopback / RF -&gt; ADC. Fixed digital latency,</text>
+  <text x="40" y="688" font-size="9" fill="#555">  tens of samples (1 sample = 2.65 m) -&gt; DECHIRP_DELAY calibration in Phase 5.</text>
+  <text x="40" y="703" font-size="9" fill="#555">- I2 debug: rx_dbg_mux routes NCO onto RX ch0 -&gt; GUI spectrogram = fabric scope.</text>
+  <text x="40" y="718" font-size="9" fill="#555">- I3 exit: estimate_chirp_offset constant every block = measured latency (write it down).</text>
+  <text x="40" y="733" font-size="9" fill="#555">- Ch1 (2R2T second channel) passes by fmcw_core untouched on both sides.</text>
+
+  <!-- ================= LEGEND (bottom right) ================= -->
+  <text x="740" y="660" font-size="9" font-weight="bold" fill="#333">Legend</text>
+  <rect x="740" y="668" width="14" height="10" fill="#fdebd0" stroke="#b03a2e"/>
+  <text x="760" y="677" font-size="9" fill="#555">TX path (l_clk)</text>
+  <rect x="740" y="686" width="14" height="10" fill="#d6eaf8" stroke="#2874a6"/>
+  <text x="760" y="695" font-size="9" fill="#555">RX path (l_clk)</text>
+  <rect x="740" y="704" width="14" height="10" fill="#f4ecf7" stroke="#8e44ad"/>
+  <text x="760" y="713" font-size="9" fill="#555">control (s_axi_aclk / PS)</text>
+  <rect x="740" y="722" width="14" height="10" fill="#eaeded" stroke="#7f8c8d" stroke-dasharray="4,2"/>
+  <text x="760" y="731" font-size="9" fill="#555">Phase 5 / shared infra</text>
+</svg>

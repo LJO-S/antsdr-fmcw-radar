@@ -191,28 +191,33 @@ analog chain is exercised: DAC, TX filters/mixer, real LO, RX front end, ADC. Ev
 gap from the Part E preamble becomes observable here at zero legal/thermal risk.
 TargetSim still works (E4) - fake moving targets riding a real RF path.
 
-- [ ] **Order the Phase F kit first** (pads, jumpers, dummy loads, adapters - see
+- [X] **Order the Phase F kit first** (pads, jumpers, dummy loads, adapters - see
       `hardware/materials.md`). Never run TX into RX without pads: AD9361 TX can
       reach ~7 dBm at 5.8 GHz and the RX front end is happiest well below -10 dBm
       at the port. Start with 40 dB and trim with `SDR_TX_GAIN_DB`.
-- [ ] The deferred C6 test, now safe: dummy loads on TX1A/RX1A, untick
+- [X] The deferred C6 test, now safe: dummy loads on TX1A/RX1A, untick
       `SDR_LOOPBACK_EN`, RE-CONFIGURE -> `radio.set_loopback(False)` and confirm
       clean teardown/restart both ways.
-- [ ] Fix the `start()` RX-live check: `sdr.py` declares RX live at normalized
+- [X] Fix the `start()` RX-live check: `sdr.py` declares RX live at normalized
       amplitude >= 0.01, which a 40 dB-padded path may never reach at low RX gain.
       Make the threshold config- or noise-floor-relative before blaming the cable.
-- [ ] Cable bring-up: frame sync must lock on the real signal (leakage = the cable
+- [X] Cable bring-up: frame sync must lock on the real signal (leakage = the cable
       path itself, still strongest + earliest). Look at the Rx/IF spectrograms:
       this is the first honest look at real leakage shape, filter group delay, and
       close-in smear (feeds E5's choice of N).
-- [ ] MGC sweep: step `SDR_RX_GAIN_DB` across its range; find where the ADC clips
+- [X] MGC sweep: step `SDR_RX_GAIN_DB` across its range; find where the ADC clips
       (leakage-driven) and where the noise floor drowns the fake targets. Note the
       usable window - this is the Part G starting point.
-- [ ] Inspect AD9361 tracking knobs via iio attrs (`calib_mode`,
+      >> [-90, +60] dB works
+      >> The defaults are good.
+      >> The N-bin mask default is good.
+      >> Note: without artificially injected noise, the detection algorithm (CFAR) doesnt behave well. This is due to low noise levels with cable loopback.
+
+- [X] Inspect AD9361 tracking knobs via iio attrs (`calib_mode`,
       `bb_dc_offset_tracking_en`, `quadrature_tracking_en` on ad9361-phy): defaults
       are usually right, but know where they live and what the RD map looks like
       with them toggled - quadrature error shows as a mirrored ghost target.
-- [ ] Optional: a long cable (or two pads + long RG58 run) as a fixed real "target"
+- [-] Optional: a long cable (or two pads + long RG58 run) as a fixed real "target"
       at a known electrical length - sanity-checks the range axis end to end.
 
 ---
@@ -280,31 +285,65 @@ selectable so the Python-only radar keeps working throughout.
 
 **Status**: firmware Phase 1 (v0.39 built from source, SD boot) done. Phase 2
 sections 1-5 done: `rx_tap.vhd` module-reference block in the RX datapath,
-TEST_RAMP verified on hardware (`data/tap_test.iq`). Work lives on branches in the
-forked submodule stack - see `docs/firmware-branch-workflow.md`. Guides:
-`~/work/projects/sdr/AntSDR_Phase[1-3]*.md`.
+TEST_RAMP verified on hardware (`data/tap_test.iq`). **I1 done 2026-07-27**
+(Phase 3 guide worked end to end): hand-written AXI-Lite slave on `rx_tap` at
+0x43C10000 (MAGIC "RXT1" / CTRL / SCRATCH / COUNT), VUnit tb, 2-flop + gray
+CDC, devmem + device tree + UIO + `src/c/rxtap.c` mmap peek/poke tool; ramp
+toggled live from a shell, no rebuild. Gotchas learned: hold rvalid/bvalid
+until consumed (pulsing = bus hang); the sdboot env had NO bootargs default,
+so the `generic-uio` kernel arg died silently until a default was added to
+u-boot's zynq-common.h; master-consume gating fixed CDC bugs found in sim
+first. HDL sits on `feature/rx-tap` (hdl repo), host tool on
+`investigation/rx_tap` (top repo) - merge to `e200-custom` as the Phase 4
+kickoff per `docs/firmware-branch-workflow.md`. Work lives on branches in the
+forked submodule stack. Guides: `docs/AntSDR_Phase[1-4]*.md`.
+
+**Phase 4 architecture (decided 2026-07-27)** - see
+`docs/AntSDR_Phase4_Chirp_NCO_TX_Guide.md` + `docs/fmcw_fabric_architecture.svg`:
+`rx_tap` grows into ONE core module (`fmcw_core`, new MAGIC "FMC1", same
+address) with ports on BOTH datapath sides - TX mux between
+`tx_fir_interpolator` and the `axi_ad9361` dac ports, RX section at the
+existing tap point - so the NCO and the future dechirp replica stay
+phase-coherent inside one entity. Frame start: `axi_ad9361_adc_dma` already
+has SYNC_TRANSFER_START=1 with its sync pin fed by `tdd_channel_1`, which
+idles HIGH (default pol 0b010) - the core MUXes (never ORs) a chirp_start
+pulse onto it; leakage frame sync gets deleted at I6, not improved. Waveform
+registers (FTW_START/FTW_SLOPE/SWEEP_LEN) use shadow + COMMIT, latched at
+chirp boundaries. Host config path: `common/fabric_regs.py` (pure
+RadarConfig -> register image + bit-true NCO model, also emits VUnit golden
+vectors) + `online/fabric_ctl.py` (ssh -> rxtap). TX->RX digital latency is
+constant once TX is fabric-timed; measured in I3, becomes DECHIRP_DELAY in
+Phase 5 (BIST loopback and real RF need separate constants).
 
 Ladder (each rung proven before the next; sim-first per the Phase 3 guide):
 
-- [ ] I1 - AXI-Lite register bank on `rx_tap` (Phase 3 guide): runtime ramp_en,
-      MAGIC/SCRATCH/COUNT registers, CDC discipline (2-flop + gray counter),
-      devmem smoke test, then device tree + UIO + cross-compiled peek/poke tool.
-      Exit: toggle the ramp live from a shell, no rebuild.
-- [ ] I2 - chirp NCO in fabric: phase-accumulator DDS with start/slope/sweep-len
-      registers (the I1 skeleton, more rows). Prove by muxing the NCO onto a
-      `rx_tap` output channel and watching the chirp in the existing GUI
-      spectrogram - the radar GUI becomes the fabric debug scope.
-- [ ] I3 - TX from fabric: NCO drives the DAC path (mux against `tx_upack` so the
-      DMA path stays selectable). From here TX timing is deterministic.
-- [ ] I4 - dechirp: complex multiply RX x conj(TX NCO replica) at the `rx_tap`
-      insertion point; verify against `dsp.mix_signal` sample-for-sample in
-      digital loopback (golden-model test, no RF needed).
-- [ ] I5 - decimation to IF rate (few MSPS): CIC or FIR after the mixer; only now
-      does the Ethernet stream become IF samples. Frame rate win: 10-50x, and
-      100% observation duty becomes reachable (see appendix).
-- [ ] I6 - integration: IF-mode in `online/sdr.py`/`capture.py` (skip frame sync,
-      skip `mix_signal`), register control from host Python over ssh/UIO, bypass
-      bit exposed in the GUI. Cutover gated on Parts F+G.
+- [X] I1 - AXI-Lite register bank on `rx_tap` (Phase 3 guide) - done, see
+      status above.
+- [ ] I2 - chirp NCO in fabric (Phase 4 guide Sections 4-5): 32+32-bit
+      second-order phase accumulator + quarter-wave LUT, full-scale 16-bit to
+      match the `2^15-1` DMA chirp scaling, advances on the valid strobe (not
+      raw l_clk - CHIRP_COUNT delta over 1 s must read PRF 10000). Prove via
+      CTRL.rx_dbg_mux onto RX ch0: the GUI spectrogram is the fabric scope.
+      Exit: waveform reconfigured live from a shell, sawtooth and triangle
+      both visible, VUnit bit-exact vs the numpy fixed-point model.
+- [ ] I3 - TX from fabric (Phase 4 guide Section 6): CTRL.tx_src muxes NCO vs
+      DMA at the dac data ports (upack rd_en loop untouched). Exit: RD map
+      identical to DMA baseline in digital loopback, AND
+      `estimate_chirp_offset` returns the SAME constant every block/run -
+      record that constant here: latency = ____ samples (loopback path).
+- [ ] I4 - dechirp (Phase 5 guide, to be written): complex multiply RX x
+      conj(NCO replica delayed by DECHIRP_DELAY) in `fmcw_core`'s RX section;
+      verify against `dsp.mix_signal` sample-for-sample in digital loopback
+      (golden-model test, no RF needed).
+- [ ] I5 - decimation to IF rate (few MSPS): CIC or FIR after the mixer,
+      IF_SEL switches cpack onto the IF stream; only now does Ethernet carry
+      IF samples. Frame rate win: 10-50x, and 100% observation duty becomes
+      reachable (see appendix).
+- [ ] I6 - integration: IF-mode in `online/sdr.py`/`capture.py` (skip frame
+      sync, skip `mix_signal`), sync_src=1 as default (every DMA transfer
+      starts at a chirp boundary), `fabric_ctl.write_regs` behind
+      RE-CONFIGURE, bypass bits exposed in the GUI. Cutover gated on Parts
+      F+G.
 
 ---
 
