@@ -121,7 +121,7 @@ class RadarConfig:
         },
     )
     SDR_TX_GAIN_DB: float = field(
-        default=-30.0,
+        default=-60.0,
         metadata={
             "label": "Tx Gain",
             "unit": "dB",
@@ -129,9 +129,10 @@ class RadarConfig:
             "group": "sdr",
         },
     )
+    SDR_TX_GAIN_MAX_DB: float = -40.0
     SDR_RX_GAIN_MODE: str = "manual"  # untagged, must stay "manual"
     SDR_RX_GAIN_DB: float = field(
-        default=20.0,
+        default=40.0,
         metadata={
             "label": "Rx Gain",
             "unit": "dB",

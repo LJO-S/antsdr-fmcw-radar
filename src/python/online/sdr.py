@@ -44,9 +44,14 @@ class AntSDR:
         self.ctrl.find_channel("voltage0", is_output=True).attrs[
             "sampling_frequency"
         ].value = str(int(self.config.FS))
+
+        # CLAMP TX GAIN (remnant from cable loopback)
+        if self.config.SDR_TX_GAIN_DB > self.config.SDR_TX_GAIN_MAX_DB:
+            print("WARNING! Tx gain clamped to max allowed value...")
+        tx_gain = min(self.config.SDR_TX_GAIN_DB, self.config.SDR_TX_GAIN_MAX_DB)
         self.ctrl.find_channel("voltage0", is_output=True).attrs[
             "hardwaregain"
-        ].value = str(self.config.SDR_TX_GAIN_DB)
+        ].value = str(tx_gain)
 
         # --------------------
         # Configure RX
@@ -153,16 +158,40 @@ class AntSDR:
             print("Loopback ON!")
 
     def close(self):
-        if getattr(self, "rx_buff", None):
-            self.rx_buff.cancel()
-            del self.rx_buff
-        if getattr(self, "tx_buff", None):
-            self.tx_buff.cancel()
-            del self.tx_buff
-        self.tx.find_channel("voltage0", is_output=True).enabled = False
-        self.tx.find_channel("voltage1", is_output=True).enabled = False
-        self.rx.find_channel("voltage0").enabled = False
-        self.rx.find_channel("voltage1").enabled = False
+        # --------------------
+        # Release DMA buffers
+        # --------------------
+        try:
+            if getattr(self, "rx_buff", None):
+                self.rx_buff.cancel()
+                del self.rx_buff
+            if getattr(self, "tx_buff", None):
+                self.tx_buff.cancel()
+                del self.tx_buff
+        except Exception as e:
+            print(f"WARNING! Buffer teardown failed: {e}")
+
+        # --------------------
+        # Disable TX and RX channels
+        # --------------------
+        try:
+            self.tx.find_channel("voltage0", is_output=True).enabled = False
+            self.tx.find_channel("voltage1", is_output=True).enabled = False
+            self.rx.find_channel("voltage0").enabled = False
+            self.rx.find_channel("voltage1").enabled = False
+        except Exception as e:
+            print(f"WARNING! Channel teardown failed: {e}")
+
+        # --------------------
+        # Set TX cold (so a crash cant leave the port hot)
+        # --------------------
+        try:
+            self.ctrl.find_channel("voltage0", is_output=True).attrs[
+                "hardwaregain"
+            ].value = str(-89.0)
+        except Exception as e:
+            print(f"WARNING! TX gain max atten failed: {e}")
+
         self.active = False
 
 
