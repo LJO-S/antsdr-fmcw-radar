@@ -122,11 +122,32 @@ Sourcing (2026-07: Amazon prices for these are not competitive - skip it):
   stock on eBay.de/Blocket - haggle.
 
 ### Cables and adapters (~400-600 SEK)
-- 2x N-male to SMA-male LMR-240 pigtails (1-2 m): ~$20-30 each on eBay/Amazon
-  ([example](https://www.ebay.com/itm/262839274818),
+- **Chosen (2026-08): 2x 1.25 m SMA m-m RG-223 + adapters.** Spec the coax, not
+  the connector - the end connector is a 30 SEK adapter, the cable type is a
+  permanent dB tax. Approx loss @ 5.8 GHz: LMR-240 ~0.7 dB/m, **RG-223 ~1.5-1.8**,
+  RG58 ~1.6-2, RG316 ~3-4, RG174 ~4-5. Cheap "SMA to SMA" listings are usually
+  RG316/RG174 (our Wuerth RG316 jumper: IL <= 1.2 dB over 0.3 m = ~3.9 dB/m) -
+  RG-223 costs only ~1 dB more than LMR-240 over 1.25 m, and its double shield
+  helps TX/RX isolation. Verify the listing says RG-223 and rates it to 6 GHz.
+- RX loss is the expensive side (sits ahead of the RX, adds ~dB-for-dB to the
+  NF ~5 dB assumed in Part G's budget). TX loss is free - TX port power is
+  clamped to <= -5 dBm by the SRD EIRP budget anyway. Phase H moots RX cable loss
+  once the LNA sits at the antenna.
+- Length 1-2 m: antennas >= 1-2 m apart on separate tripods, E200 between them -
+  check the geometry, 1.25 m per side needs the radio centered and low.
+- Adapters (~0.1-0.3 dB each, negligible). E200 ports are SMA female, so the
+  radio end is SMA male; far end per antenna: N-female antenna (mANT30, TP-Link)
+  -> `SMA female to N male`; RP-SMA female (Ubiquiti Rocket family) ->
+  `SMA female to RP-SMA male`.
+- **RP-SMA trap**: RP-SMA threads onto SMA perfectly but mates pin-to-pin or
+  socket-to-socket - no connection, or a bent pin. Seller naming is unreliable;
+  check the photo per interface: exactly one pin + one socket, one nut + one
+  external thread. A correct `SMA female to RP-SMA male` has a socket at BOTH
+  ends, no pin anywhere.
+- Pigtail alternative if you want one continuous run: N-male to SMA-male LMR-240,
+  1-2 m, ~$20-30 ([example](https://www.ebay.com/itm/262839274818),
   [Pasternack PE3C0044](https://www.pasternack.com/sma-male-n-male-lmr240-cable-assembly-pe3c0044-p.aspx)
-  is the expensive reference part)
-- N-female to SMA adapters as fallback (~150 SEK)
+  is the expensive reference part).
 
 ### Mounting (~300 SEK)
 - 2x cheap speaker/camera tripods, >= 1-2 m separation (isolation), sheet-metal
