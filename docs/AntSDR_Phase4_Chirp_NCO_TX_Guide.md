@@ -1,171 +1,114 @@
-# AntSDR E200 - Phase 4: chirp NCO + TX from fabric (Part I rungs I2 + I3)
+# AntSDR E200 - Phase 4: chirp NCO + TX from fabric (Part I2 + I3)
 
-Follow-up to the Phase 3 guide (its "Where this leads" section was the sketch;
-this is the worked version). Assumes Phase 3 is complete: the AXI-Lite register
-bank in `rx_tap.vhd` is proven on hardware - MAGIC/SCRATCH/COUNT read correctly,
-`ramp_en` toggles live over UIO via `rxtap`.
+Follows the Phase 3 guide. Assumes Phase 3 is done: the AXI-Lite register bank
+in `rx_tap.vhd` works on hardware (MAGIC/SCRATCH/COUNT correct, `ramp_en`
+toggles live via `rxtap`).
 
-Same contract as before: **this guide specifies and explains, you write the
-code.** Exact text is given where a typo costs a synthesis run (Tcl, port
-names, register offsets); behavioral specs, failure modes, and hints everywhere
-the learning lives (the NCO, the shadow/commit CDC, the testbench).
+Same contract: this guide specifies, you write the code. Exact text is given
+for anything a typo breaks (Tcl, port names, register offsets).
 
-Scope decided up front: this phase covers **I2 (chirp NCO in fabric) and I3
-(TX from fabric)**. The architecture section and the register map are designed
-through I5 (dechirp + decimation) so nothing built now gets torn up later, but
-the worked exercises stop at the TX mux. Dechirp is Phase 5.
+Scope: **I2 (chirp NCO in fabric)** and **I3 (TX from fabric)**. The register
+map is designed through I5 (dechirp) so nothing gets torn up later, but the
+exercises stop at the TX mux. Dechirp is Phase 5.
 
----
+## Three rules
 
-## The three rules of Phase 4
-
-1. **The golden model is the law.** `dsp.generate_chirp` defines what a chirp
-   is. The NCO is correct when a fixed-point numpy model of it matches the VHDL
-   bit-for-bit AND that fixed-point model matches the float chirp to below the
-   DAC's noise floor. Two separate comparisons, two separate failure causes.
-2. **Nothing changes mid-chirp.** Every parameter that shapes the waveform
-   (FTW start, slope, sweep length) latches into the l_clk domain only at a
-   chirp boundary, via the shadow/commit discipline in Section 3. A parameter
-   that can change mid-sweep is a spectral-splatter generator with a register
-   interface.
-3. **Power-on defaults = current behavior.** CTRL resets to zero, and zero
-   means: DMA drives the DAC, TDD drives the DMA sync, no debug mux, no ramp.
-   A bitstream with your core in it and nobody talking to the registers must be
-   indistinguishable from today's radar. This is the bypass-bit philosophy from
-   TODO Part I, applied to every new bit.
+1. **The golden model is the law.** `dsp.generate_chirp` defines a chirp. The
+   NCO is correct when a fixed-point numpy model matches the VHDL bit-for-bit,
+   AND that model matches the float chirp below the DAC noise floor - two
+   separate comparisons.
+2. **Nothing changes mid-chirp.** FTW start, slope, sweep length latch into
+   `l_clk` only at a chirp boundary (shadow/commit, Section 3). Changing
+   mid-sweep splatters the spectrum.
+3. **Power-on defaults = current behavior.** CTRL = 0 means: DMA drives the
+   DAC, TDD drives DMA sync, no debug mux, no ramp. A bitstream nobody has
+   configured must behave exactly like today's radar.
 
 ---
 
-## 0. Where everything goes (the architecture, once)
+## 0. Architecture
 
-See `fmcw_fabric_architecture.svg` next to this file for the picture. In words:
+See `fmcw_fabric_architecture.svg`. RX chain today: `axi_ad9361 ->
+rx_fir_decimator -> rx_tap -> cpack -> adc_dma`. TX chain: `dac_dma ->
+tx_upack -> tx_fir_interpolator -> axi_ad9361`. Channel 1 passes through
+untouched on both sides.
 
-The RX side you already own: `axi_ad9361 -> rx_fir_decimator -> rx_tap ->
-cpack -> adc_dma`. The TX side today: `dac_dma -> tx_upack ->
-tx_fir_interpolator -> axi_ad9361/dac_data_i0,q0`. Channel 1 (dac_*_i1/q1,
-adc_*_1) passes by untouched on both sides.
+**`rx_tap` grows into `fmcw_core`**, one module with:
+- existing RX ports (future dechirp mixer/decimator sits here)
+- new DAC-side ports: interpolator in, `axi_ad9361` out, mux for
+  DMA-passthrough vs NCO
+- one AXI-Lite slave, same 0x43C10000 address
 
-**Decision (2026-07-27): `rx_tap` grows into a single core module** - suggested
-name `fmcw_core` - with ports on BOTH sides:
+One module, not a separate `chirp_gen`, because Phase 5's dechirp mixer needs
+a delayed, conjugated replica of the exact TX NCO output - same entity means
+the phase coherence and delay line are internal wiring, not a cross-block bus
+to debug in hardware.
 
-- the existing RX ports (rx_fir_decimator in, cpack out), where the future
-  dechirp mixer and decimator will sit;
-- new DAC-side ports: data in from `tx_fir_interpolator`, data out to
-  `axi_ad9361/dac_data_i0,q0`, with a mux selecting DMA passthrough or NCO;
-- one AXI-Lite slave, one register map, same 0x43C10000 address.
+Ladder:
+- **I2** (Section 5): NCO muxed onto RX channel 0 by a CTRL debug bit - GUI
+  spectrogram becomes the fabric scope.
+- **I3** (Section 6): DAC-side mux goes live (`tx_src = NCO`); board
+  transmits a fabric chirp, Python still does everything else.
+- **I4/I5** (Phase 5): complex multiply RX x conj(replica), CIC/FIR
+  decimation, `IF_SEL` switches cpack between raw RX and IF. Register map
+  below reserves their rows.
 
-Why one module and not a separate `chirp_gen` block: the dechirp mixer (Phase
-5) needs a *delayed, conjugated replica* of the exact TX NCO output. If TX
-generation and dechirp live in one entity, phase coherence and the delay line
-are internal wiring, simulable in one VUnit testbench. Split across two block
-design cells, the replica (or its phase word) becomes an inter-block bus whose
-alignment you get to debug in hardware. Both taps are in the same `l_clk`
-domain, so nothing forces the split. One module, one register file, one tb.
+### Frame start is already solved
 
-What lands where on the ladder:
+`axi_ad9361_adc_dma` has `SYNC_TRANSFER_START=true`, wired to
+`axi_tdd_0/tdd_channel_1` (`system_bd.tcl`). Contract: a transfer doesn't
+start until `sync` goes high on an accepted beat; leading data is dropped. So
+the fabric already has a hardware trigger for RX DMA alignment.
 
-- **I2 (this guide, Section 5):** NCO inside the core, muxed onto the RX
-  output channel 0 by a CTRL debug bit. The radar GUI spectrogram becomes the
-  fabric debug scope. No TX ports yet if you want to stage it - but adding the
-  ports and leaving the mux at passthrough costs one build, so do both at once
-  if you prefer.
-- **I3 (this guide, Section 6):** the DAC-side mux goes live: `tx_src = NCO`
-  and the board transmits a fabric-generated chirp while Python still does
-  everything else (frame sync, mix, process_cpi).
-- **I4/I5 (Phase 5):** complex multiply RX x conj(replica), then CIC/FIR
-  decimation, `IF_SEL` switches cpack input between raw RX and decimated IF.
-  The register map below already reserves their rows.
+- Emit a `chirp_start` pulse, route to DMA sync -> every `read_block()` starts
+  at a chirp boundary. Since chirps are identical, that's also a CPI
+  boundary; frame sync becomes dead code once IF mode lands (I6).
+- **Trap:** `TDD_DEFAULT_POL = 0b010` - `tdd_channel_1` idles HIGH when TDD is
+  disabled (the normal case), which is the only reason RX streaming works
+  today. **MUX your pulse against TDD, don't OR it** (OR'ing an idle-high
+  signal is a no-op). Default the mux to TDD passthrough, or a bitstream with
+  `nco_en=0` never asserts sync and every RX capture hangs forever.
 
-### Frame start: the answer is already in the block design
+Don't flip this mux during I3 - Ethernet still carries raw RX, frame sync
+still runs; that's the I3 exit test.
 
-The question from the roadmap - "how does the host learn where frames start
-once frame sync dies?" - turns out to be pre-answered by the stock e200 fabric:
+### Digital latency
 
-`axi_ad9361_adc_dma` is instantiated with `CONFIG.SYNC_TRANSFER_START {true}`,
-and its `sync` input pin is wired to `axi_tdd_0/tdd_channel_1`
-(`system_bd.tcl`, TDD block near the end). The ADI DMAC's contract with that
-parameter: **a transfer does not begin until the `sync` input is high on an
-accepted source beat; leading data is dropped.** In other words, the fabric
-already contains a hardware trigger that aligns every RX DMA transfer to a
-pulse of your choosing.
+Once TX is fabric-generated, NCO -> DAC -> AD9361 TX -> (loopback or RF) ->
+AD9361 RX -> core is a fixed but unknown sample delay (interface pipelines +
+AD9361 filter group delay). At 56.6 MSPS one sample = 2.65 m; budget is tens
+of samples.
 
-Two consequences:
-
-1. Your core emits a `chirp_start` pulse; route it to the DMA sync pin and
-   every `read_block()` starts at a chirp boundary. Since all chirps are
-   identical, every chirp boundary IS a CPI boundary - the host-side CPI is
-   pure framing. Frame sync (the leakage correlation) is then dead code in
-   IF mode. That is the I6 endgame.
-2. **The trap:** `TDD_DEFAULT_POL` is `0b010` - bit 1 set - which means
-   `tdd_channel_1` idles HIGH when the TDD engine is disabled (which it is,
-   in normal operation). That is the only reason RX streaming works today:
-   sync is permanently asserted, so SYNC_TRANSFER_START gates nothing.
-   Therefore you must **MUX** your pulse against the TDD signal, not OR it -
-   an OR with an idles-high signal is a constant 1 and your pulse does
-   nothing. And the mux must default to TDD passthrough (rule 3), or a
-   bitstream with `nco_en = 0` never asserts sync and **every RX capture
-   hangs forever** - the DMA waits for a pulse that never comes. This is the
-   Phase 4 equivalent of the Phase 3 bus hang.
-
-During I3 you do NOT flip this mux yet. Ethernet still carries raw RX, Python
-frame sync still runs - and that is a feature, see the I3 exit test.
-
-### Digital latency: name it now, calibrate it in Phase 5
-
-Once TX is fabric-generated, the round trip NCO -> dac port -> AD9361 digital
-TX path -> (digital loopback point, or DAC/RF/ADC) -> RX digital path -> adc
-port -> rx_fir_decimator -> core is a **fixed but unknown** number of samples:
-interface pipelines plus AD9361 half-band/FIR group delays. One sample at
-56.6 MSPS reads as 2.65 m of apparent range, and the budget is tens of
-samples, so it is not ignorable.
-
-- In I3 it is harmless: Python frame sync absorbs it, exactly as it absorbs
-  the DMA buffer offset today. But where today's offset is random per start,
-  the fabric TX offset is **constant** - measure it (I3 exit test) and write
-  it down.
-- In Phase 5 it becomes the `DECHIRP_DELAY` register: the dechirp replica is
-  the NCO output delayed by that many samples (a shift-register/BRAM line),
-  so the replica aligns with the leakage return. Calibration procedure:
-  digital loopback, sweep the register until the leakage beat lands in range
-  bin 0. Expect **different constants for BIST loopback vs the real RF path**
-  (the loopback point sits inside the AD9361 digital chain, upstream of parts
-  of it) - recalibrate in Part F and keep both values in `config.py`.
+- I3: harmless, frame sync absorbs it - but unlike today's random DMA offset,
+  this one is **constant**. Measure it (I3 exit test), record it.
+- Phase 5: becomes `DECHIRP_DELAY` - sweep it in digital loopback until
+  leakage lands in range bin 0. Loopback and real-RF constants differ
+  (loopback taps inside the AD9361 chain); calibrate both, store in
+  `config.py`.
 
 ---
 
 ## 1. Growing rx_tap into fmcw_core
 
-Housekeeping first, and it is load-bearing:
+1. Close I1 (`docs/firmware-branch-workflow.md`): merge `feature/rx-tap` ->
+   `e200-custom`, push, bump gitlinks bottom-up.
+2. New branch `feat/chirp-nco` from `e200-custom`.
+3. Rename `src/rx_tap.vhd -> src/fmcw_core.vhd`, entity `rx_tap ->
+   fmcw_core`. Chase the name through `system_bd.tcl` (`add_files`,
+   `create_bd_cell`, every `ad_connect`, `ad_cpu_interconnect`), `Makefile`
+   `M_DEPS`, and the testbench (`run.py` globs so it follows automatically).
+4. **New MAGIC**: `0x464D4331` ("FMC1"). Superset of RXT1's map but the
+   contract changed - anything reading MAGIC must fail loudly on the old
+   value, not read garbage. Bump MAGIC on every future map change.
 
-1. **Close the I1 milestone** per `docs/firmware-branch-workflow.md`: in `hdl`,
-   merge `feature/rx-tap` into `e200-custom`, push, bump the gitlinks bottom-up
-   (plutosdr-fw -> firmware -> radar repo). I1 is proven on hardware; that is
-   the definition of merge time.
-2. New branch in `hdl` from `e200-custom`: `feat/chirp-nco`.
-3. Rename: `src/rx_tap.vhd -> src/fmcw_core.vhd`, entity `rx_tap ->
-   fmcw_core`. Chase the name through:
-   - `system_bd.tcl`: `add_files` path, `create_bd_cell -type module
-     -reference fmcw_core fmcw_core_0`, every `ad_connect rx_tap_0/... ->
-     fmcw_core_0/...`, and `ad_cpu_interconnect 0x43C10000 fmcw_core_0`.
-   - `Makefile` `M_DEPS` (the rx_tap.vhd entry).
-   - the testbench (`test/tb_rx_tap.vhd -> test/tb_fmcw_core.vhd`); `run.py`
-     globs `src/*.vhd` and `tb_*` so it follows the renames by itself.
-4. **New MAGIC**: `0x464D4331` (ASCII "FMC1"). The register map below is a
-   superset of RXT1's but the contract changed; software that greps for RXT1
-   (any bring-up script, and your own muscle memory) must fail loudly, not
-   read garbage politely. Keep MAGIC-bumping as the versioning discipline for
-   every future map change.
+New DAC-side ports (`l_clk` domain):
 
-The new DAC-side ports, following the existing naming (all `l_clk` domain;
-these names matter only to you, not to interface inference - AXI inference
-already works and none of these are AXI):
-
-```
--- TX side: from tx_fir_interpolator
-i_dac_valid_0  : in  std_logic;                                  -- rate strobe, see 4.5
-i_dac_data_0   : in  std_logic_vector(G_DATA_WIDTH - 1 downto 0); -- I
-i_dac_data_1   : in  std_logic_vector(G_DATA_WIDTH - 1 downto 0); -- Q
--- TX side: to axi_ad9361 dac_data_i0 / dac_data_q0
+```vhdl
+-- from tx_fir_interpolator
+i_dac_valid_0  : in  std_logic;                                   -- rate strobe, see 4.5
+i_dac_data_0   : in  std_logic_vector(G_DATA_WIDTH - 1 downto 0);  -- I
+i_dac_data_1   : in  std_logic_vector(G_DATA_WIDTH - 1 downto 0);  -- Q
+-- to axi_ad9361 dac_data_i0/q0
 o_dac_data_0   : out std_logic_vector(G_DATA_WIDTH - 1 downto 0);
 o_dac_data_1   : out std_logic_vector(G_DATA_WIDTH - 1 downto 0);
 -- DMA sync mux
@@ -173,376 +116,285 @@ i_sync_in      : in  std_logic;   -- from axi_tdd_0/tdd_channel_1
 o_dma_sync     : out std_logic;   -- to axi_ad9361_adc_dma/sync
 ```
 
-**Data only - there are no TX enable ports, and there cannot be.** The RX side
-needs the core in the enable chain because `cpack/enable_N` are INPUTS and the
-core sits between source and sink. TX runs the other way: `dac_enable_i0` is an
-OUTPUT of `axi_ad9361`, the interpolator passes it through as `enable_out_0`
-(it is just the bus-mux forwarding `dac_enable_$i`), and the sink is
-`tx_upack/enable_0`. Every consumer of a TX enable sits UPSTREAM of the core,
-and `axi_ad9361` has no dac-enable input at all - it drives that signal. So an
-`o_dac_enable_*` has no legal destination; wiring one to `tx_upack/enable_0`
-would only replace the interpolator's drive with a delayed copy. Channel 1
-(`dac_*_i1/q1`) likewise stays wired straight to `tx_upack` - do not give the
-core ch1 TX ports, they would dangle.
+**Data only - no TX enable ports.** On RX, the core sits in the enable chain
+because `cpack/enable_N` are inputs. On TX it's the reverse: `dac_enable_i0`
+is an *output* of `axi_ad9361`, forwarded by the interpolator to `tx_upack`.
+Every TX-enable consumer sits upstream of the core, and `axi_ad9361` has no
+enable input to drive. So there's no legal destination for an
+`o_dac_enable_*`. Channel 1 also skips the core entirely, wired straight
+`tx_upack <-> axi_ad9361`.
 
-(The interpolator's `valid_out_0`/`enable_out_*` handshake toward `tx_upack`
-stays wired exactly as it is - the core only intercepts the DATA on its way
-into `axi_ad9361`, it does not sit in the upack read-enable loop. That loop
-(`logic_or` -> `tx_upack/fifo_rd_en`) keeps running untouched whichever way
-the mux points; see the pitfalls for what that means for underflow flags.)
+(The interpolator's `valid_out_0`/`enable_out_*` handshake to `tx_upack` is
+untouched - the core only intercepts data on the way to `axi_ad9361`, not the
+upack read-enable loop.)
 
-One optional input IS worth taking: `i_dac_enable_0`. In
-`axi_ad9361_tx_channel.v` the port you are driving (`dac_data_i0`, internally
-`dma_data`) is only selected when `dac_data_sel == 4'h2` (DMA); the default is
-the core's own internal DDS. `dac_enable_i0` is exactly that condition. If the
-driver has not put the channel in DMA mode, your NCO output is discarded and
-the AD9361 transmits its own tone - and the only symptom is "tx_src does
-nothing". Exposing that bit in a STATUS register turns a bring-up mystery into
-one register read. It is also the hardware reason the "keep pushing the cyclic
-buffer from Python" advice below matters: pushing the buffer is what keeps
-`dac_data_sel` at DMA.
+Worth taking: **`i_dac_enable_0`** - in `axi_ad9361_tx_channel.v`,
+`dac_data_i0` is only driven from DMA when `dac_data_sel==4'h2`; otherwise the
+chip transmits its own internal DDS and your NCO output is silently
+discarded. Expose `dac_enable_i0` in STATUS so that failure mode is a single
+register read. It's also why pushing the cyclic TX buffer from Python
+matters: that's what keeps `dac_data_sel` at DMA.
 
 ---
 
 ## 2. Register map (FMC1)
 
-Designed through Phase 5; Phase 4 implements down to CHIRP_COUNT plus COMMIT.
+Designed through Phase 5; Phase 4 implements down through CHIRP_COUNT +
+COMMIT.
 
-| Offset | Name         | Access | Function |
+| Offset | Name | Access | Function |
 |---|---|---|---|
-| 0x00 | MAGIC        | R  | `0x464D4331` "FMC1" |
-| 0x04 | CTRL         | RW | bit 0 `ramp_en` (kept from RXT1); bit 1 `nco_en`; bit 2 `tx_src` (0 = DMA passthrough, 1 = NCO); bit 3 `triangle_en`; bit 4 `rx_dbg_mux` (NCO onto RX ch 0); bit 5 `sync_src` (0 = TDD passthrough, 1 = chirp_start) |
-| 0x08 | SCRATCH      | RW | unchanged |
-| 0x0C | COUNT        | R  | `valid_in` counter, unchanged (live FS meter) |
-| 0x10 | FTW_START    | RW | signed 32-bit, shadow (Section 3) |
-| 0x14 | FTW_SLOPE    | RW | signed 32-bit, shadow |
-| 0x18 | SWEEP_LEN    | RW | samples per sweep leg, shadow |
-| 0x1C | CHIRP_COUNT  | R  | counts chirp_start pulses, gray-crossed like COUNT. Read twice 1 s apart: delta = PRF (expect 10000 at T = 100 us) |
-| 0x20 | COMMIT       | W  | any write arms the shadow -> active transfer (Section 3) |
-| 0x24 | DECHIRP_DELAY| RW | reserved, Phase 5 (replica delay, samples) |
-| 0x28 | DECIM_SEL    | RW | reserved, Phase 5 (decimation select) |
-| 0x2C | IF_SEL       | RW | reserved, Phase 5 (cpack source: raw RX / IF) |
+| 0x00 | MAGIC | R | `0x464D4331` "FMC1" |
+| 0x04 | CTRL | RW | bit0 `ramp_en` (from RXT1); bit1 `nco_en`; bit2 `tx_src` (0=DMA, 1=NCO); bit3 `triangle_en`; bit4 `rx_dbg_mux` (NCO onto RX ch0); bit5 `sync_src` (0=TDD, 1=chirp_start) |
+| 0x08 | SCRATCH | RW | unchanged |
+| 0x0C | COUNT | R | `valid_in` counter, unchanged |
+| 0x10 | FTW_START | RW | signed 32-bit, shadow |
+| 0x14 | FTW_SLOPE | RW | signed 32-bit, shadow |
+| 0x18 | SWEEP_LEN | RW | samples per sweep leg, shadow |
+| 0x1C | CHIRP_COUNT | R | counts chirp_start pulses, gray-crossed. Delta over 1 s = PRF (10000 expected at T=100 us) |
+| 0x20 | COMMIT | W | any write arms shadow -> active transfer (Section 3) |
+| 0x24 | DECHIRP_DELAY | RW | reserved, Phase 5 |
+| 0x28 | DECIM_SEL | RW | reserved, Phase 5 |
+| 0x2C | IF_SEL | RW | reserved, Phase 5 |
 
-Semantics that need stating:
-
-- CTRL bits are quasi-static singles: each gets its own 2-flop synchronizer
-  into `l_clk`, exactly the `ramp_en` idiom. They take effect "soon, cleanly"
-  (see 4.5 for `tx_src` and the one refinement worth making).
-- `nco_en` 0 -> 1 starts the NCO from phase 0, chirp sample 0, using the
-  active (committed) parameter set. `nco_en = 0` holds it in reset. So the
-  power-on sequence is: write FTW_START/FTW_SLOPE/SWEEP_LEN, COMMIT, then set
-  `nco_en` - and the guide's register-write ORDER is the natural one.
-- SWEEP_LEN is per LEG. Sawtooth (`triangle_en = 0`): period = SWEEP_LEN.
-  Triangle: up-leg SWEEP_LEN samples, then down-leg SWEEP_LEN samples with
-  negated slope, period = 2 x SWEEP_LEN. This matches `generate_chirp`, which
-  concatenates two n-sample legs.
-- `chirp_start` (the sync pulse and the CHIRP_COUNT increment) fires at sample
-  0 of every PERIOD (not every leg).
-- Unmapped reads keep returning `0xDEADC0DE`; unmapped writes keep answering
-  OKAY. Nothing about the slave protocol changes in this phase.
+- CTRL bits are quasi-static: each gets its own 2-flop synchronizer (the
+  `ramp_en` idiom).
+- `nco_en` 0->1 starts the NCO from phase 0, sample 0, using the active
+  parameter set. So the boot sequence is: write FTW_START/SLOPE/SWEEP_LEN ->
+  COMMIT -> set `nco_en`.
+- SWEEP_LEN is per leg. Sawtooth: period = SWEEP_LEN. Triangle: up-leg then
+  down-leg (negated slope), period = 2xSWEEP_LEN - matches
+  `generate_chirp`'s two-leg concatenation.
+- `chirp_start` fires at sample 0 of every **period** (not leg).
+- Unmapped reads still return `0xDEADC0DE`; unmapped writes still OKAY.
 
 ---
 
-## 3. The shadow/commit crossing (this phase's CDC lesson)
+## 3. Shadow/commit crossing
 
-Phase 3 crossed one quasi-static bit. Phase 4 crosses a **parameter SET whose
-words are meaningless unless they change together**: FTW_START, FTW_SLOPE, and
-SWEEP_LEN describe one waveform; an update that takes effect between words -
-or worse, mid-sweep - produces a chirp that never existed in any config.
-Per-register 2-flop synchronizers cannot fix this: each word would land at its
-own time.
+Phase 3 crossed one bit. Here we cross a **parameter set** - FTW_START,
+FTW_SLOPE, SWEEP_LEN describe one waveform, and if they update at different
+times you get a chirp shape that never existed in any config. Per-register
+synchronizers can't fix this.
 
-The standard discipline, and what you should build:
+1. Writes to 0x10/0x14/0x18 land in shadow registers (`s_axi_aclk` domain),
+   no effect downstream. Readback returns the shadow.
+2. Writing COMMIT flips a toggle flip-flop in the AXI domain. Software must
+   not touch the shadows again until the commit is consumed (not enforced in
+   fabric - a BUSY bit is the v2 fix).
+3. In `l_clk`: 2-flop synchronize the toggle, detect the edge (needs a 3rd
+   register to compare against), set `r_pending`.
+4. At the next chirp boundary with `r_pending` set: copy the three shadow
+   words into the active registers the NCO reads, clear `r_pending`. If
+   disabled, load immediately.
 
-1. Writes to 0x10/0x14/0x18 land in **shadow registers** in the `s_axi_aclk`
-   domain. Writing them changes nothing downstream. (Readback reads the
-   shadow - what you last wrote - which is the useful behavior for a config
-   interface.)
-2. A write to COMMIT (value ignored) flips a **toggle** flip-flop in the AXI
-   domain. The shadow registers MUST NOT change again until the commit is
-   consumed - that is your software's obligation, not enforced in fabric
-   (note the debt; a BUSY status bit is the v2 fix).
-3. In `l_clk`: 2-flop synchronize the toggle, detect an edge (XOR of the two
-   newest stages... think it through - you need a third register to compare
-   against). The edge sets a local `r_pending` flag.
-4. At the **next chirp boundary** (period sample 0) with `r_pending` set: copy
-   all three shadow words into the ACTIVE registers the NCO actually reads,
-   clear `r_pending`. If the NCO is disabled, load immediately - there is no
-   boundary to wait for.
+Safe without handshaking the full 96 bits because the shadow words are stable
+between toggle-flip and load - only the toggle crosses live, and one bit
+through two flops is solved. (The gray counter from Phase 3 handles the
+opposite case: a payload that never stops moving.)
 
-Why this is safe without handshaking the 96 bits themselves: the shadow words
-are **stable** from before the toggle flips until after the load (your
-software holds up its end), so the l_clk side samples signals that are not
-moving. Only the toggle actually crosses "live", and a single bit through two
-flops is the solved problem. This pattern - stable payload + synchronized
-flag - is the workhorse for every multi-word crossing you will ever build; the
-gray counter covered the other case (payload that never stops moving).
+Constrain the toggle's meta-flop (ASYNC_REG/false-path, as in Phase 3) and
+the shadow->active data paths (`set_false_path` or `set_max_delay
+-datapath_only`); verify matched cells after the first build.
 
-Constraints: the toggle's meta flop joins the false-path/ASYNC_REG club from
-Phase 3. The shadow-to-active data paths cross domains too - the clean idiom
-is `set_false_path` (or `set_max_delay -datapath_only`) from the shadow
-registers to the active registers; add it, and verify the pattern matched
-cells after the first build, same drill as Phase 3 Section 2.
-
-Testbench check for this section (add to the Section 7 list): change all
-three shadows while a sweep is in flight, COMMIT mid-sweep, and assert the
-in-flight sweep finishes on the OLD parameters to the last sample - the new
-set may only appear from the next period's sample 0.
+**Testbench check:** change all three shadows mid-sweep, COMMIT mid-sweep,
+assert the in-flight sweep finishes on the OLD parameters - new set only
+takes effect from the next period's sample 0.
 
 ---
 
 ## 4. The NCO spec
 
-You have built DDS before, so this is a spec with the project-specific traps
-flagged, not a DDS tutorial.
+### 4.1 Second-order phase accumulator
 
-### 4.1 Structure: second-order phase accumulator
-
-Two accumulators in series, both advancing once per sample strobe:
-
-```
+```vhdl
 r_ftw   <= r_ftw + r_slope;     -- frequency ramps linearly
 r_phase <= r_phase + r_ftw;     -- phase integrates frequency
 ```
 
-32 bits each, wrapping (plain unsigned add; two's-complement wrap IS the
-modulo-2pi arithmetic - signedness is bookkeeping for the humans and for
-Python, the adder does not care). At period start: `r_phase <= 0`,
-`r_ftw <= FTW_START` (active copy). At leg boundary in triangle mode:
-`r_slope` negates, `r_phase` continues untouched, and `r_ftw` is HELD for
-exactly one update - see the turnaround discussion below.
+Both 32-bit, wrapping (unsigned add - two's-complement wrap *is* mod-2pi;
+signedness is bookkeeping for humans/Python only). At period start: `r_phase
+<= 0`, `r_ftw <= FTW_START`. At a triangle leg boundary: negate `r_slope`,
+let `r_phase` continue, **hold `r_ftw` for one update** (see turnaround
+below).
 
-Why phase resets to zero every period: `generate_chirp_sequence` is
-`np.tile(chirp, reps)` - the golden model's phase restarts at 0 each period,
-and coherent processing assumes it. This also kills accumulated rounding
-drift across the CPI for free.
+Phase resets to 0 every period because `generate_chirp_sequence` is
+`np.tile(chirp, reps)` - the golden model restarts phase at 0 each period,
+and coherent processing assumes it. This also avoids accumulated rounding
+drift across a CPI.
 
-**The two grids (this is the key to 4.2 and to the turnaround).** `phase[n]`
-is the phase AT sample n. `ftw[n]` is not the frequency at sample n - it is
-the phase INCREMENT from sample n to n+1, i.e. the average frequency over that
-interval, which for a linear ramp is the frequency at the MIDPOINT `n + 1/2`.
-Phase lives on the sample grid; FTW lives on the half-sample grid. Every
-"off by half a sample" surprise in this phase comes from forgetting that.
+**The two grids.** `phase[n]` is the phase *at* sample n. `ftw[n]` is the
+phase increment from n to n+1 - for a linear ramp, that's the frequency at
+the *midpoint* n+1/2. Phase lives on the sample grid, FTW on the half-sample
+grid. Every off-by-half-sample bug in this section comes from forgetting
+that.
 
-**Triangle continuity does NOT come out automatically.** The phase part does:
-`phase_up(T) = -0.5*B*T + 0.5*B*T = 0` cycles, exactly where `phase_down(0)`
-begins, so the legs join at zero phase and the accumulator (having integrated
-to ~0 mod 2^32) joins the same way. The FREQUENCY part does not. The peak of
-the frequency ramp sits at the turnaround SAMPLE, so on the half-sample FTW
-grid it falls exactly BETWEEN two entries - and the two straddling it are
-mirror images at equal distance, hence equal:
+**Triangle turnaround isn't automatically continuous.** Phase is fine:
+`phase_up(T) = -0.5BT + 0.5BT = 0`, so legs join at zero phase. Frequency
+isn't: the ramp's peak sits at the turnaround *sample*, which on the
+half-sample FTW grid falls *between* two entries - and those two entries are
+mirror images, hence equal:
 
 ```
-f(N - 1/2) = f0 + (N - 1/2)*s = g0 - s/2      last up-leg interval
-f(N + 1/2) = mirror of it     = g0 - s/2      first down-leg interval
-                                              g0 = +B/(2*FS), s = slope
+f(N - 1/2) = g0 - s/2   (last up-leg interval)
+f(N + 1/2) = g0 - s/2   (first down-leg interval)     g0 = B/(2*FS), s = slope
 ```
 
-So the correct FTW sequence repeats the apex value once:
+So the correct FTW sequence repeats the apex once:
 
 ```
-... g0-5s/2,  g0-3s/2,  g0-s/2,  g0-s/2,  g0-3s/2,  g0-5s/2 ...
-                                 ^^^^^^^^^^^^^^^^ apex lies between these
+... g0-5s/2, g0-3s/2, g0-s/2, g0-s/2, g0-3s/2, g0-5s/2 ...
+                       ^^^^^^^^^^^^^ apex between these
 ```
 
-A naive "negate the slope and keep stepping" turns around ON an FTW entry
-instead of between two, never repeats the apex, and leaves every down-leg FTW
-one full `s` too low - a constant **-8834 Hz (0.88 range bins) across the
-entire down leg** at the config defaults. Hence the one-update hold: a flag
-raised at the leg boundary with the same registered timing as the negation,
+Naively negating the slope and continuing to step turns around *on* an entry
+instead of between two - the apex never repeats and every down-leg FTW is one
+full `s` too low: **-8834 Hz (0.88 range bins) across the whole down leg**, at
+config defaults. Fix: a one-update hold flag at the leg boundary, registered
+with the same timing as the negation:
 
 ```vhdl
 if (i_cfg_ftw_hold = '1') then
-    r_ftw_incr <= r_ftw_incr;                          -- apex used twice
+    r_ftw_incr <= r_ftw_incr;               -- apex used twice
 else
     r_ftw_incr <= r_ftw_incr + unsigned(i_cfg_ftw_incr);
 end if;
 ```
 
-One flag, one mux, and the down leg becomes exact. Prove it in sim against the
-model (Section 7 check 2b) - this is precisely the class of thing the guide
-told you to verify rather than trust.
+Verify against the model in sim (Section 7, check 2b).
 
-### 4.2 Register values (the contract with Python)
+### 4.2 Register values
 
-For sweep -B/2 -> +B/2 over T seconds at sample rate FS, with
-`s = B / (T * FS^2)` (the slope in cycles per sample squared):
+Sweep -B/2 -> +B/2 over T seconds at rate FS, `s = B / (T * FS^2)`:
 
 ```
-FTW_START = round((-B/(2*FS) + s/2) * 2^32)    as two's complement
-FTW_SLOPE = round(  s              * 2^32)
+FTW_START = round((-B/(2*FS) + s/2) * 2^32)   two's complement
+FTW_SLOPE = round(s * 2^32)
 SWEEP_LEN = round(T * FS)
 ```
 
-**Mind the `+ s/2`** - it is not a fudge factor, it is the half-sample grid
-offset from 4.1. The golden model evaluates `p_gold(n) = f0*n + (s/2)*n^2` at
-the sample instant; the accumulator produces the rectangular sum
-`p_hw(n) = sum_{k<n}(f0 + k*s) = f0*n + (s/2)*n^2 - (s/2)*n`. The difference
-is linear in n, which is a **constant frequency error of -s/2**. Preloading
-the FTW with half a slope makes the first entry `f(1/2)` instead of `f(0)`
-and the two expressions become algebraically identical.
+**The `+ s/2` is not a fudge factor** - it's the half-sample grid offset from
+4.1. The golden model evaluates `p_gold(n) = f0*n + (s/2)n^2` at the sample
+instant; the accumulator produces the rectangular sum `p_hw(n) = f0*n +
+(s/2)n^2 - (s/2)n`. The difference is a constant frequency error of `-s/2`;
+preloading half a slope makes the first FTW entry `f(1/2)` instead of `f(0)`
+and the two expressions match.
 
-Leave it out and, at the config defaults, the fabric chirp is the golden chirp
-delayed by exactly **half a sample**: a -4417 Hz beat offset against a 10 kHz
-bin (`FS/N`), i.e. **0.44 range bins = 1.33 m** of range bias on every target
-the moment you flip `tx_src`. That is exactly the "difference you cannot
-attribute to +-1 LSB" that Section 6.2 tells you to stop and investigate, and
-it looks like an HDL bug when it is a one-line host-side bug.
+Omit it and the fabric chirp is the golden chirp delayed by exactly **half a
+sample**: -4417 Hz beat offset against a 10 kHz bin (`FS/N`) = **0.44 range
+bins = 1.33 m** of bias the moment `tx_src` flips. Looks like an HDL bug; is
+a one-line host bug.
 
-With the config defaults (B = 50e6, T = 100e-6, FS = 56.6e6):
-`SWEEP_LEN = 5660`, `FTW_START = -1896735189 = 0x8EF21E2B`,
-`FTW_SLOPE = 670343 = 0x000A3A87`.
-(The uncorrected value was `-1897070360 = 0x8EED00E8` - if you see that
-constant anywhere, it predates this correction.)
+At config defaults (B=50e6, T=100e-6, FS=56.6e6): `SWEEP_LEN=5660`,
+`FTW_START=-1896735189=0x8EF21E2B`, `FTW_SLOPE=670343=0x000A3A87`.
+(Uncorrected value was `-1897070360=0x8EED00E8` - if you see that constant,
+it predates this fix.)
 
-### 4.3 The error budget (do this arithmetic, don't inherit bit widths)
+### 4.3 Error budget
 
-The reflex is "slope needs fractional bits, widen to 48". Check it instead:
-rounding FTW_SLOPE to an integer costs at most 0.5 LSB of FTW per sample,
-accumulating linearly: after N = 5660 samples the frequency error is bounded
-by `N * 0.5 * FS / 2^32` = **~37 Hz worst case (8.7 Hz for these exact
-numbers) against a 50 MHz sweep** - eight orders of magnitude down, and the
-corresponding phase error across a whole sweep is milliradians. 32/32 is
-enough, by arithmetic and not by luck. Re-run this budget if parameters ever
-head toward short sweeps at low FS with long CPIs; the day it fails is the
-day you widen - the accumulator, not the register interface (the registers
-can stay 32-bit with an implied fractional shift).
+Rounding FTW_SLOPE to an integer costs <=0.5 LSB of FTW per sample,
+accumulating linearly: after N=5660 samples the frequency error is bounded by
+`N*0.5*FS/2^32` ~= **37 Hz worst case (8.7 Hz actual)** against a 50 MHz
+sweep - eight orders of magnitude below it, so 32/32 bits is enough.
+Re-check this if parameters ever move toward short sweeps / low FS / long
+CPIs - widen the accumulator, not the register width (registers can
+stay 32-bit with an implied fractional shift).
 
-### 4.4 Phase-to-amplitude, and matching the DMA path's scale
+### 4.4 Phase-to-amplitude, DMA-path scale match
 
-- Output is complex and the convention is **`I = cos(p)`, `Q = sin(p)`**, so
-  that `I + jQ = e^{jp}` matches `dsp.generate_chirp` exactly. One
-  quarter-wave folded LUT serves both, and it only ever computes SINE - you
-  get cosine by feeding it a shifted phase, since `cos(x) = sin(x + 90)`. The
-  accumulator is 32 bits for a full turn, so 90 degrees is `2^30`:
+- Convention: **`I = cos(p)`, `Q = sin(p)`**, matching `dsp.generate_chirp`
+  (`I+jQ = e^{jp}`). One quarter-wave LUT computes only sine; cosine comes
+  from a 90 degree phase shift (90 degrees = `2^30` on a 32-bit accumulator):
 
   ```
-  I = LUT(phase + 2^30)   -- sin(p + 90) =  cos(p)
+  I = LUT(phase + 2^30)   -- cos(p)
   Q = LUT(phase)          -- sin(p)
   ```
 
-  **Two traps here, and they compound.** First, `phase - 2^30` is NOT the
-  same shift: mod 2^32 it equals `phase + 3*2^30`, i.e. 270 degrees, and
-  `sin(p + 270) = -cos(p)`. Taking the shifted tap as I with a minus sign
-  gives `I + jQ = sin p - j cos p = -j*e^{jp}` - a constant -90 degree
-  rotation. That one is physically harmless (it cancels in
-  `RX * conj(replica)` and is invisible in `|RD|`) but it breaks bit-exactness
-  and therefore rule 1. Second, and much worse: fixing the sign WITHOUT also
-  swapping which tap drives which port gives `I = sin p, Q = cos p`, i.e.
-  `I + jQ = j*e^{-jp}` - a **conjugated, spectrally inverted** chirp sweeping
-  +25 -> -25 MHz. Sign and port assignment must move together.
-  Pipeline alignment is unaffected by the swap (the shifted tap's extra
-  register is already compensated by delaying the direct tap), but rename the
-  signals afterwards or the `_q` pipeline ends up driving I.
-- LUT address: top 12 bits of `r_phase` -> phase-truncation spurs at roughly
-  `-6.02 * 12 = -72 dBc`, comfortably under a 12-bit DAC's ~-74 dB floor;
-  14 bits (-84 dBc, 16k x 16 = one BRAM after folding: 4k x 16) if you want
-  margin. Skip dithering; this is not a synthesizer product.
-- **Output amplitude: full-scale 16-bit** (LUT values spanning +-32767-ish).
-  `sdr.py` scales the DMA chirp by `2^15 - 1` into int16, i.e. the existing
-  radar transmits full-scale - the NCO must match, or the leakage level, MGC
-  window, and every gain number in your notes shift when you flip `tx_src`.
-  (`axi_ad9361` takes the 16-bit word; the DAC uses the top 12 bits.)
-- LUT read latency: whatever you pipeline (register the address, register the
-  BRAM output - do both, timing is then free), I and Q must ride the SAME
-  pipeline depth, and the `chirp_start` pulse you export must be delayed to
-  match the data it labels. A one-cycle I/Q skew is an image tone; a
-  mislabeled chirp start is a constant range bias that will confuse the
-  Phase 5 calibration.
+  Two traps: `phase - 2^30` is *not* the same shift (mod 2^32 it's `+3*2^30`
+  = 270 degrees, giving `sin(p+270)=-cos(p)` -> a constant -90 degree
+  rotation - harmless in `RX*conj(replica)` and invisible in `|RD|`, but
+  breaks bit-exactness). Worse: fixing the sign *without* swapping which tap
+  drives which port gives `I=sin p, Q=cos p` = `j*e^{-jp}` - a **conjugated,
+  spectrally inverted** chirp. Sign and port assignment must move together;
+  rename signals after any swap so `_q` doesn't end up driving I.
+- LUT address: top 12 bits of phase -> truncation spurs ~= -72 dBc, under a
+  12-bit DAC's ~-74 dB floor; use 14 bits (-84 dBc, 4k x 16 BRAM after
+  folding) for margin. No dithering needed.
+- **Output: full-scale 16-bit** (matches `sdr.py`'s `2^15-1` DMA scaling) or
+  the leakage level, MGC window, and every gain number shift when `tx_src`
+  flips. (`axi_ad9361` takes the 16-bit word; DAC uses the top 12 bits.)
+- I and Q must share the same LUT pipeline depth, and the exported
+  `chirp_start` pulse must be delayed to match. I/Q skew -> image tone;
+  mislabeled chirp start -> constant range bias that confuses Phase 5
+  calibration.
 
-### 4.5 The sample strobe (not raw l_clk)
+### 4.5 Sample strobe
 
-The DAC datapath meters itself: `dac_valid_i0` out of `axi_ad9361` is the
-sample-rate strobe (that is what paces `tx_fir_interpolator` today), and
-depending on interface mode it is NOT continuously high. The NCO advances
-**only on the strobe**, and the strobe is **always `i_dac_valid_0`** - one
-source, no mux, in both I2 and I3.
+`dac_valid_i0` out of `axi_ad9361` is the sample-rate strobe (already paces
+`tx_fir_interpolator`) and is not always continuously high. The NCO advances
+**only on this strobe** - one source, no mux, in both I2 and I3. (An RX-side
+strobe was considered and rejected: `dac_valid_i0` is already available
+whenever the TX interface is up regardless of DMA activity, and Phase 5's
+replica delay line wants one shared time base.)
 
-Why not switch to the RX strobe for I2, as an earlier draft of this guide
-suggested: `dac_valid_i0` is generated by the AD9361 TX interface and runs
-whenever the interface is up, independent of whether the DMA is feeding
-anything, so it is available during I2 anyway. A mode-dependent strobe buys
-nothing and costs you a select that has to be synchronized (and if you take
-it off the FIRST flop of a 2-flop synchronizer instead of the second, you have
-put a metastable signal in the datapath). More importantly, Phase 5's replica
-delay line wants ONE time base it can count in.
+Don't free-run on `l_clk` - chirp duration would scale with strobe duty and
+stop matching the golden model.
 
-Do not let it free-run on `l_clk`, or the chirp duration scales by the
-(mode-dependent) strobe duty and nothing matches the golden model.
+Sanity check: CHIRP_COUNT delta over 1 s should be 10000; 5000 or 20000 means
+the strobe assumption is wrong.
 
-First hardware sanity check, either way: CHIRP_COUNT delta over one second
-equals 10000. If it reads 5000 or 20000, the strobe assumption is wrong -
-that meter exists precisely to catch this before you stare at spectrograms.
+`tx_src` mid-flight glitches one DAC sample - harmless, but since the
+chirp-boundary machinery already exists, registering the mux select at
+period start is one line and makes it clean. Recommended.
 
-`tx_src` mid-flight: flipping CTRL bit 2 while transmitting glitches one
-sample at the DAC - harmless for a config action, but since you already have
-the chirp-boundary machinery, registering the mux select at period start too
-costs one line and makes the switch clean. Optional, recommended.
+### 4.6 Where the NCO can disagree with the golden model
 
-### 4.6 The four ways the NCO can disagree with the golden model
-
-Rule 1 says the golden model is the law. Here is the complete list of places
-where a working, sensible-looking NCO still fails to be `generate_chirp`, and
-which of them you FIX versus which you REPLICATE in `nco_reference`. Three of
-the four cost real range accuracy; only the last is cosmetic.
-
-| # | Mismatch | Size at config defaults | Action |
+| # | Mismatch | Size at defaults | Action |
 |---|---|---|---|
-| 1 | Half-sample grid offset (4.2) | -4417 Hz = 0.44 bins = 1.33 m | **Fix** in `register_image`: `+ s/2` on FTW_START |
-| 2 | Triangle turnaround (4.1) | -8834 Hz = 0.88 bins on the down leg | **Fix** in HDL: one-update FTW hold |
-| 3 | I/Q convention (4.4) | constant -90 deg, or spectral inversion if half-fixed | **Fix** in HDL: `+2^30` tap AND port swap |
-| 4 | Fixed-point quantization | <= 1 LSB, ~-72 dBc spurs | **Replicate** in `nco_reference` |
+| 1 | Half-sample grid offset (4.2) | -4417 Hz = 0.44 bins = 1.33 m | **Fix** in `register_image`: `+s/2` on FTW_START |
+| 2 | Triangle turnaround (4.1) | -8834 Hz = 0.88 bins, down leg | **Fix** in HDL: one-update FTW hold |
+| 3 | I/Q convention (4.4) | constant -90 deg, or spectral inversion if half-fixed | **Fix** in HDL: `+2^30` tap + port swap |
+| 4 | Fixed-point quantization | <=1 LSB, ~-72 dBc spurs | **Replicate** in `nco_reference` |
 
-Category 4 in detail, because "replicate" means bit-for-bit and each of these
-has a plausible-looking wrong answer:
+Category 4, bit-for-bit, each has a plausible wrong answer:
+- LUT is `floor(sin(i*pi/2/4096)*32767)` - truncated, not rounded. Peak entry
+  32766; top ~20 entries saturate there.
+- Address is the top 12 bits of phase, truncated.
+- Quadrant fold maps odd quadrants to `C_LUT_SIZE-1-idx`, not
+  `C_LUT_SIZE-idx` - worth ~-74 dBc, same order as the truncation spurs; not
+  worth fixing, but a "correctly" mirrored model will never match.
 
-- The LUT is `floor(sin(i * pi/2 / 4096) * 32767)` - truncated, not rounded.
-  Peak entry is 32766, and the top ~20 entries saturate there.
-- The address is the top 12 bits of the 32-bit phase, truncated.
-- The quadrant fold maps the odd quadrants to `C_LUT_SIZE - 1 - idx`, not
-  `C_LUT_SIZE - idx`. That one-index asymmetry is worth about -74 dBc, on par
-  with the truncation spurs, so it is not worth fixing - but a model that
-  mirrors "correctly" will never match the fabric.
+Structural fix: have `fabric_regs.py` **generate** `dds_lut.txt`, so the ROM,
+VUnit vectors, and register image all come from one function.
 
-The structural move that stops this list from growing: have `fabric_regs.py`
-**generate** `dds_lut.txt`. Then the ROM contents, the VUnit reference
-vectors, and the register image all come from one function and cannot drift.
-
-For the amplitude comparison in the I3 exit test: `sdr.py` does
-`chirp * (2**15 - 1)` then `.astype(np.int16)`, which truncates toward zero
-rather than rounding. So the DMA and NCO paths differ by at most 1 LSB -
-0.0003 dB, invisible in the leakage level.
+Amplitude note: `sdr.py` does `chirp * (2**15-1)` then truncating
+`.astype(np.int16)`, so DMA vs NCO differ by <=1 LSB (0.0003 dB) - invisible
+in leakage level.
 
 ---
 
-## 5. I2 - see the chirp with zero new tooling
+## 5. I2 - see the chirp, zero new tooling
 
-Wire the NCO's I/Q onto `o_data_0`/`o_data_1` when `rx_dbg_mux = 1`
-(pass-through and `ramp_en` behavior otherwise unchanged - the priority order
-between `ramp_en` and `rx_dbg_mux` is yours to define; define it in the tb).
-
-On hardware:
+Wire NCO I/Q onto `o_data_0`/`o_data_1` when `rx_dbg_mux=1`
+(passthrough/`ramp_en` unchanged otherwise; define their priority in the tb).
 
 ```bash
-# on the board (or via rxtap word-index equivalents)
-rxtap 4 0x8EF21E2B    # FTW_START, includes the +s/2 half-sample term (4.2)
+rxtap 4 0x8EF21E2B    # FTW_START (includes +s/2, 4.2)
 rxtap 5 0x000A3A87    # FTW_SLOPE
 rxtap 6 5660          # SWEEP_LEN
 rxtap 8 1             # COMMIT
 rxtap 1 0x12          # CTRL: nco_en | rx_dbg_mux
 ```
 
-Then start the Python radar as usual and open the Signals tab: the RX
-spectrogram shows a clean 100 us sawtooth sweeping -25 -> +25 MHz. Frame sync
-will do something nonsensical (there is no leakage to lock to - the "RX" IS
-the chirp); ignore the RD map, this checkpoint is the spectrogram and the
-CHIRP_COUNT meter. Flip `triangle_en`, COMMIT is not needed (it is a CTRL
-bit - though nothing stops you from making triangle a committed parameter
-instead; if mid-period slope-shape changes offend you, that is the cleaner
-choice), and watch the sawtooth become a triangle.
+Start the Python radar, open the Signals tab: RX spectrogram shows a clean
+100 us sawtooth, -25->+25 MHz. Frame sync will do something nonsensical (no
+leakage to lock to - the "RX" *is* the chirp); ignore the RD map. Flip
+`triangle_en` (no COMMIT needed, it's a plain CTRL bit) and watch it become a
+triangle.
 
-Checkpoint: **live waveform reconfiguration from a shell, observed in the GUI,
-no rebuild.** The I1 checkpoint was one bit; this one is the whole waveform.
+Checkpoint: live waveform reconfiguration from a shell, visible in the GUI,
+no rebuild.
 
 ---
 
@@ -550,8 +402,7 @@ no rebuild.** The I1 checkpoint was one bit; this one is the whole waveform.
 
 ### 6.1 Block design changes
 
-In `system_bd.tcl`, the TX-side wiring currently reads (three connections to
-change, near the `tx_fir_interpolator` block):
+In `system_bd.tcl`, near `tx_fir_interpolator`, current wiring:
 
 ```tcl
 ad_connect axi_ad9361/dac_valid_i0 tx_fir_interpolator/dac_valid_0
@@ -559,9 +410,7 @@ ad_connect axi_ad9361/dac_data_i0 tx_fir_interpolator/data_out_0
 ad_connect axi_ad9361/dac_data_q0 tx_fir_interpolator/data_out_1
 ```
 
-becomes (interpolator output now lands in the core; core output feeds the
-DAC; the valid strobe fans out to both the interpolator - as before - and the
-core):
+becomes:
 
 ```tcl
 ad_connect axi_ad9361/dac_valid_i0 tx_fir_interpolator/dac_valid_0
@@ -572,19 +421,14 @@ ad_connect axi_ad9361/dac_data_i0 fmcw_core_0/o_dac_data_0
 ad_connect axi_ad9361/dac_data_q0 fmcw_core_0/o_dac_data_1
 ```
 
-**Data wires only.** Per Section 1, there are no TX enable connections to the
-core - `enable_out_0/1` of the interpolator stay connected to
-`tx_upack/enable_0/1` and nowhere else. If you take nothing else from this
-section: the upack `fifo_rd_en` loop (`logic_or` -> `tx_upack/fifo_rd_en`) and
-the whole enable path stay EXACTLY as they are. The core only cuts the two
-data wires into `axi_ad9361`. Channel 1 (`dac_data_i1/q1`) is not touched
-either - it keeps its direct path from `tx_upack`.
+**Data wires only** - no TX enable connections (Section 1). `enable_out_0/1`
+stays wired `tx_fir_interpolator <-> tx_upack`, untouched; ch1 also
+untouched.
 
-Trap while editing this file: in Tcl, `#` only starts a comment at the start
-of a command. `ad_connect a b # todo` passes `#` and `todo` to `ad_connect` as
-two extra arguments. Use `;# todo` or put the note on its own line.
+*Tcl trap:* `#` only comments at the start of a command - `ad_connect a b #
+todo` passes `#`/`todo` as extra args. Use `;# todo` or a separate line.
 
-And the sync mux (new lines, plus ONE existing line to delete):
+Sync mux (delete one line, add two):
 
 ```tcl
 # delete: ad_connect axi_tdd_0/tdd_channel_1 axi_ad9361_adc_dma/sync
@@ -592,224 +436,182 @@ ad_connect axi_tdd_0/tdd_channel_1 fmcw_core_0/i_sync_in
 ad_connect fmcw_core_0/o_dma_sync  axi_ad9361_adc_dma/sync
 ```
 
-With `sync_src = 0` this is a wire - stock behavior preserved (remember WHY:
-tdd_channel_1 idles high by default polarity, and sync-high is what lets
-transfers start at all). Do not set `sync_src = 1` in this phase unless you
-are deliberately running the Section 6.3 experiment.
+`sync_src=0` makes this a plain wire (stock behavior preserved -
+`tdd_channel_1` idles high, which is what lets transfers start at all).
+Don't set `sync_src=1` this phase except deliberately (Section 6.3).
 
-Refresh Module in the GUI first (the port list changed - watch for the
-19-loose-pins inference failure on the AXI side if any AXI port name got
-touched during the rename), then build.
+Refresh Module first (watch for 19-loose-pins AXI inference failure if any
+AXI port name got touched during rename), then build.
 
-### 6.2 The exit test (this is the phase gate)
+### 6.2 Exit test (phase gate)
 
-Digital loopback on, Python radar completely unchanged, fake targets running:
+Digital loopback on, Python unchanged, fake targets running:
 
-1. Baseline: `tx_src = 0` (DMA chirp). Note the RD map, target positions,
-   leakage level.
-2. `tx_src = 1`, `nco_en = 1`, waveform registers = the same B/T/FS the
-   Python config computes. The radar must keep working identically: same RD
-   map, same target detections, same leakage level (the full-scale amplitude
-   match from 4.4). Python is still generating and pushing its DMA chirp -
-   it just is not reaching the DAC; that is fine and expected in this phase.
-3. **The determinism proof:** log `estimate_chirp_offset`'s result over many
-   consecutive blocks and across several `start()` cycles. With the DMA
-   chirp it wanders (buffer timing is software-paced). With the NCO it must
-   return the SAME value every block, every run. That constant is your
-   TX -> RX digital latency through the loopback path, in samples.
-   **Write it in TODO.md** - it is the Phase 5 `DECHIRP_DELAY` seed and the
-   first hard evidence that fabric timing is deterministic.
+1. Baseline: `tx_src=0` (DMA chirp). Note RD map, target positions, leakage
+   level.
+2. `tx_src=1`, `nco_en=1`, waveform registers = same B/T/FS as the Python
+   config. Radar must behave identically - same RD map, detections, leakage
+   (full-scale amplitude match, 4.4). Python is still generating/pushing its
+   DMA chirp; it's just not reaching the DAC.
+3. **Determinism proof:** log `estimate_chirp_offset` over many blocks and
+   several `start()` cycles. DMA chirp wanders (software-paced); NCO must
+   return the *same* value every time - that constant is the TX->RX digital
+   latency. **Write it in TODO.md** - Phase 5's `DECHIRP_DELAY` seed.
 
-If step 2's RD map differs from baseline in any way you cannot attribute to
-the +-1 LSB of quantization difference between the float DMA chirp and the
-fixed-point NCO: stop and find out why in simulation. "Close enough" here
-compounds into "dechirp mysteriously 20 dB worse" in Phase 5.
+If step 2 differs from baseline beyond +-1 LSB of float-vs-fixed-point
+quantization: stop, investigate in simulation before it becomes an
+unexplained 20 dB hit in Phase 5.
 
-### 6.3 Optional now, mandatory later: first sync experiment
+### 6.3 Optional now, mandatory later: sync experiment
 
-Flip `sync_src = 1` and restart the Python side: every `read_block()` should
-now begin at (near) a chirp boundary - `estimate_chirp_offset` should report
-approximately zero. Not exactly zero: cpack packs samples into 64-bit beats,
-sync is sampled on beats, and the RX-side latency from the core's tap point
-to the DMA adds a fixed few samples. Constant again, and small. Two things to
-verify while you are here, because they matter for I6:
+Flip `sync_src=1`, restart Python: every `read_block()` should start near a
+chirp boundary (`estimate_chirp_offset` ~= 0, not exact - cpack packs into
+64-bit beats, plus a small fixed RX-tap-to-DMA latency). Verify while here,
+for I6:
 
-- pulse width: a single-cycle `chirp_start` can fall between packed beats and
-  be missed - stretch `o_dma_sync` (when `sync_src = 1`) over a handful of
-  cycles so it is guaranteed to overlap an accepted beat. The transfer then
-  starts on the first beat inside the window: still deterministic, since
-  beats are phase-locked to samples.
-- one transfer per buffer: libiio splits very large buffers into multiple DMA
-  transfers, and SYNC_TRANSFER_START gates EACH transfer - a mid-CPI re-sync
-  would drop samples inside your buffer. At 2.9 MB per CPI (128 reps) you are
-  under the DMAC's per-transfer ceiling, but confirm empirically: if the
-  captured CPI shows a phase/timing discontinuity partway through with
-  `sync_src = 1` but not with 0, this is what it is.
+- **Pulse width:** a single-cycle `chirp_start` can fall between packed beats
+  and be missed - stretch `o_dma_sync` over a few cycles (when `sync_src=1`)
+  so it overlaps an accepted beat. Still deterministic since beats are
+  phase-locked to samples.
+- **One transfer per buffer:** libiio splits very large buffers into
+  multiple DMA transfers, and SYNC_TRANSFER_START gates each one - a
+  mid-CPI re-sync would drop samples. At 2.9 MB/CPI (128 reps) you're under
+  the ceiling, but confirm: a phase/timing discontinuity partway through a
+  CPI with `sync_src=1` but not 0 is this.
 
-Then set `sync_src` back to 0 for daily use until I6 formally retires frame
-sync.
+Set `sync_src` back to 0 for daily use until I6 retires frame sync.
 
 ---
 
-## 7. The testbench (extend, don't rewrite)
+## 7. Testbench (extend, don't rewrite)
 
-`tb_rx_tap` (now `tb_fmcw_core`) keeps its two unrelated clocks and the
-axi_write/axi_read procedures. The existing six checks stay green. New checks:
+`tb_rx_tap` -> `tb_fmcw_core`, keeps its two clocks and axi_write/axi_read
+procedures; existing six checks stay green. New checks:
 
-1. **NCO vs golden vector, bit-exact.** A Python script (see Section 8 - the
-   same fixed-point model that computes register values) writes a reference
-   file of N samples of (I, Q) for the default config; the tb configures the
-   core via real AXI writes (values read from the file header or hard
-   constants - either way, THE SAME numbers the script used), enables, and
-   `check_equal`s every strobed output sample against the file. VUnit's
-   convenient path: plain text integers via std.textio, one I/Q pair per
-   line, file dropped in the tb directory and the path passed as a generic
-   (or via VUnit's `tb.set_generic`). Bit-exact means `=`, not "close".
-2. **Period framing:** chirp_start fires at sample 0 of every period;
-   period length = SWEEP_LEN (sawtooth) and 2x (triangle); CHIRP_COUNT
-   increments per period and survives the gray crossing (reuse check 5's
-   pattern).
-   2b. **Triangle turnaround (4.1):** capture the FTW sequence across the leg
-   boundary and assert the apex value appears TWICE - `..., g0-3s/2, g0-s/2,
-   g0-s/2, g0-3s/2, ...`. If it appears once, the one-update hold is missing
-   and the whole down leg is a constant `s` low. Cheaper and far more
-   diagnostic than eyeballing the phase error at the end of the leg.
-   2c. **I/Q convention (4.4):** assert `I[0] > 0` and `Q[0] = 0` at the first
-   sample of a period (phase 0 -> `cos = full scale`, `sin = 0`). Two
-   `check_equal`s that catch both the -90 rotation and the spectral inversion
-   instantly. Follow with a mid-sweep sample where I and Q differ in sign to
-   pin the rotation direction.
-3. **Shadow/commit atomicity:** the Section 3 check - commit mid-sweep, old
-   parameters run to the last sample, new set active from next period sample
-   0. Also: commit while `nco_en = 0` loads immediately; enabling then starts
-   on the new set.
-4. **Mux sanity:** `tx_src = 0` passes `i_dac_data_*` through untouched
-   (delta = pipeline delay only); `rx_dbg_mux = 0` keeps the RX path
-   transparent (the Phase 2 pass-through property, re-proven for the grown
-   core); power-on register state = all CTRL zeros = both paths transparent
-   and `o_dma_sync = i_sync_in`.
-5. **Strobe discipline:** drop `i_dac_valid_0` low for a stretch mid-sweep -
-   the NCO must freeze (phase, ftw, sample counter all hold), not skid.
+1. **NCO vs golden vector, bit-exact.** A Python script (Section 8's
+   fixed-point model) writes N samples of reference (I,Q); the tb configures
+   the core via real AXI writes using the same numbers, enables, and
+   `check_equal`s every strobed sample against the file. VUnit path:
+   plain-text integers via std.textio, path passed as a generic. Bit-exact
+   means `=`, not close.
+2. **Period framing:** `chirp_start` at sample 0 of every period (length
+   SWEEP_LEN sawtooth, 2x triangle); CHIRP_COUNT increments per period,
+   survives the gray crossing.
+   - **2b Triangle turnaround (4.1):** capture the FTW sequence across the
+     leg boundary, assert the apex value appears *twice*. If once, the hold
+     is missing and the whole down leg is off by `s`.
+   - **2c I/Q convention (4.4):** assert `I[0]>0`, `Q[0]=0` at sample 0 of a
+     period (phase 0 -> cos=full scale, sin=0) - catches both the -90 degree
+     rotation and spectral inversion. Follow with a mid-sweep sample where
+     I/Q differ in sign to pin rotation direction.
+3. **Shadow/commit atomicity:** Section 3's check - commit mid-sweep, old
+   parameters run to the last sample, new set active from next period's
+   sample 0. Also: commit while `nco_en=0` loads immediately.
+4. **Mux sanity:** `tx_src=0` passes `i_dac_data_*` through untouched
+   (pipeline delay only); `rx_dbg_mux=0` keeps RX transparent; power-on state
+   (all CTRL zero) = both paths transparent, `o_dma_sync = i_sync_in`.
+5. **Strobe discipline:** drop `i_dac_valid_0` low mid-sweep - phase, ftw,
+   and the sample counter must all hold.
 
-The reference-file workflow is the piece to get right, because Phase 5's
-dechirp verification ("matches `dsp.mix_signal` sample-for-sample") is this
-exact machinery with a longer file. Build it as: config in ->
-`register_image()` + `nco_reference()` out, one script, no hand-typed
-constants anywhere in the tb.
+The reference-file machinery is worth getting right: Phase 5's dechirp
+verification (`dsp.mix_signal` sample-for-sample) reuses it directly. Build
+as: config -> `register_image()` + `nco_reference()` -> one script, no
+hand-typed constants in the tb.
 
 ---
 
 ## 8. Host side: config.py -> registers
 
-Two small Python pieces, cleanly separated (spec; you write them):
-
-1. **`src/python/common/fabric_regs.py`** - pure, no I/O, no radio:
-   - `register_image(cfg: RadarConfig) -> dict[int, int]`: offset -> value
-     for FTW_START/FTW_SLOPE/SWEEP_LEN (+ CTRL bits from TRIANGLE_EN),
-     implementing exactly the 4.2 formulas. Two's-complement encode signed
-     values into the 32-bit unsigned register words here, in one place.
-   - `nco_reference(cfg, n) -> np.ndarray[complex]` (or int32 I/Q pair
-     array): the bit-true fixed-point NCO model - integer 32-bit wrapping
-     adds, the same LUT quantization you implemented, NOT a call to
-     `generate_chirp`. This is the single source of truth the VUnit
-     reference files come from. It must reproduce every item in the 4.6
-     "replicate" list: floor-quantized LUT, truncated 12-bit address, the
-     `C_LUT_SIZE - 1 - idx` fold, and the `I = cos` / `Q = sin` convention.
-   - `dds_lut_table()` -> the 4096 quarter-wave entries, and a small
-     entry point that WRITES `src/nco/dds/dds_lut.txt`. Generating the ROM
-     from the same function the model uses is what stops the fabric and the
-     golden vectors from drifting apart (4.6). Regenerate and diff in CI, or
-     at least assert the checked-in file matches on import.
-   - Unit tests (offline, pytest style like the detector self-test):
-     (a) `nco_reference` vs `generate_chirp` float output: spectral error
-     below ~-70 dBc, peak phase error bounded - this test is only meaningful
-     once the 4.6 fixes are in, otherwise it quietly absorbs a 0.44-bin bias;
-     (b) round-trip sanity of the encodings (FTW_START for -25 MHz decodes
-     back to -25 MHz within FS/2^32, remembering the `+ s/2` term);
-     (c) triangle: the last up-leg FTW and the first down-leg FTW are equal.
-2. **`src/python/online/fabric_ctl.py`** - transport, dumb on purpose:
-   `write_regs(image: dict, ip: str)` shelling out over ssh to the on-board
-   tool: `ssh root@{ip} /root/rxtap <word_index> <value>` per register, then
-   COMMIT. (`rxtap` addresses by word index = offset/4 - keep the /4 in ONE
-   named place.) Batch it in one ssh invocation (`rxtap 4 ... && rxtap 5
-   ...`) - ssh session setup dwarfs the writes. paramiko vs subprocess:
-   subprocess is zero new dependencies and you already live in a shell;
-   swap later if session reuse starts to matter. GUI integration (a "fabric"
-   section in the config tab, bypass toggles) is I6 - resist it for now.
+1. **`src/python/common/fabric_regs.py`** - pure, no I/O, production code
+   (the online app writes real registers with it):
+   - `register_image(cfg) -> dict[int,int]`: offset->value for
+     FTW_START/SLOPE/SWEEP_LEN + CTRL bits (from TRIANGLE_EN), implementing
+     4.2 exactly. Two's-complement encoding happens here, in one place.
+2. **`.../hdl/projects/e200/test/nco_reference.py`** - HDL test
+   infrastructure, not radar application code, so it lives with `run.py`
+   rather than in `src/python`. Reaches into `src/python` only to reuse
+   `dsp.generate_chirp` (the golden model) and `fabric_regs.chirp_ftw` (so it
+   checks the exact FTW values `run.py` writes into the DUT):
+   - `nco_reference(cfg, n) -> np.ndarray[complex]`: bit-true fixed-point
+     model (32-bit wrapping adds, same LUT quantization as HDL - *not* a call
+     to `generate_chirp`). Source of truth for VUnit reference files; must
+     reproduce every 4.6 "replicate" item (floor-quantized LUT, truncated
+     12-bit address, `C_LUT_SIZE-1-idx` fold, `I=cos`/`Q=sin`).
+   - `dds_lut_table()` -> the 4096 quarter-wave entries, plus an entry point
+     that writes `src/nco/dds/dds_lut.txt`. Generating the ROM from the same
+     function as the model keeps them from drifting apart. Regenerate-and-
+     diff in CI, or assert the checked-in file matches on import.
+   - Unit tests (offline): (a) `nco_reference` vs `generate_chirp` float -
+     spectral error < ~-70 dBc, bounded phase error (only meaningful once
+     4.6 fixes land); (b) round-trip encoding sanity (FTW_START for -25 MHz
+     decodes back within FS/2^32, including `+s/2`); (c) triangle: last
+     up-leg FTW == first down-leg FTW.
+3. **`src/python/online/fabric_ctl.py`** - dumb transport: `write_regs(image,
+   ip)` shells `ssh root@{ip} /root/rxtap <word_index> <value>` per register,
+   then COMMIT. (`rxtap` addresses by word index = offset/4 - keep the `/4`
+   in one named place.) Batch in one ssh call (`rxtap 4 ... && rxtap 5 ...`)
+   since session setup dominates. subprocess over paramiko for now (zero new
+   deps); swap later if session reuse matters. GUI integration is I6 - resist
+   it now.
 
 ---
 
-## 9. Troubleshooting catalogue (Phase 4 edition)
+## 9. Troubleshooting
 
-- **RX capture hangs forever (no data, no error)** -> the DMA sync trap:
-  `sync_src = 1` with the NCO disabled (no pulses), or the sync mux default
-  is wrong, or you OR'd instead of MUXing and then "fixed" the idle-high by
-  inverting something. `read_block` blocking on the first buffer is the
-  signature. Recovery: `rxtap` CTRL sync_src back to 0 - the bus is alive,
-  only the stream is starved (unlike the Phase 3 hang, no power cycle
-  needed).
-- **Chirp duration wrong by a clean factor (2x, 4x)** -> NCO advancing on
-  raw `l_clk` instead of the strobe, or on the wrong strobe. CHIRP_COUNT
-  meter catches it in one second.
-- **Spectrogram shows the sweep but at half/double the intended bandwidth**
-  -> FTW_SLOPE off by a factor (the FS^2 in the denominator is the usual
-  victim), or SWEEP_LEN and slope computed from inconsistent FS.
-- **Mirrored sweep (+25 -> -25 when you wanted -25 -> +25)** -> sign error in
-  FTW_START, or I/Q swapped at the DAC ports (spectral inversion). The other
-  way in is fixing the quadrature tap sign without also swapping which tap
-  drives which port (4.4) - that gives `j*e^{-jp}`, a conjugated chirp.
-  Compare against the DMA-chirp spectrogram, which is known-good.
-- **Everything works but every target moved by ~1.3 m when you flipped
-  tx_src** -> the `+ s/2` half-sample term is missing from FTW_START (4.2).
-  It is 0.44 of a range bin, so it looks like a small calibration error
-  rather than a bug. Check the register value before touching the HDL.
-- **Sawtooth is perfect, triangle targets smear or split** -> the FTW hold at
-  the turnaround is missing (4.1): the down leg runs a constant 0.88 bins off
-  the up leg, so up-leg and down-leg detections disagree about range.
-- **Discrete tones around the chirp in the RD map / spectrogram** -> I/Q
-  pipeline skew in the LUT path (image tone), or phase truncation taken from
-  the wrong end of `r_phase` (take the TOP bits).
-- **Leakage level shifts when flipping tx_src** -> amplitude mismatch vs the
-  `2^15 - 1` DMA scaling (Section 4.4).
-- **estimate_chirp_offset constant but different after every reboot** ->
-  it will be constant per bitstream and interface bring-up; if it moves
-  between boots, suspect the AD9361 interface calibration (ADC_INIT_DELAY
-  timing) or that you are measuring across a `set_loopback` toggle. Constant
-  within a run is what I3 requires; note per-boot behavior for Phase 5.
-- **dac_dunf / underflow complaints in dmesg while tx_src = NCO** -> expected
-  noise IF you stopped pushing the TX buffer from Python: upack keeps being
-  read (its rd_en loop is untouched) with no DMA feeding it. Either keep
-  pushing the cyclic buffer (harmless, this phase's default since Python is
-  unchanged) or ignore the flag; do NOT re-plumb the rd_en loop to silence
-  it.
-- **Vivado: interface inference broke after the rename** -> the `s_axi_*`
-  names must survive `rx_tap -> fmcw_core` untouched; 19 loose pins means a
-  find-replace ate a port name. Refresh Module after fixing.
-- **Timing failures on shadow -> active paths** -> the Section 3 constraint
-  is missing or its pattern matched nothing (same verification drill as
-  Phase 3: grep `timing_impl.log`, confirm the false path hit cells).
-- **It all worked and then vanished after a rebuild** -> same answer as every
-  phase. Which branch, and did you commit?
+- **RX capture hangs forever, no data/error** -> DMA sync trap: `sync_src=1`
+  with NCO disabled (no pulses), wrong mux default, or OR'd instead of
+  MUXed. Signature: `read_block` blocks on the first buffer. Fix: `rxtap`
+  CTRL `sync_src` back to 0 (no power cycle needed, unlike the Phase 3 hang).
+- **Chirp duration off by 2x/4x** -> NCO advancing on raw `l_clk` or the
+  wrong strobe. CHIRP_COUNT meter (10000/s) catches it.
+- **Spectrogram sweeps at half/double bandwidth** -> FTW_SLOPE off by a
+  factor (check the `FS^2` denominator), or SWEEP_LEN/slope computed from
+  inconsistent FS.
+- **Mirrored sweep (+25->-25 instead of -25->+25)** -> sign error in
+  FTW_START, or I/Q swapped at DAC ports. Also: fixing the quadrature sign
+  without swapping ports gives `j*e^{-jp}`, a conjugated chirp (4.4). Compare
+  against the known-good DMA-chirp spectrogram.
+- **Every target moves ~1.3 m when flipping tx_src** -> missing `+s/2` in
+  FTW_START (4.2); 0.44 range bins reads like a calibration error, not a bug.
+  Check the register value first.
+- **Sawtooth fine, triangle targets smear/split** -> missing FTW hold at
+  turnaround (4.1); down leg runs 0.88 bins off the up leg.
+- **Discrete tones around the chirp** -> I/Q pipeline skew (image tone), or
+  phase truncation taken from the wrong end of `r_phase` (must be the top
+  bits).
+- **Leakage level shifts with tx_src** -> amplitude mismatch vs the
+  `2^15-1` DMA scaling (4.4).
+- **`estimate_chirp_offset` constant but different after each reboot** ->
+  expected (per-bitstream/bring-up constant); if it moves *within* a run,
+  suspect AD9361 interface calibration or a `set_loopback` toggle mid-
+  measurement.
+- **`dac_dunf`/underflow in dmesg with `tx_src=NCO`** -> expected if you
+  stopped pushing the TX buffer (upack's `rd_en` loop keeps reading with
+  nothing feeding it). Keep pushing the cyclic buffer, or ignore the flag -
+  don't re-plumb `rd_en`.
+- **Vivado: interface inference broke after rename** -> an `s_axi_*` name
+  got eaten by find-replace; 19 loose pins is the symptom. Refresh Module.
+- **Timing failures on shadow->active paths** -> Section 3's false-path
+  constraint missing or matched nothing (grep `timing_impl.log`, same drill
+  as Phase 3).
+- **It all worked, then vanished after a rebuild** -> which branch, did you
+  commit?
 
 ---
 
 ## Where this leads
 
-Phase 5 = rungs I4 + I5, and every piece is already parked in this design:
+Phase 5 = I4+I5, everything already parked in this design:
 
-- **dechirp**: complex multiply `RX x conj(replica)` at the RX insertion
-  point; the replica is the NCO output through a DECHIRP_DELAY-deep delay
-  line (register 0x24, reserved). Verification is the Section 7 reference-
-  file machinery pointed at `dsp.mix_signal` in digital loopback - the
-  golden-model test that needs no RF.
-- **decimation**: CIC or halfband chain after the mixer, DECIM_SEL (0x28),
-  and IF_SEL (0x2C) finally switches cpack onto the IF stream - the moment
-  Ethernet stops carrying raw IQ and the frame-rate/duty-cycle appendix of
-  TODO.md comes due. The valid-strobe discipline you built into the core
-  (everything advances on strobes, nothing assumes continuous valid) is what
-  makes a decimated, duty-cycled stream into cpack a wiring change instead
-  of a redesign.
-- **I6**: `sync_src = 1` becomes the default, `estimate_chirp_offset` and
-  frame sync are deleted from the IF path, and `fabric_ctl.write_regs`
-  becomes what RE-CONFIGURE does. The cutover still waits for Parts F + G on
-  real RF - the rule from Part I stands.
+- **Dechirp:** complex multiply `RX x conj(replica)` at the RX insertion
+  point; replica = NCO output through a DECHIRP_DELAY-deep delay line (0x24,
+  reserved). Verified with the Section 7 reference-file machinery against
+  `dsp.mix_signal` in digital loopback - no RF needed.
+- **Decimation:** CIC/halfband chain after the mixer, DECIM_SEL (0x28);
+  IF_SEL (0x2C) finally switches cpack onto the IF stream - Ethernet stops
+  carrying raw IQ. The core's strobe discipline (everything advances on
+  strobes, nothing assumes continuous valid) is what makes this a wiring
+  change.
+- **I6:** `sync_src=1` becomes default, `estimate_chirp_offset`/frame sync
+  are deleted from the IF path, `fabric_ctl.write_regs` becomes
+  RE-CONFIGURE. Still waits on Parts F+G on real RF.
