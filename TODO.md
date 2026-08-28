@@ -1,138 +1,56 @@
 # TODO
 
 Roadmap for the FMCW radar. Carrier is **5.8 GHz** (cheap WiFi/FPV hardware).
-Current state (2026-07): Parts A-E **done** (offline model, online model, GUI,
-target sim, DSP hardening) except three small open items in E3/E6. Part F
-(cable loopback, first real RF) **done**. **Part I is the active track**
-(HDL offload, I1 landed on hardware, I2 next). Part G (antennas) is the next
-RF step. Part J (synthetic wideband) is a forward-looking study that blocks
-nothing.
 
-See `src/python/` for the `common` / `offline` / `online` package split.
+**This file tracks unfinished work only.** Completed parts get one line each and
+their design conclusions move to `CLAUDE.md`, which is the maintained map - don't
+grow narrative back in here as parts close.
 
-See `firmware` for all things firmware related. In `firmware/plutosdr-fw/hdl/projects/e200` the custom HDL should reside, along with VUnit testbenches.
+Current state (2026-08): **Part I is the active track** (HDL offload; I2's
+simulation gate passed, hardware bring-up is next). Part G (antennas) is the next
+RF step. Part H (PA/LNA/BPF) stays deferred behind G. Part J (synthetic wideband)
+blocks nothing and is testable in loopback today.
 
----
-
-## Parts A-D - software radar done
-
-**A - offline consolidation.** Detector self-test, config/property cleanup,
-frame-sync helper. `config.py` is the source of truth for parameters.
-
-**B - online scaffolding.** `online/sdr.py` (libiio `AntSDR` wrapper: cyclic TX
-buffer, CPI-sized RX buffer, `start()/read_block()/close()`), `online/capture.py`
-(frame sync + simulated loopback delay/velocity/noise), `online/processing.py`,
-`online/app.py` (`RadarWorker(QThread)` -> `results` signal -> `gui.RadarDisplay`).
-
-**C - GUI refurbish + runtime reconfiguration.** Configuration tab (Tx inst-freq
-plot, derived-characteristics table, config form auto-generated from `RadarConfig`
-field metadata), RE-CONFIGURE -> `reconfigure_requested` -> `worker.pending_cfg`
--> `close()`/`start()` cycle with last-good revert. Signals tab: live Rx/IF
-spectrograms (throttled worker emit), shared with the offline model.
-Gotchas: `setClipToView`/auto-downsampling hides curves whose data is set before
-first show; `QDoubleValidator` does not hard-reject out-of-range input, so
-`read_cfg_reg` is the gate; AD9361 limits FS 2.083-61.44 MSPS, rf_bandwidth
-0.2-56 MHz.
-
-**D - moving fake targets.** `online/target_sim.py`: `FakeTarget`
-(`r0, v0, a0, amp, duration, t_spawn`) + `TargetSim.set_targets()`
-(atomic-reference swap, GUI writes / worker reads). `apply()` runs on the RAW
-`read_block()` output BEFORE frame sync, so `estimate_chirp_offset` sees the
-realistic composite. Per target: analytic kinematics from `t_spawn` (clipped to
-MAX_RANGE/MAX_VELOCITY so frame rate never distorts the trajectory),
-`tau = round(2*r*FS/c)`, `echo = amp * np.roll(rx_raw, tau)` (exact circular
-delay: the RX block is an integer number of periods) + `dsp.apply_doppler_shift`;
-one `dsp.apply_noise` at the end. Expiry resets `t_spawn`, so trajectories loop.
-GUI target-editor table -> `targets_changed` -> `worker.set_targets`, no radio
-restart.
-Gotchas: numpy silently upcasts complex64 to complex128 (`np.exp` phasors,
-`randn` noise), so `apply_doppler_shift`/`apply_noise` cast back to the input
-dtype; at amp ~1 a fake target steals the sync lock (documented failure mode).
-
-**Stretch items still open across A-D**: MTI upgrades beyond mean subtraction
-(A2, see E1), earliest-peak-above-threshold sync lock instead of argmax,
-1/R^2 amplitude realism via `soft_model.add_amplitude`.
+See `src/python/` for the `common` / `offline` / `online` package split, and
+`firmware/plutosdr-fw/hdl/projects/e200` for the custom HDL + VUnit testbenches.
 
 ---
 
-## Part E - Real-world DSP hardening done (3 open items)
+## Parts A-F - done
 
-The four gaps the digital loopback was hiding, and what was done about them:
+- **A - offline consolidation.** Detector self-test, config/property cleanup,
+  frame-sync helper; `config.py` became the parameter source of truth.
+- **B - online scaffolding.** `online/sdr.py`, `capture.py`, `processing.py`,
+  `app.py` - the live SDR path end to end.
+- **C - GUI refurbish + runtime reconfiguration.** Config tab auto-generated from
+  `RadarConfig` field metadata, RE-CONFIGURE cycle with last-good revert, live
+  Rx/IF spectrograms.
+- **D - moving fake targets.** `online/target_sim.py`, injected on raw
+  `read_block()` output before frame sync.
+- **E - real-world DSP hardening.** MTI (E1) + live checkbox (E2), 5.8 GHz at
+  128 reps (E3), loopback-flag split (E4), close-in CFAR mask (E5), verified on
+  the bench (E6). Three items still open below.
+- **F - cable loopback, first real RF.** TX -> 30-40 dB of pads -> RX with
+  `set_loopback(False)`: confirmed `CFAR_MASK_N`, exercised the MGC window, and
+  gave the first honest look at leakage shape and close-in smear. One item
+  skipped below.
 
-1. **Stationary clutter** at range > 0 (fast-time mean subtraction only kills the
-   range-0 leakage DC). Fixed by **E1**: per-range-bin slow-time mean subtraction
-   in `dsp.process_cpi`, computed on unwindowed rows after fast-time leakage
-   removal and before windowing, applied to both up and down matrices when
-   `TRIANGLE_EN`, gated on `MTI_EN`. It is a notch exactly at Doppler bin 0.
-   Real clutter has spectral *width*, which one bin does not cover - upgrade path
-   is a 2-pulse canceller (`x[k] - x[k-1]`, wider notch, 3 dB SNR cost) then an
-   exponential-average clutter map; revisit against real clutter in Part G.
-   **E2** put a live MTI checkbox on the Radar tab via the atomic-write pattern
-   (bool write, worker reads next CPI, no radio restart).
-2. **Doppler resolution at 5.8 GHz**: 8.1 m/s per bin at 32 reps, so pedestrians
-   and most cars sat inside the MTI notch. Fixed by **E3**: `CHIRP_FC_HZ` -> 5.8e9,
-   `CHIRP_REPS` -> 128 (2.02 m/s per bin, MAX_VELOCITY 129 m/s, range res 3.0 m
-   @ 50 MHz BW, MAX_RANGE 2250 m, processing gain 61.6 dB @ 256).
-   Why `subbin_refine` does not substitute: accuracy is not resolution. The
-   parabola fit localizes an already-detected isolated peak to ~+-0.05 bins but
-   runs AFTER CFAR, and slow targets fail earlier - they share a CFAR cell with
-   clutter 40-80 dB stronger, and the notch width is fixed in BINS (at 32 reps a
-   1.5 m/s target sits 0.19 bins from DC and loses ~9-10 dB of itself to mean
-   subtraction; at 256 reps, 1.5 bins out, ~0.2 dB). Longer CPI is cheap (25.6 ms
-   @ 256 reps; a 50 m/s target migrates 1.3 m, under half a range bin).
-   `subbin_refine` owns accuracy, CHIRP_REPS owns detection and resolution.
-3. **Leakage is not one clean tap** (analog group delay + multipath smear it over
-   the first few range bins). Fixed by **E5**: CFAR mask over the first N range
-   bins, N a config field; the Part F cable data confirmed the default.
-4. **Dynamic range**: echo-to-leakage spans 60-90 dB against a ~12-bit ADC.
-   Explored in Part F (MGC window, AD9361 tracking loops).
+### Still open from A-F
 
-**E4** split the flags: `SDR_LOOPBACK_EN` gates only `radio.set_loopback()`, and
-`TargetSim.apply()` is ungated, so fake targets ride ANY input and work as a live
-test-signal generator on real RF.
-
-**E6 verification** done: v=0 target at 500 m visible with MTI off / gone with MTI
-on, moving target in the same capture unaffected, toggled live; slow target
-(v0 = 2-3 m/s) cleanly outside the notch at 128+ reps.
-
-Open items:
-
-- [ ] Buffer/throughput check: P = 5660 samples @ FS 56.6 MSPS; RX buffer =
-      (128+1) * 5660 * 4 B = 2.9 MB per CPI (5.8 MB @ 256+1). The GbE link moves
-      ~118 MB/s max, so expect a frame rate of a few Hz - fine, but verify the
-      GUI stays responsive and the spectrogram throttling still works.
-- [ ] Verify `sdr.start()` accepts 5.8e9 against real hardware (AD9361 RX/TX LO
-      range covers 70 MHz - 6 GHz, so no driver change is needed).
-- [ ] Offline soft model runs with MTI_EN both ways (regression on detector
-      self-test).
-
----
-
-## Part F - Cable loopback: first real RF done
-
-TX1A -> 30-40 dB of SMA pads -> RX1A over a short cable, `set_loopback(False)`:
-the full analog chain (DAC, TX filters/mixer, real LO, RX front end, ADC) with
-nothing radiated. Kit ordered per `hardware/materials.md`; never run TX into RX
-without pads (AD9361 TX reaches ~7 dBm at 5.8 GHz, RX wants well below -10 dBm at
-the port). The deferred C6 test ran here safely: `SDR_LOOPBACK_EN` unticked,
-clean teardown/restart both ways. The `start()` RX-live check (fixed 0.01
-normalized amplitude, unreachable through 40 dB of pad at low RX gain) was made
-relative instead of absolute. Frame sync locks on the real signal - the cable path
-is still the strongest and earliest return - and the Rx/IF spectrograms gave the
-first honest look at leakage shape, filter group delay, and close-in smear, which
-set E5's N.
-
-Findings:
-
-- MGC window: `SDR_RX_GAIN_DB` usable across [-90, +60] dB; defaults are good;
-  the E5 N-bin mask default is good.
-- **Without artificially injected noise, CFAR misbehaves** - the cable loopback
-  noise floor is too low for the estimator.
-- AD9361 tracking knobs live on ad9361-phy (`calib_mode`,
-  `bb_dc_offset_tracking_en`, `quadrature_tracking_en`); defaults are right, and
-  quadrature error shows as a mirrored ghost target in the RD map.
-- [-] Skipped: long cable / RG58 run as a fixed real "target" at known electrical
-      length to sanity-check the range axis end to end.
+- [ ] MTI beyond mean subtraction: 2-pulse canceller (`x[k] - x[k-1]`, wider
+      notch, 3 dB SNR cost), then an exponential-average clutter map. Revisit
+      against real clutter in Part G.
+- [ ] Frame sync: earliest-peak-above-threshold lock instead of argmax.
+- [ ] 1/R^2 amplitude realism via `soft_model.add_amplitude`.
+- [ ] Buffer/throughput check: RX buffer = (128+1) * 5660 * 4 B = 2.9 MB per CPI
+      (5.8 MB at 256+1) against a ~118 MB/s GbE link. Expect a few frames per
+      second - verify the GUI stays responsive and spectrogram throttling holds.
+- [ ] Verify `sdr.start()` accepts 5.8e9 against real hardware (AD9361 LO covers
+      70 MHz - 6 GHz, so no driver change is expected).
+- [ ] Offline soft model runs with MTI_EN both ways (detector self-test
+      regression).
+- [-] Skipped: long RG58 run as a fixed real "target" at known electrical length
+      to sanity-check the range axis end to end.
 
 ---
 
@@ -240,6 +158,35 @@ Ladder (each rung proven before the next; sim-first per the Phase 3 guide):
       CTRL.rx_dbg_mux onto RX ch0: the GUI spectrogram is the fabric scope.
       Exit: waveform reconfigured live from a shell, sawtooth and triangle
       both visible, VUnit bit-exact vs the numpy fixed-point model.
+
+      **I2 HW bring-up** (sim gate PASSED 2026-08-28: NCO bit-exact vs the
+      fixed-point model, sawtooth + triangle; wiring + CDC constraints
+      reviewed). Blocker first - the I1 Zynq plumbing never reached
+      `e200-custom`, so building as-is boots WITHOUT /dev/uio0:
+      - [ ] cherry-pick linux `303cd58a34af` (UIO node @0x43c10000, 0x1000
+            window - covers the whole FMC1 map) + u-boot `d6544e4c984`
+            (bootargs `uio_pdrv_genirq.of_id=generic-uio`, on feature/rx-tap)
+            onto their `e200-custom`; bump gitlinks bottom-up
+      - [ ] merge `67435e5` (investigation/rx_tap -> master) for `src/c/rxtap`
+            - maps 4 KB word-indexed, covers 0x00-0x34 unchanged
+      - [X] add `i_dac_enable_0` -> STATUS @0x34 before burning a build (guide
+            S1: `dac_data_sel != 2` silently discards NCO output, invisible
+            without it; 0x30 is the tb's unmapped probe, don't collide)
+      - [ ] build the FULL image, not just the .bit (u-boot + DTB changed)
+      - [ ] synth log: no "No valid object" criticals (a false path matching
+            nothing is dropped silently); BRAM inferred for `dds_lut_inst`
+            (else the G_DDS_INIT_FILE string generic never reached the module
+            reference)
+      - [ ] on target: `rxtap 0` = 0x464D4331; RX FIR decimator bypassed (else
+            i_adc_valid runs at 1/8 the NCO strobe -> aliased chirp)
+      - [ ] ORDER: FTW_START/SLOPE/SWEEP_LEN -> COMMIT -> nco_en. nco_en first
+            with SWEEP_LEN=0 wedges the core ~76 s (counter never wraps, COMMIT
+            never consumed); recovery = clear nco_en, re-COMMIT.
+      - [ ] CHIRP_COUNT delta/s = 10000 sawtooth, 5000 triangle (fires per
+            period, not per leg - the guide's "5000 = wrong" is sawtooth-only)
+      - [ ] GUI Signals tab: 100 us sawtooth -25 -> +25 MHz; flip CTRL bit3 for
+            triangle (no COMMIT needed). RD map is nonsense here. sync_src
+            stays 0 all of I2.
 - [ ] I3 - TX from fabric (Phase 4 guide Section 6): CTRL.tx_src muxes NCO vs
       DMA at the dac data ports (upack rd_en loop untouched). Exit: RD map
       identical to DMA baseline in digital loopback, AND
