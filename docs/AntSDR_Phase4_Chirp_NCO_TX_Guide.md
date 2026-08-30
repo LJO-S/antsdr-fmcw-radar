@@ -158,7 +158,8 @@ COMMIT.
 | 0x2C | IF_SEL | RW | reserved, Phase 5 |
 
 - CTRL bits are quasi-static: each gets its own 2-flop synchronizer (the
-  `ramp_en` idiom).
+  `ramp_en` idiom). **Exception observed on hardware (I2 bring-up
+  2026-08-30):** `triangle_en` only takes effect on a COMMIT.
 - `nco_en` 0->1 starts the NCO from phase 0, sample 0, using the active
   parameter set. So the boot sequence is: write FTW_START/SLOPE/SWEEP_LEN ->
   COMMIT -> set `nco_en`.
@@ -389,9 +390,10 @@ rxtap 1 0x12          # CTRL: nco_en | rx_dbg_mux
 
 Start the Python radar, open the Signals tab: RX spectrogram shows a clean
 100 us sawtooth, -25->+25 MHz. Frame sync will do something nonsensical (no
-leakage to lock to - the "RX" *is* the chirp); ignore the RD map. Flip
-`triangle_en` (no COMMIT needed, it's a plain CTRL bit) and watch it become a
-triangle.
+leakage to lock to - the "RX" *is* the chirp); ignore the RD map. Set
+`triangle_en` **and write COMMIT** and watch it become a triangle - on
+hardware (I2 bring-up 2026-08-30) the bit does not act on its own, it latches
+with the shadow parameter set at the next chirp boundary (see Section 2).
 
 Checkpoint: live waveform reconfiguration from a shell, visible in the GUI,
 no rebuild.

@@ -184,9 +184,9 @@ Ladder (each rung proven before the next; sim-first per the Phase 3 guide):
             never consumed); recovery = clear nco_en, re-COMMIT.
       - [ ] CHIRP_COUNT delta/s = 10000 sawtooth, 5000 triangle (fires per
             period, not per leg - the guide's "5000 = wrong" is sawtooth-only)
-      - [ ] GUI Signals tab: 100 us sawtooth -25 -> +25 MHz; flip CTRL bit3 for
-            triangle (no COMMIT needed). RD map is nonsense here. sync_src
-            stays 0 all of I2.
+      - [ ] GUI Signals tab: 100 us sawtooth -25 -> +25 MHz; flip CTRL bit3
+            then write COMMIT for triangle. RD map is
+            nonsense here. sync_src stays 0 all of I2.
 - [ ] I3 - TX from fabric (Phase 4 guide Section 6): CTRL.tx_src muxes NCO vs
       DMA at the dac data ports (upack rd_en loop untouched). Exit: RD map
       identical to DMA baseline in digital loopback, AND
