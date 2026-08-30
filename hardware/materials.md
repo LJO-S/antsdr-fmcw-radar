@@ -1,8 +1,9 @@
 # Hardware List
 
 Phased to match TODO.md Parts F/G/H: buy the cheap cable-loopback kit NOW, order
-the used antennas NOW (slow shipping/used-market hunting), defer the PA/LNA/BPF
-until Part G shows the real range limit.
+the used antennas NOW (slow shipping/used-market hunting), defer the PA/LNA until
+Part G shows the real range limit. The BPF moved forward into Phase G (bought
+2026-08); its Phase H rationale turned out to be wrong, see below.
 
 Prices researched 2026-07 (mostly US sources; ~1 USD = 10 SEK, ~1 EUR = 11 SEK,
 add VAT/import for non-EU sellers). Check Blocket / eBay.de / wifi-stock first for
@@ -122,13 +123,15 @@ Sourcing (2026-07: Amazon prices for these are not competitive - skip it):
   stock on eBay.de/Blocket - haggle.
 
 ### Cables and adapters (~400-600 SEK)
-- **Chosen (2026-08): 2x 1.25 m SMA m-m RG-223 + adapters.** Spec the coax, not
-  the connector - the end connector is a 30 SEK adapter, the cable type is a
-  permanent dB tax. Approx loss @ 5.8 GHz: LMR-240 ~0.7 dB/m, **RG-223 ~1.5-1.8**,
-  RG58 ~1.6-2, RG316 ~3-4, RG174 ~4-5. Cheap "SMA to SMA" listings are usually
-  RG316/RG174 (our Wuerth RG316 jumper: IL <= 1.2 dB over 0.3 m = ~3.9 dB/m) -
-  RG-223 costs only ~1 dB more than LMR-240 over 1.25 m, and its double shield
-  helps TX/RX isolation. Verify the listing says RG-223 and rates it to 6 GHz.
+- **BOUGHT (2026-08): Rangeful HF240 PVC** (LMR-240 class), datasheet
+  `docs/datasheets/hf240.png`. **0.676 dB/m at 5800 MHz** (bare cable, 20 C; add
+  ~0.1-0.2 dB per connector). As built: ~2 m TX = 1.4 dB, ~1.5 m RX = 1.0 dB.
+  Foam PE, min bend radius 30 mm single / 61 mm repeated - do not crush it on a
+  tripod leg. Supersedes the RG-223 plan and roughly halves its dB tax.
+- Reasoning kept: spec the coax, not the connector - the connector is a 30 SEK
+  adapter, the cable is a permanent dB tax. Loss @ 5.8 GHz: LMR-240/HF240
+  ~0.7 dB/m, RG-223 ~1.5-1.8, RG58 ~1.6-2, RG316 ~3-4, RG174 ~4-5. Cheap "SMA to
+  SMA" listings are usually RG316/RG174 (our Wuerth jumper: ~3.9 dB/m).
 - RX loss is the expensive side (sits ahead of the RX, adds ~dB-for-dB to the
   NF ~5 dB assumed in Part G's budget). TX loss is free - TX port power is
   clamped to <= -5 dBm by the SRD EIRP budget anyway. Phase H moots RX cable loss
@@ -148,6 +151,29 @@ Sourcing (2026-07: Amazon prices for these are not competitive - skip it):
   1-2 m, ~$20-30 ([example](https://www.ebay.com/itm/262839274818),
   [Pasternack PE3C0044](https://www.pasternack.com/sma-male-n-male-lmr240-cable-assembly-pe3c0044-p.aspx)
   is the expensive reference part).
+
+### Bandpass filters, 2x (BOUGHT 2026-08, pulled forward from Phase H)
+- **Mini-Circuits VBFZ-5500-S+**, datasheet in `docs/datasheets/`. Passband
+  4900-6200 MHz, **IL 1.26 dB typ at 5.8 GHz** (2 dB passband max), VSWR 1.3, 7 W,
+  30 dB rejection to 17 GHz. SMA male/female inline, screws straight onto the port.
+- **It does not block WiFi** - the passband covers the whole U-NII band, and no
+  filter of any width can, since 5725-5875 is the radar band itself. Real job:
+  keep cellular/LTE and 2.4 GHz out of the preselector-less AD9361 front end, plus
+  TX harmonic rejection later. See TODO Part H.
+- One per side. RX-side IL adds dB-for-dB to system NF - hence the Part H LNA
+  belongs at the antenna, ahead of both cable and filter.
+
+### Test equipment (NOT bought - the main gap)
+Nothing owned measures absolute RF power, so **TX output at 5.8 GHz is
+uncalibrated**. The workaround (TODO Part G) uses the RX as a comparator, good to
+~+-3 dB: fine for a field test 9 dB under the EIRP limit, not for a compliance
+claim.
+- **tinySA Ultra**, 100 kHz - 6 GHz, ~1000-1500 SEK. Best value in the project:
+  settles P_max, verifies the VBFZ units, shows chirp spectral regrowth (TX runs
+  only ~6 dB backed off), surveys in-band interference independently of the radio,
+  and checks the 11.6 GHz harmonic when the PA lands.
+- Cheaper: AD8317/AD8318 log detector, DC-8 GHz, ~200 SEK, +-1 dB once cal'd
+  against a known pad. Power only, no spectrum.
 
 ### Mounting (~300 SEK)
 - 2x cheap speaker/camera tripods, >= 1-2 m separation (isolation), sheet-metal
@@ -179,15 +205,13 @@ LNA likely pays off before the PA (NF buys SNR linearly; TX power buys range^1/4
 - Buy WITH the PA: a true finned dummy load, >= 10 W continuous, DC-6 GHz - the
   Phase F 1 W terminations must never cap the PA output (see Phase F notes).
 
-### BPF 5725-5875 MHz (~300-1500 SEK)
-- Surplus/eBay 4-pole cavity outdoor filters show up cheap
-  ([example listing](https://www.ebay.com/itm/265906825054)) - the WISP surplus
-  route again.
-- New reference: Mini-Circuits
-  [ZVBP-5800-S+](https://www.minicircuits.com/WebStore/dashboard.html?model=ZVBP-5800-S+)
-  cavity (expensive, ~$100+).
-- Matters most once the LNA raises gain and WiFi/LTE blockers become real; skip at
-  first.
+### BPF - DONE, moved to Phase G
+Bought 2026-08 (VBFZ-5500-S+). **Do not buy a narrow 5725-5875 cavity filter
+expecting it to fix interference** - that was the mistaken rationale here.
+5725-5875 is the band the radar transmits in, so a narrow filter rejects nothing a
+co-channel emitter does. It would only help if the Phase H LNA turns out to be
+desensitized by an adjacent-band emitter the VBFZ passes (5.5-5.7 GHz WiFi is the
+candidate) - decide from a measured site survey, not in advance.
 
 ### PSU/bias (~200-300 SEK)
 - 12 V supply, DC jack, wiring; PA_EN via Zynq GPIO per the block diagram.
