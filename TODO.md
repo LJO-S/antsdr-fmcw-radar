@@ -6,10 +6,10 @@ Roadmap for the FMCW radar. Carrier is **5.8 GHz** (cheap WiFi/FPV hardware).
 their design conclusions move to `CLAUDE.md`, which is the maintained map - don't
 grow narrative back in here as parts close.
 
-Current state (2026-08): **Part I is the active track** (HDL offload; I2's
-simulation gate passed, hardware bring-up is next). Part G (antennas) is the next
-RF step. Part H (PA/LNA/BPF) stays deferred behind G. Part J (synthetic wideband)
-blocks nothing and is testable in loopback today.
+Current state (2026-08): **Part I is the active track** (HDL offload; I2 done on
+hardware 2026-08-31, I3 skipped - offset instability in capture path, I4 is next).
+Part G (antennas) is the next RF step. Part H (PA/LNA/BPF) stays deferred behind G.
+Part J (synthetic wideband) blocks nothing and is testable in loopback today.
 
 See `src/python/` for the `common` / `offline` / `online` package split, and
 `firmware/plutosdr-fw/hdl/projects/e200` for the custom HDL + VUnit testbenches.
@@ -151,7 +151,7 @@ Ladder (each rung proven before the next; sim-first per the Phase 3 guide):
 
 - [X] I1 - AXI-Lite register bank on `rx_tap` (Phase 3 guide) - done, see
       status above.
-- [ ] I2 - chirp NCO in fabric (Phase 4 guide Sections 4-5): 32+32-bit
+- [X] I2 - chirp NCO in fabric (Phase 4 guide Sections 4-5): 32+32-bit
       second-order phase accumulator + quarter-wave LUT, full-scale 16-bit to
       match the `2^15-1` DMA chirp scaling, advances on the valid strobe (not
       raw l_clk - CHIRP_COUNT delta over 1 s must read PRF 10000). Prove via
@@ -163,43 +163,115 @@ Ladder (each rung proven before the next; sim-first per the Phase 3 guide):
       fixed-point model, sawtooth + triangle; wiring + CDC constraints
       reviewed). Blocker first - the I1 Zynq plumbing never reached
       `e200-custom`, so building as-is boots WITHOUT /dev/uio0:
-      - [ ] cherry-pick linux `303cd58a34af` (UIO node @0x43c10000, 0x1000
-            window - covers the whole FMC1 map) + u-boot `d6544e4c984`
+      - [X] cherry-pick linux `303cd58a34af` (UIO node @0x43c10000, 0x1000
+            window - covers the whole FMC* map) + u-boot `d6544e4c984`
             (bootargs `uio_pdrv_genirq.of_id=generic-uio`, on feature/rx-tap)
             onto their `e200-custom`; bump gitlinks bottom-up
-      - [ ] merge `67435e5` (investigation/rx_tap -> master) for `src/c/rxtap`
+      - [X] merge `67435e5` (investigation/rx_tap -> master) for `src/c/rxtap`
             - maps 4 KB word-indexed, covers 0x00-0x34 unchanged
       - [X] add `i_dac_enable_0` -> STATUS @0x34 before burning a build (guide
             S1: `dac_data_sel != 2` silently discards NCO output, invisible
             without it; 0x30 is the tb's unmapped probe, don't collide)
-      - [ ] build the FULL image, not just the .bit (u-boot + DTB changed)
-      - [ ] synth log: no "No valid object" criticals (a false path matching
+      - [X] build the FULL image, not just the .bit (u-boot + DTB changed)
+      - [X] synth log: no "No valid object" criticals (a false path matching
             nothing is dropped silently); BRAM inferred for `dds_lut_inst`
             (else the G_DDS_INIT_FILE string generic never reached the module
             reference)
-      - [ ] on target: `rxtap 0` = 0x464D4331; RX FIR decimator bypassed (else
+      - [X] on target: `rxtap 0` = 0x464D4331; RX FIR decimator bypassed (else
             i_adc_valid runs at 1/8 the NCO strobe -> aliased chirp)
-      - [ ] ORDER: FTW_START/SLOPE/SWEEP_LEN -> COMMIT -> nco_en. nco_en first
+      - [X] ORDER: FTW_START/SLOPE/SWEEP_LEN/TRIANGLE_EN -> COMMIT -> nco_en. nco_en first
             with SWEEP_LEN=0 wedges the core ~76 s (counter never wraps, COMMIT
             never consumed); recovery = clear nco_en, re-COMMIT.
-      - [ ] CHIRP_COUNT delta/s = 10000 sawtooth, 5000 triangle (fires per
+      - [X] CHIRP_COUNT delta/s = 10000 sawtooth, 5000 triangle (fires per
             period, not per leg - the guide's "5000 = wrong" is sawtooth-only)
-      - [ ] GUI Signals tab: 100 us sawtooth -25 -> +25 MHz; flip CTRL bit3
+      - [X] GUI Signals tab: 100 us sawtooth -25 -> +25 MHz; flip CTRL bit3
             then write COMMIT for triangle. RD map is
             nonsense here. sync_src stays 0 all of I2.
-- [ ] I3 - TX from fabric (Phase 4 guide Section 6): CTRL.tx_src muxes NCO vs
-      DMA at the dac data ports (upack rd_en loop untouched). Exit: RD map
-      identical to DMA baseline in digital loopback, AND
-      `estimate_chirp_offset` returns the SAME constant every block/run -
-      record that constant here: latency = ____ samples (loopback path).
-- [ ] I4 - dechirp (Phase 5 guide, to be written): complex multiply RX x
-      conj(NCO replica delayed by DECHIRP_DELAY) in `fmcw_core`'s RX section;
-      verify against `dsp.mix_signal` sample-for-sample in digital loopback
-      (golden-model test, no RF needed).
-- [ ] I5 - decimation to IF rate (few MSPS): CIC or FIR after the mixer,
-      IF_SEL switches cpack onto the IF stream; only now does Ethernet carry
-      IF samples. Frame rate win: 10-50x, and 100% observation duty becomes
-      reachable (see appendix).
+- [-] I3 - SKIPPED. TX mux works (CTRL.tx_src), but `estimate_chirp_offset`
+      jumps run-to-run on BOTH DMA and fabric-NCO TX paths. Jitter is in the
+      RX capture/DMA path, not TX generation. I4 sidesteps this: dechirp
+      happens pre-DMA, so capture-path jitter is irrelevant.
+- [ ] I4 - fabric dechirp (absorbs I3's TX mux):
+      
+      - [X] tx_src mux: NCO onto DAC, digital loopback RD map matches DMA baseline
+
+      - [X] mixer_dechirp.vhd: delay_line + complex_mult + conj + Q15 truncation;
+            standalone VUnit tb bit-exact vs golden model (chirp, zero-delay,
+            negative-residual, triangle configs). delay_line valid-gated (strobe-drop
+            found unconditional shift bug, fixed). 1-sample boundary artifact at
+            gap edges (pipeline timing, not RTL bug).
+      
+      - [X] wire mixer_dechirp into fmcw_core: IF_SEL mux (0x2C, not CTRL bit),
+            DECHIRP_DLY (0x24) connected via r_cfg_valid, NCO replica -> TX port,
+            ADC -> RX port, IF -> o_adc when if_sel=1. MAGIC FMC2 -> FMC3.
+      
+      - [X] sync_src=1: already routes new_period to o_dma_sync. DMA
+            SYNC_TRANSFER_START=true holds off until the first sync-tagged beat,
+            then free-runs for the programmed x_length. One sync per refill().
+      
+      - [X] fmcw_core tb: end-to-end dechirp test (NCO -> echo delay -> dechirp
+            -> IF). tb_dechirp_mode drives echo stimulus from file, captures
+            o_adc_data on o_adc_valid. Sawtooth + triangle configs. Spectral
+            check (beat bin vs expected residual * BW/FS).
+      
+      - [X] Python IF-mode bypass: FABRIC_DECHIRP_EN + FABRIC_DECHIRP_DELAY in
+            RadarConfig, capture.py skips frame_sync + target_sim, processing.py
+            skips mix_signal. fabric_regs.py sets CTRL TX_SRC|SYNC_SRC, writes
+            IF_SEL + DECHIRP_DELAY. MAGIC=FMC3.
+      
+      - [ ] on-target exit:
+            1. build full image (MAGIC = FMC3), boot, verify /dev/uio0
+            2. rxtap 0x00 -> 0x464D4333; rxtap 0x24 <val> -> readback
+            3. bypass RX FIR decimator (required: NCO valid != decimated valid)
+            4. configure chirp: FTW_START/SLOPE/SWEEP_LEN -> COMMIT -> nco_en
+               (same order as I2; SWEEP_LEN=0 before nco_en wedges the core)
+            5. rxtap IF_SEL=1, DECHIRP_DLY=<measured loopback latency>
+            6. enable: CTRL = NCO_EN | TX_SRC | SYNC_SRC, write COMMIT
+            7. GUI Signals tab: IF should show beat tones, not chirps
+            8. compare RD map vs software-dechirp baseline from I2 (same scene,
+               same config); they should match within quantization noise
+
+      - [ ] sync_src=1 + IF_SEL=1 hang (found 2026-09-08, confirmed A/B: CTRL 0x06
+            never hangs, 0x26 hangs; restart of the app "fixes" it by luck)
+            - WHAT: refill() ETIMEDOUT = the RX DMA never started its transfer.
+              Host is not involved (buffer already queued in the kernel).
+            - WHY: axi_dmac SYNC_TRANSFER_START only clears needs_sync on a beat
+              that is ACCEPTED with sync high in the same cycle (data_mover.v).
+              cpack emits one 64-bit beat per 2 samples. o_dma_sync (new_period)
+              is held for one DAC sample period only, so it overlaps a beat
+              only if cpack's 2-sample pack phase and the DAC-vs-ADC strobe
+              offset happen to line up. Both are re-rolled at every start().
+              IF_SEL=1 moves o_adc_valid from 1 to 7 cycles of latency while
+              o_dma_sync stays at 1, and the switch itself drops/doubles a
+              valid, flipping the pack phase -> a run that worked in
+              passthrough misses every chirp boundary forever.
+            - TB GAP: tb_fmcw_core phase-locks i_adc_valid/i_dac_valid_0 (same
+              counter period + reset) and has no cpack/DMA model.
+            - FIX (fmcw_core.vhd, sync_src=1 branch): make o_dma_sync a level,
+              not a pulse: set a pending flag on new_period, hold o_dma_sync
+              high until 2 o_adc_valid strobes have passed + 1 cycle (covers the
+              beat that fires one cycle after the 2nd valid). Counting
+              o_adc_valid makes it rate- and IF_SEL-latency-independent.
+            - TB: offset the ADC and DAC strobe counters, add a 1-in-2 beat
+              model, check o_dma_sync overlaps >= 1 beat per period.
+            - CAVEAT (I6): transfer starts on the first beat after the boundary,
+              a beat holds 2 samples -> capture may begin 0 or 1 sample early
+              depending on pack phase. Dechirp alignment unaffected
+              (DECHIRP_DELAY is pre-DMA); exact framing needs cpack's own sync
+              path or a 1-sample software trim.
+            - WORKAROUND until fixed: CTRL 0x06 (no sync_src) + IF_SEL=1, keep
+              Python frame sync on.
+
+- [ ] I5 - decimation to IF rate:
+
+      - [ ] CIC or FIR after the dechirp mixer
+
+      - [ ] IF_SEL switches cpack onto the IF stream
+
+      - [ ] measure actual IF bandwidth, set decimation ratio
+
+      - [ ] exit: Ethernet carries IF samples (few MSPS), frame rate 10-50x
+
 - [ ] I6 - integration: IF-mode in `online/sdr.py`/`capture.py` (skip frame
       sync, skip `mix_signal`), sync_src=1 as default (every DMA transfer
       starts at a chirp boundary), `fabric_ctl.write_regs` behind

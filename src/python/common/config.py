@@ -42,6 +42,22 @@ class RadarConfig:
 
     MTI_EN: bool = False
 
+    # Fabric IF mode: fabric NCO transmits, fabric dechirps pre-DMA and ships the IF stream
+    FABRIC_DECHIRP_EN: bool = field(
+        default=False,
+        metadata={"label": "Fabric Dechirp", "unit": "", "scale": 1, "group": "fabric"},
+    )
+    # TX->RX digital loopback latency in samples
+    FABRIC_DECHIRP_DELAY: int = field(
+        default=35,
+        metadata={
+            "label": "Dechirp Delay",
+            "unit": "samp",
+            "scale": 1,
+            "group": "fabric",
+        },
+    )
+
     # Sampling
     FS: float = field(
         default=56.6e6,
@@ -120,6 +136,7 @@ class RadarConfig:
             "readonly": True,
         },
     )
+    # Start at -15 dB (~9dB under limit)
     SDR_TX_GAIN_DB: float = field(
         default=-60.0,
         metadata={
@@ -129,7 +146,9 @@ class RadarConfig:
             "group": "sdr",
         },
     )
-    SDR_TX_GAIN_MAX_DB: float = -40.0
+    SDR_TX_GAIN_MAX_DB: float = (
+        0.00  # 0.8 dBm at Tx SMA assuming worstcase 7 dbm output @ 5.8 GHz
+    )
     SDR_RX_GAIN_MODE: str = "manual"  # untagged, must stay "manual"
     SDR_RX_GAIN_DB: float = field(
         default=40.0,
