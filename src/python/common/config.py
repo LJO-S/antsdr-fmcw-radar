@@ -49,7 +49,7 @@ class RadarConfig:
     )
     # TX->RX digital loopback latency in samples
     FABRIC_DECHIRP_DELAY: int = field(
-        default=35,
+        default=34,
         metadata={
             "label": "Dechirp Delay",
             "unit": "samp",
