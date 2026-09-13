@@ -6,19 +6,16 @@ Two-phase test on digital loopback (or cable):
   Phase A  raw RX -> software frame_sync + mix_signal + process_cpi
   Phase B  fabric NCO TX + dechirp -> process_cpi (no mix_signal)
 
-Compares the two RD maps.  Writes fmcw_core AXI-Lite registers via
-SSH + devmem; requires sshpass and root@<ip> SSH access (password
-"analog", standard on AntSDR).
-
-Prerequisites:
-  apt install sshpass   # on the host
+Compares the two RD maps.  Register writes go through online/fabric_ctl.py
+(SshDevmem + FabricCtl), which needs ssh KEY auth to root@<ip>
+(`ssh-copy-id root@192.168.5.10`, board password "analog") - not sshpass.
 
 Usage (from repo root, venv active):
   cd src/python
   python ../../scripts/bringup/dechirp_verify.py [--delay D] [--ip IP]
 
-  --delay D   fabric dechirp delay in samples (default: auto-measured
-              from Phase A chirp offset)
+  --delay D   fabric dechirp delay in samples (default: the config's
+              FABRIC_DECHIRP_DELAY, or --sweep-start in sweep mode)
   --captures  number of CPIs to average per phase (default 5)
   --save      save raw captures to .npz for offline re-analysis
   --sweep     enable the fabric once, then sweep DECHIRP_DELAY over
@@ -34,163 +31,27 @@ so the absolute scale cancels out in the comparison.
 import sys
 import os
 import argparse
-import shutil
-import subprocess
+import dataclasses
 
 import numpy as np
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "src", "python"))
 
-from common import config, dsp
-from common.fabric_regs import (
-    REG_MAGIC,
-    REG_CTRL,
-    REG_COMMIT,
-    REG_FTW_START,
-    REG_FTW_SLOPE,
-    REG_SWEEP_LEN,
-    REG_DECHIRP_DELAY,
-    REG_IF_SEL,
-    REG_STATUS,
-    MAGIC,
-    CTRL_NCO_EN,
-    CTRL_TX_SRC,
-    CTRL_SYNC_SRC,
-    CTRL_TRIANGLE_EN,
-    IF_SEL_IF_OUT,
-    STATUS_DAC_EN0,
-    chirp_ftw,
-)
+from common import config, dsp, fabric_regs
+from online.fabric_ctl import SshDevmem, FabricCtl
 from online.sdr import AntSDR
 
-FMCW_CORE_BASE = 0x43C10000
-SDR_PASSWORD = "analog"
 
-
-# ---------------------------------------------------------------------------
-# Register access via SSH + devmem
-# ---------------------------------------------------------------------------
-def _check_sshpass():
-    if shutil.which("sshpass") is None:
-        print("ERROR: sshpass not found. Install it:  apt install sshpass")
-        sys.exit(1)
-
-
-def _ssh(ip, cmd):
-    r = subprocess.run(
-        [
-            "sshpass",
-            "-p",
-            SDR_PASSWORD,
-            "ssh",
-            "-o",
-            "StrictHostKeyChecking=no",
-            "-o",
-            "ConnectTimeout=5",
-            f"root@{ip}",
-            cmd,
-        ],
-        capture_output=True,
-        text=True,
-        timeout=15,
-    )
-    if r.returncode != 0:
-        raise RuntimeError(f"ssh cmd failed: {cmd}\nstderr: {r.stderr.strip()}")
-    return r.stdout.strip()
-
-
-def read_reg(ip, offset):
-    addr = FMCW_CORE_BASE + offset
-    out = _ssh(ip, f"devmem 0x{addr:08X} 32")
-    return int(out, 0)
-
-
-def write_reg(ip, offset, value):
-    addr = FMCW_CORE_BASE + offset
-    _ssh(ip, f"devmem 0x{addr:08X} 32 0x{value & 0xFFFFFFFF:08X}")
-
-
-# ---------------------------------------------------------------------------
-# Fabric register helpers
-# ---------------------------------------------------------------------------
-def check_magic(ip):
-    m = read_reg(ip, REG_MAGIC)
-    if m != MAGIC:
-        raise RuntimeError(
-            f"MAGIC mismatch: read 0x{m:08X}, expected 0x{MAGIC:08X}. "
-            "Wrong firmware image?"
-        )
-    print(f"  MAGIC OK (0x{m:08X})")
-
-
-def configure_fabric_dechirp(ip, cfg, delay):
-    """Write fmcw_core registers for fabric dechirp mode."""
-    ftw_start, ftw_slope, sweep_len = chirp_ftw(
-        cfg.CHIRP_BW_HZ, cfg.CHIRP_DUR_S, cfg.FS
-    )
-
-    # TRIANGLE_EN must be written before COMMIT to latch with this shadow set
-    # (hardware-observed exception, I2 bring-up 2026-08-30). TX_SRC/SYNC_SRC
-    # are quasi-static (their own synchronizers, no COMMIT needed) - do NOT
-    # write them here: setting SYNC_SRC=1 before NCO_EN=1 is the documented
-    # "RX capture hangs forever" trap (chirp_start pulses don't exist yet, so
-    # a DMA sync wait would never complete).
-    ctrl_pre = CTRL_TRIANGLE_EN if cfg.TRIANGLE_EN else 0
-
-    # REG_CHIRP_COUNT is read-only in RTL (write case has no x"1C" arm) - don't
-    # write it, it's a silent no-op.
-    write_reg(ip, REG_FTW_START, ftw_start)
-    write_reg(ip, REG_FTW_SLOPE, ftw_slope)
-    write_reg(ip, REG_SWEEP_LEN, sweep_len)
-    write_reg(ip, REG_DECHIRP_DELAY, delay)
-    write_reg(ip, REG_IF_SEL, IF_SEL_IF_OUT)
-    write_reg(ip, REG_CTRL, ctrl_pre)
-    write_reg(ip, REG_COMMIT, 1)
-
-    # TX_SRC, SYNC_SRC and NCO_EN land in one atomic write, after COMMIT
-    # (nco_en with an uncommitted SWEEP_LEN wedges the core) - so the fabric
-    # never sits in the sync_src=1/nco_en=0 hang state. CTRL_RAMP_EN must NOT
-    # be set here - it outranks IF_SEL in the ADC mux and would silently
-    # replace the IF stream with the debug counter.
-    ctrl = ctrl_pre | CTRL_TX_SRC | CTRL_SYNC_SRC | CTRL_NCO_EN
-    write_reg(ip, REG_CTRL, ctrl)
-
+def _print_fabric_config(image, delay):
+    """One-line summary of what ctl.enable() just wrote, pulled from the same
+    register image (never recomputed)."""
+    # The image CTRL is the pre-enable word; enable() ORs in nco_en for the
+    # post-COMMIT write, so report what actually ends up in the register.
+    ctrl = image[fabric_regs.REG_CTRL] | fabric_regs.CTRL_NCO_EN
     print(
-        f"  Fabric configured: delay={delay}, ctrl=0x{ctrl:02X}, sweep_len={sweep_len}"
+        f"  Fabric configured: delay={delay}, ctrl=0x{ctrl:02X}, "
+        f"sweep_len={image[fabric_regs.REG_SWEEP_LEN]}"
     )
-
-    # Settle + sanity check: reading STATUS costs one more SSH round trip
-    # (~100-300 ms), which happens to be exactly the margin that was missing
-    # before the very first RX buffer refill() after a cold enable - without
-    # it, capture_fabric's flush loop could catch the DMA sync chain still
-    # spinning up and hang on refill() (ETIMEDOUT). dac_enable_i0=0 here also
-    # means the NCO output is being discarded at the DAC mux (guide S1) - a
-    # clear diagnostic instead of a silent downstream hang.
-    status = read_reg(ip, REG_STATUS)
-    if not (status & STATUS_DAC_EN0):
-        print(
-            f"  WARNING: STATUS=0x{status:08X} - dac_enable_i0 not set, "
-            "NCO output may be discarded at the DAC mux"
-        )
-
-
-def disable_fabric(ip):
-    """Restore passthrough (NCO off, IF_SEL off)."""
-    write_reg(ip, REG_CTRL, 0)
-    write_reg(ip, REG_IF_SEL, 0)
-    write_reg(ip, REG_COMMIT, 1)
-    print("  Fabric restored to passthrough")
-
-
-def set_dechirp_delay(ip, delay):
-    """Reload DECHIRP_DELAY only. Fabric must already be enabled (configure_fabric_dechirp
-    already ran) - this never touches CTRL, so nco_en/tx_src/sync_src are left running.
-    DECHIRP_DELAY latches on the same commit pulse as FTW_START/SLOPE/SWEEP_LEN, but that
-    pulse is independent of CTRL, so re-committing while the NCO is live just reloads the
-    mixer's delay line at the next chirp boundary (~100 us later, well under one SSH
-    round trip) - see fmcw_core.vhd's r_cfg_valid wiring."""
-    write_reg(ip, REG_DECHIRP_DELAY, delay)
-    write_reg(ip, REG_COMMIT, 1)
 
 
 # ---------------------------------------------------------------------------
@@ -281,14 +142,15 @@ def range_profile_db(if_signal, ctx):
     return mag_db_pos, peak_bin, ctx.ranges_pos[peak_bin], mag_db_pos[peak_bin]
 
 
-def run_sweep(radio, ip, ctx, delays, n_captures):
+def run_sweep(radio, ctl, ctx, delays, n_captures):
     """Sweep DECHIRP_DELAY over `delays` with the fabric enabled exactly once (by the
-    caller, before this runs). Prints one row per delay - no CTRL writes happen in here.
+    caller, before this runs). Prints one row per delay - no CTRL writes happen in here,
+    only ctl.set_calib_delay() (DECHIRP_DELAY + COMMIT).
     """
     print(f"\n{'delay':>6} {'peak_bin':>9} {'range_m':>9} {'peak_dB':>9}")
     rows = []
     for delay in delays:
-        set_dechirp_delay(ip, delay)
+        ctl.set_calib_delay(delay)
         radio.read_block()  # discard one stale/in-flight capture (cheap insurance)
 
         profiles = []
@@ -388,7 +250,8 @@ def main():
         "--delay",
         type=int,
         default=None,
-        help="dechirp delay in samples (default: auto from Phase A)",
+        help="dechirp delay in samples (default: config FABRIC_DECHIRP_DELAY, "
+        "or --sweep-start in sweep mode)",
     )
     ap.add_argument(
         "--captures",
@@ -424,10 +287,9 @@ def main():
     ap.add_argument("--sweep-step", type=int, default=1)
     args = ap.parse_args()
 
-    _check_sshpass()
-
     cfg = config.RadarConfig()
     ctx = dsp.build_cpi_context(a_config=cfg)
+    ctl = FabricCtl(SshDevmem(args.ip))
 
     print("I4 Dechirp Verification")
     print(f"  IP:     {args.ip}")
@@ -438,7 +300,8 @@ def main():
     print(f"  Triangle: {cfg.TRIANGLE_EN}")
 
     print("\nChecking firmware...")
-    check_magic(args.ip)
+    ctl.check_magic()
+    print("  MAGIC OK")
 
     print("\nConnecting SDR...")
     radio = AntSDR(a_radar_config=cfg)
@@ -453,40 +316,57 @@ def main():
             radio, cfg, ctx, args.captures
         )
 
-        # measured_delay comes from the DMA-TX path (Phase A); the fabric NCO
-        # injects post-interpolator, so its TX->RX latency differs and this
-        # auto value is only a starting guess - expect to need --delay swept
-        # by hand (see run_plan.txt).
-        delay = args.delay if args.delay is not None else measured_delay
-        print(f"\n  Dechirp delay for fabric: {delay} samples")
+        # Phase A's measured_delay is estimate_chirp_offset: a frame-sync offset
+        # into the RX block, NOT a TX->RX dechirp latency, and routinely well
+        # past the 128-sample delay line (it used to wrap silently, 349 -> 93).
+        # So it is printed for reference only. Defaults: the measured loopback
+        # constant for Phase B, and the first swept value for --sweep, whose
+        # first set_calib_delay() overwrites it one iteration later anyway.
+        if args.delay is not None:
+            delay = args.delay
+        elif args.sweep:
+            delay = args.sweep_start
+        else:
+            delay = cfg.FABRIC_DECHIRP_DELAY
+        print(
+            f"\n  Dechirp delay for fabric: {delay} samples "
+            f"(Phase A chirp offset was {measured_delay})"
+        )
+
+        fab_cfg = dataclasses.replace(
+            cfg, FABRIC_DECHIRP_EN=True, FABRIC_DECHIRP_DELAY=delay
+        )
+        image = fabric_regs.register_image(fab_cfg)
 
         if args.sweep:
             # Fabric is enabled ONCE here, with `delay` as the starting value.
-            # The sweep loop below only ever calls set_dechirp_delay() -
+            # The sweep loop below only ever calls ctl.set_calib_delay() -
             # CTRL/nco_en/tx_src/sync_src are never touched again, unlike the
             # old per-value disable/reconfigure/enable cycle (suspected DAC
             # instability source, and the cause of the --delay 8 hang).
             print("\n--- Sweep: fabric dechirp delay ---")
-            configure_fabric_dechirp(args.ip, cfg, delay)
+            ctl.enable(image)
+            _print_fabric_config(image, delay)
             run_sweep(
                 radio,
-                args.ip,
+                ctl,
                 ctx,
                 range(args.sweep_start, args.sweep_stop, args.sweep_step),
                 args.captures,
             )
             print("\nRestoring passthrough...")
-            disable_fabric(args.ip)
+            ctl.disable()
             return
 
         # Phase B
         print("\n--- Phase B: fabric dechirp ---")
-        configure_fabric_dechirp(args.ip, cfg, delay)
+        ctl.enable(image)
+        _print_fabric_config(image, delay)
         rd_fb, _, _, raw_fb = capture_fabric(radio, cfg, ctx, args.captures)
 
         # Restore
         print("\nRestoring passthrough...")
-        disable_fabric(args.ip)
+        ctl.disable()
 
         # Save raw data
         if args.save:
@@ -510,7 +390,7 @@ def main():
 
     finally:
         try:
-            disable_fabric(args.ip)
+            ctl.disable()
         except Exception as e:
             print(f"  WARNING: fabric cleanup failed: {e}")
         radio.set_loopback(False)

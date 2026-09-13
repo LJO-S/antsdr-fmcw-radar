@@ -15,10 +15,11 @@ design conclusions live *here* instead. When a part closes, summarize it there a
 anything worth keeping into this file — don't let narrative grow back in `TODO.md`.
 Short version (2026-08): Parts A–F done (offline model, online app, GUI, target sim, DSP
 hardening, cable loopback = first real RF), with a handful of small open items still listed.
-**Part I (HDL offload) is active** — I1 landed on hardware, I2 (chirp NCO in fabric) has
-passed its simulation gate and is at hardware bring-up. Part G (antennas, first radiated
-RF) is the next RF step. Part H (PA/LNA/BPF) deferred. Part J (synthetic wideband) blocks
-nothing.
+**Part I (HDL offload) is active** - I1, I2 and I4 (fabric NCO + fabric dechirp, MAGIC
+FMC3) are proven on hardware in digital loopback (I4 closed 2026-09-10). Next: the
+`online/fabric_ctl.py` glue (I4b), then I5 (decimation to IF rate, Phase 5 guide).
+Part G (antennas, first radiated RF) is the next RF step. Part H (PA/LNA/BPF) deferred.
+Part J (synthetic wideband) blocks nothing.
 
 ## Project structure
 
@@ -26,6 +27,8 @@ nothing.
 src/python/                 # import root
   common/
     config.py    # RadarConfig dataclass — ALL parameters (source of truth)
+    fabric_regs.py # fmcw_core register map (offsets, CTRL bits, MAGIC) + register_image(cfg):
+                 #   the ONLY encoder of RadarConfig -> register values (chirp_ftw, _u32)
     dsp.py       # pure DSP: generate_chirp(_sequence), estimate_chirp_offset,
                  #   frame_sync_linear/circ, mix_signal, cfar_ca_2d, nms, subbin_refine,
                  #   align_down_doppler, apply_doppler_shift, apply_noise, inst_freq,
@@ -39,12 +42,17 @@ src/python/                 # import root
     capture.py     # capture_rx_data(): read_block -> TargetSim.apply -> frame_sync_linear
     target_sim.py  # FakeTarget / TargetSim — moving fake targets on ANY input
     processing.py  # process_rx_data(): stateless mix_signal + process_cpi wrapper
+                   #   (skips mix_signal when FABRIC_DECHIRP_EN)
     app.py         # RadarWorker (QThread) + main(); owns (config, ctx, sdr)
+    fabric_ctl.py  # PLANNED (I4b): register-write sequencing + ssh/devmem transport
 docs/              # firmware-branch-workflow.md, AntSDR_Phase4_Chirp_NCO_TX_Guide.md,
-                   #   fmcw_fabric_architecture.svg, archive/ (Phase 1-3 guides)
+                   #   fmcw_fabric_architecture.svg, datasheets/, archive/ (Phase 1-3 guides)
 hardware/          # materials.md (phased buy list), fmcw_58ghz_block_diagram.svg
 firmware/          # submodule stack (see below), branch e200-custom
 scripts/bringup/   # hardware bringup references (reference.py, trx_loopback.py, pluto_sdr_ref.py)
+                   #   + dechirp_verify.py (I4 exit test: sw vs fabric RD map, --sweep delay),
+                   #   chirp_count_check.py (CHIRP_COUNT delta/s = PRF meter)
+data/shortcut_quick_commands.txt  # rxtap register recipes: NCO debug views, IF mode, safe reset
 vhdl_ls.toml       # rust_hdl LSP config, points at firmware/.../projects/e200
 pypkgs.txt         # numpy, matplotlib, pylibiio, scipy, PySide6, pyqtgraph, vunit_hdl
 ```
@@ -127,6 +135,7 @@ GUI spectrogram needs it).
 | SDR_RX_GAIN_MODE / SDR_RX_GAIN_DB | manual / 40.0 |
 | SDR_RX_MARGIN_PERIODS | 1 |
 | SDR_LOOPBACK_EN / SDR_LOOPBACK_NOISE_SNR_DB | True / 1.0 |
+| FABRIC_DECHIRP_EN / FABRIC_DECHIRP_DELAY | False / **34** (digital-loopback constant, measured 2026-09-10; real-RF constant TBD in Part G) |
 
 Noise figure is a `run_simulation` argument (`a_noise_figure_db`), not a config field.
 
@@ -264,17 +273,105 @@ antsdr-fmcw-radar -> firmware/ -> plutosdr-fw/ -> hdl/ (+ linux/, u-boot, buildr
 ```
 
 - A parent repo records only a gitlink SHA. Commit **inside** the repo where files live, then
-  bump pointers **bottom-up**. Feature branches (`feat/chirp-nco`, ...) exist in `hdl` only.
-- Custom HDL lives in `firmware/plutosdr-fw/hdl/projects/e200/` (`rx_tap.vhd` → becoming
-  `fmcw_core.vhd`, `system_bd.tcl`, `Makefile`, `system_constr.xdc`), VUnit testbenches under
-  `test/`. AXI-Lite slave at **0x43C10000**; MAGIC bumps on every register-map change
-  (`RXT1` → `FMC1`).
+  bump pointers **bottom-up**. Feature branches (`feature/chirp-nco`, `feature/fabric-dechirp`,
+  ...) exist in `hdl` only.
+- Custom HDL lives in `firmware/plutosdr-fw/hdl/projects/e200/`: `src/fmcw_core.vhd` (top:
+  AXI-Lite slave, CDC, muxes) with `src/nco/` (chirp_generator, chirp_dds, dds_lut + the
+  generated `dds_lut.txt`), `src/mixer/mixer_dechirp.vhd`, `src/delay/delay_line.vhd`,
+  `src/arithmetic/complex_mult.vhd`; plus `system_bd.tcl`, `Makefile`, `system_constr.xdc`.
+  VUnit testbenches under `test/` (`run.py`, `fmcw_core/`, `mixer_dechirp/`). AXI-Lite slave at
+  **0x43C10000**; MAGIC bumps on every register-map change (`RXT1` → `FMC1` → `FMC3`; current
+  **`0x464D4333`**, mirrored in `common/fabric_regs.py` and must match `C_MAGIC` in the VHDL).
 - **Do not run `resetGit.sh`** — it strips the MicroPhase patches and the fork checkpoints.
 - Target architecture: chirp NCO **and** dechirp in fabric, Ethernet carries IF samples, frame
   sync deleted. `dsp.py` becomes the golden model verifying fabric output sample-for-sample.
   Bypass bits default to today's behavior. Full spec: `docs/AntSDR_Phase4_Chirp_NCO_TX_Guide.md`.
 - Cutover to the fabric path waits for Parts F+G on real RF — never debug new RF and new HDL
   at the same time.
+
+### fmcw_core register map (FMC3) - hardware-proven, I4 closed 2026-09-10
+
+| Offset | Name | Access | Function |
+|---|---|---|---|
+| 0x00 | MAGIC | R | `0x464D4333` "FMC3" |
+| 0x04 | CTRL | RW | bit0 `ramp_en`, bit1 `nco_en`, bit2 `tx_src` (0=DMA, 1=NCO), bit3 `triangle_en`, bit4 `rx_dbg_mux` (NCO onto RX ch0), bit5 `sync_src` (0=TDD, 1=chirp_start) |
+| 0x08 | SCRATCH | RW | |
+| 0x0C | COUNT | R | `valid_in` counter |
+| 0x10 / 0x14 / 0x18 | FTW_START / FTW_SLOPE / SWEEP_LEN | RW | shadow, latched at the next chirp boundary after COMMIT |
+| 0x1C | CHIRP_COUNT | R | chirp periods, gray-crossed. Delta/s = 10000 sawtooth, **5000 triangle** (fires per period, not per leg) |
+| 0x20 | COMMIT | W | any write arms shadow -> active |
+| 0x24 | DECHIRP_DELAY | RW | shadow, same COMMIT; replica delay in samples, **must be < 128** (`G_MAX_DELAY`, wraps silently above) |
+| 0x28 | DECIM_SEL | RW | reserved for I5 |
+| 0x2C | IF_SEL | RW | 1 = dechirped IF onto the capture (ADC) path, 0 = raw passthrough. A register, **not** a CTRL bit |
+| 0x30 | - | - | unmapped on purpose (tb probe), reads `0xDEADC0DE` |
+| 0x34 | STATUS | R | bit0 = `dac_enable_i0`. 0 means `dac_data_sel != DMA` and the NCO output is being discarded at the DAC mux |
+
+Rules learned on hardware (all of them cost a hang or a wrong map once):
+
+- **`triangle_en` is NOT quasi-static** despite having its own synchronizer: it only takes
+  effect on a COMMIT. Write it in the pre-COMMIT CTRL word.
+- **`nco_en` with SWEEP_LEN=0 wedges the core ~76 s** (counter never wraps, COMMIT never
+  consumed). Always: shadows -> COMMIT -> `nco_en`. Recovery: clear `nco_en`, re-COMMIT.
+- **`sync_src=1` while `nco_en=0` hangs every RX capture** (no chirp_start pulses, DMA
+  SYNC_TRANSFER_START waits forever). So `nco_en | tx_src | sync_src` land in ONE write, after
+  COMMIT. No power cycle needed: write CTRL back to 0.
+- **`ramp_en` outranks `if_sel` in the ADC output mux** - never set it in IF mode.
+- **IF_SEL goes up LAST and comes down FIRST.** While IF_SEL=1 the ADC stream *is* the mixer
+  output and its valid is gated by the NCO: IF_SEL=1 with the NCO off means zero ADC valids,
+  and any `refill()` in flight starves (ETIMEDOUT).
+- Proven enable order: FTW_START, FTW_SLOPE, SWEEP_LEN, DECHIRP_DELAY -> CTRL (`triangle_en`
+  only) -> COMMIT -> CTRL = `nco_en|tx_src|sync_src(|triangle_en)` -> IF_SEL=1 -> read STATUS
+  and require bit0. Disable: IF_SEL=0 -> CTRL=0 -> COMMIT. Recipes in
+  `data/shortcut_quick_commands.txt`.
+- DECHIRP_DELAY can be re-committed while the NCO runs (reloads the delay line at the next
+  boundary, ~100 us) - that is how `dechirp_verify.py --sweep` works without touching CTRL.
+- **DMA sync is a level, not a pulse.** `axi_dmac` SYNC_TRANSFER_START clears its wait only on
+  a beat *accepted* with sync high in the same cycle; cpack emits one 64-bit beat per 2
+  samples, so a 1-sample pulse overlapped a beat only by luck of pack phase (re-rolled every
+  `start()`, and flipped by the IF_SEL switch). `o_dma_sync` is now held from `new_period`
+  until 2 output valids have passed (+1 cycle), counted on `o_adc_valid` so it stays
+  rate- and IF_SEL-latency-independent. Caveat for I6: the transfer starts on the first beat
+  after the boundary and a beat holds 2 samples, so capture may begin 0 or 1 sample early
+  depending on pack phase. Dechirp alignment is unaffected (DECHIRP_DELAY is pre-DMA).
+- One sync per `refill()`: the DMA holds off until the first sync-tagged beat, then free-runs
+  for the programmed length.
+- `mixer_dechirp` computes **IF = delayed_TX * conj(RX)**, the same convention as
+  `dsp.mix_signal`, Q15 with saturation; bit-exact vs the Python reference in VUnit. A 1-sample
+  artifact at valid-gap edges is pipeline timing, not an RTL bug.
+- **Loopback TX->RX digital latency = 34 samples** (`FABRIC_DECHIRP_DELAY`), measured by
+  sweeping DECHIRP_DELAY until the leakage peak lands in range bin 0. The real-RF constant
+  differs (loopback taps inside the AD9361 chain) and is still to be measured in Part G.
+
+### Stock RX FIR decimator - how it is controlled (investigated 2026-09-10)
+
+`rx_fir_decimator` is ADI's `ad_add_decimation_filter` hierarchy (Xilinx `fir_compiler`,
+fixed decimate-by-8, 128-tap `coefile_int.coe`) sitting **upstream** of `fmcw_core` in the RX
+chain. Its `active` pin comes from `axi_ad9361/up_adc_gpio_out` bit 0 via `decim_slice`, i.e.
+`ADI_REG_GP_CONTROL` bit0 of the ADC core, which the `cf_axi_adc` driver writes when the
+**`cf-ad9361-lpc` channel attr `sampling_frequency`** is set: only two values are accepted, the
+phy rate (factor 1) and phy rate / 8 (factor 8; `decimation_factors_available = {1, 8}`,
+device-tree `adi,axi-decimation-core-available`). `active=0` is a pure `ad_bus_mux`
+passthrough of data *and* valid. The driver boots at factor 1 and `sdr.py` never touches the
+lpc rate, so **the decimator is bypassed by default** - the I2/I4 "bypass the RX FIR decimator"
+step is satisfied by not setting the lpc rate to FS/8. `phy.filter_fir_en` is the AD9361's
+internal FIR, unrelated. In fabric mode the NCO advances on `dac_valid_i0` at full rate, so
+factor 8 upstream of the core would alias the chirp; `sdr.start()` should write the lpc
+`sampling_frequency` = FS explicitly as a guard. For I5 this block is not reusable in place
+(wrong side of the mixer) but the pattern is: a second `ad_add_decimation_filter` between
+`fmcw_core` and cpack with `active` driven from DECIM_SEL is the zero-new-DSP option.
+
+### Fabric IF mode on the Python side (`FABRIC_DECHIRP_EN`)
+
+- `capture_rx_data` returns the raw `read_block()` (no frame sync, no TargetSim: fake targets
+  are meaningless on a dechirped stream); `process_rx_data` skips `mix_signal`. `sync_src=1`
+  makes every DMA transfer start on a chirp boundary, so the block is already frame-aligned.
+- `register_image(cfg)` adds DECHIRP_DELAY and IF_SEL and sets `tx_src|sync_src` in CTRL when
+  the flag is on; it never sets `nco_en` or COMMIT (sequencing, not state). It raises if the
+  delay is outside `[0, 128)`.
+- Fabric IF output is Q15 but `_read_deinterleaved` normalizes by `2^11-1`; the RD maps are
+  peak-relative so the scale cancels, but absolute IF amplitude is 16x what raw RX would be.
+- The app has **no register writer yet** (I4b, `fabric_ctl.py`): `dechirp_verify.py` is the only
+  enable path. Do not flip the config default until that lands.
 
 ## RF reality (AD9361 numbers, verified against the datasheet)
 
