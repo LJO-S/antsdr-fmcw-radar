@@ -72,6 +72,12 @@ class AntSDR:
             self.config.SDR_RX_GAIN_DB
         )
 
+        # Pin the stock rx_fir_decimator at factor 1 (cf-ad9361-lpc, not
+        # ad9361-phy above): at FS/8 it aliases the fabric NCO.
+        self.rx.find_channel("voltage0").attrs["sampling_frequency"].value = str(
+            int(self.config.FS)
+        )
+
         # --------------------
         # Disable DDS
         # --------------------

@@ -9,8 +9,8 @@ import time
 from PySide6.QtCore import QThread, Signal
 from PySide6.QtWidgets import QApplication
 
-from common import config, dsp, gui
-from online import capture, processing, sdr, target_sim
+from common import config, dsp, fabric_regs, gui
+from online import capture, processing, sdr, target_sim, fabric_ctl
 
 
 class RadarWorker(QThread):
@@ -34,15 +34,49 @@ class RadarWorker(QThread):
 
     def run(self):
         radio = None
+        fabric = None
+        fabric_on = False
+
+        def fabric_up(a_cfg):
+            if not a_cfg.FABRIC_DECHIRP_EN:
+                return False
+            fabric.check_magic()
+            try:
+                fabric.enable(fabric_regs.register_image(a_cfg))
+            except Exception:
+                # enable() can raise AFTER write_seq already ran (e.g. the
+                # STATUS check) - the core is genuinely on, so undo it before
+                # propagating, or fabric_on would stay False on a live fabric.
+                try:
+                    fabric.disable()
+                except Exception:
+                    traceback.print_exc()
+                raise
+            for _ in range(3):  # IF_SEL switch re-rolls the cpack pack phase
+                radio.read_block()
+            return True
+
+        def fabric_down():
+            nonlocal fabric_on
+            if fabric_on:
+                try:
+                    fabric.disable()
+                except Exception:
+                    traceback.print_exc()
+                fabric_on = False
+
         try:
             ctx = dsp.build_cpi_context(a_config=self.config)
+            fabric = fabric_ctl.FabricCtl(fabric_ctl.SshDevmem(self.config.SDR_IP))
             radio = sdr.AntSDR(a_radar_config=self.config)
             radio.set_loopback(self.config.SDR_LOOPBACK_EN)
             radio.start()
+            fabric_on = fabric_up(self.config)
             while self._running:
                 if self.pending_cfg is not None:
                     new_cfg, self.pending_cfg = self.pending_cfg, None
                     old_cfg = self.config
+                    fabric_down()
                     radio.close()
                     try:
                         self.config = new_cfg
@@ -50,6 +84,7 @@ class RadarWorker(QThread):
                         radio.config = new_cfg
                         radio.set_loopback(new_cfg.SDR_LOOPBACK_EN)
                         radio.start()
+                        fabric_on = fabric_up(new_cfg)
                         self.reconfigure_done.emit(True, new_cfg)
                     except Exception:
                         self.error.emit(traceback.format_exc())
@@ -59,6 +94,7 @@ class RadarWorker(QThread):
                         radio.close()
                         radio.set_loopback(old_cfg.SDR_LOOPBACK_EN)
                         radio.start()
+                        fabric_on = fabric_up(old_cfg)
                         self.reconfigure_done.emit(False, old_cfg)
 
                 # MTI is pure DSP and must survive config swaps
@@ -95,6 +131,7 @@ class RadarWorker(QThread):
             # never let an exception kill the thread silently
             self.error.emit(traceback.format_exc())
         finally:
+            fabric_down()
             if radio is not None:
                 print("Stopping SDR...")
                 radio.set_loopback(False)
