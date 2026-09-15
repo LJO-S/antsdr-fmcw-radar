@@ -16,8 +16,16 @@ anything worth keeping into this file — don't let narrative grow back in `TODO
 Short version (2026-08): Parts A–F done (offline model, online app, GUI, target sim, DSP
 hardening, cable loopback = first real RF), with a handful of small open items still listed.
 **Part I (HDL offload) is active** - I1, I2 and I4 (fabric NCO + fabric dechirp, MAGIC
-FMC3) are proven on hardware in digital loopback (I4 closed 2026-09-10). Next: the
-`online/fabric_ctl.py` glue (I4b), then I5 (decimation to IF rate, Phase 5 guide).
+FMC3) are proven on hardware in digital loopback (I4 closed 2026-09-10); the app drives the
+fabric through `online/fabric_ctl.py` (I4b, 2026-09-13) and fake targets work on the IF
+stream (I4c). Next: I5, decimation to IF rate - `docs/AntSDR_Phase5_IF_Decimation_Guide.md`
+is the spec. Decided 2026-09-15: operational range 800 m at the steepest chirp (56 MHz /
+100 us), one fixed divide-by-8 (ADI `ad_add_decimation_filter` = Xilinx fir_compiler, own
+coefficients) outside the core; every chirp parameter stays free - the core drops the last
+`SWEEP_LEN mod 8` IF samples per leg so the host always gets whole samples per chirp;
+`OP_RANGE_FACTOR` is replaced by `MAX_RANGE_M` plus a derived effective range. DSP48 budget
+(7020: 220): 75 used, 3 ours; the IP costs ~16 and the two unused ADI filters it replaces
+cost more, so the reclaim step makes it net negative.
 Part G (antennas, first radiated RF) is the next RF step. Part H (PA/LNA/BPF) deferred.
 Part J (synthetic wideband) blocks nothing.
 
@@ -40,13 +48,15 @@ src/python/                 # import root
   online/
     sdr.py         # AntSDR: connect/find_device in __init__; attrs+buffers in start()
     capture.py     # capture_rx_data(): read_block -> TargetSim.apply -> frame_sync_linear
-    target_sim.py  # FakeTarget / TargetSim — moving fake targets on ANY input
+    target_sim.py  # FakeTarget / TargetSim — moving fake targets: apply() on raw RX (roll delay),
+                   #   apply_if() on the fabric IF stream (beat-tone synthesis)
     processing.py  # process_rx_data(): stateless mix_signal + process_cpi wrapper
                    #   (skips mix_signal when FABRIC_DECHIRP_EN)
     app.py         # RadarWorker (QThread) + main(); owns (config, ctx, sdr)
-    fabric_ctl.py  # PLANNED (I4b): register-write sequencing + ssh/devmem transport
-docs/              # firmware-branch-workflow.md, AntSDR_Phase4_Chirp_NCO_TX_Guide.md,
-                   #   fmcw_fabric_architecture.svg, datasheets/, archive/ (Phase 1-3 guides)
+    fabric_ctl.py  # FabricCtl (enable/disable/set_calib_delay sequencing) + SshDevmem transport
+    test_fabric_ctl.py, test_target_sim.py  # board-free asserts, run as __main__
+docs/              # firmware-branch-workflow.md, AntSDR_Phase5_IF_Decimation_Guide.md (I5 spec),
+                   #   fmcw_fabric_architecture.svg, datasheets/, archive/ (Phase 1-4 guides)
 hardware/          # materials.md (phased buy list), fmcw_58ghz_block_diagram.svg
 firmware/          # submodule stack (see below), branch e200-custom
 scripts/bringup/   # hardware bringup references (reference.py, trx_loopback.py, pluto_sdr_ref.py)
@@ -131,7 +141,7 @@ GUI spectrogram needs it).
 | Derived | range res 3.0 m, velocity res 2.02 m/s, MAX_VELOCITY 129 m/s, proc gain 58.6 dB |
 | Soft-model only | TX_PWR_DBM 10, TX_GAIN_DB 13, RX_GAIN_DB 14, ISOLATION_DB 40, DC/IQ errors 0 |
 | SDR_IP | 192.168.5.10 |
-| SDR_TX_GAIN_DB / SDR_TX_GAIN_MAX_DB | −60.0 / −40.0 (AD9361 hardwaregain = attenuation) |
+| SDR_TX_GAIN_DB / SDR_TX_GAIN_MAX_DB | −60.0 / **0.0** (AD9361 hardwaregain = attenuation) |
 | SDR_RX_GAIN_MODE / SDR_RX_GAIN_DB | manual / 40.0 |
 | SDR_RX_MARGIN_PERIODS | 1 |
 | SDR_LOOPBACK_EN / SDR_LOOPBACK_NOISE_SNR_DB | True / 1.0 |
@@ -235,8 +245,20 @@ gain ≈ +59 dB at 128 reps on ±1-normalized RX).
   (the stale-RX flush fails if no signal path exists).
 - Cleanup: `radio = None` before `try`, `finally: if radio is not None: set_loopback(False);
   close()`. `stop()` (GUI thread) flips `_running` then `wait(5000)`s — never `terminate()`.
-- TX gain is **clamped** in `start()` to `SDR_TX_GAIN_MAX_DB` (warns, does not raise). This is
-  the software EIRP guard — see the regulatory section before raising it.
+- **Fabric bring-up is worker-owned too**: `fabric = FabricCtl(SshDevmem(SDR_IP))` is built in
+  `run()` next to `radio`; two closures `fabric_up(cfg)` / `fabric_down()` wrap it. Order at
+  every `start()`: `radio.start()` -> `fabric_up` (check_magic, enable, 3 throwaway
+  `read_block()`s because the IF_SEL switch re-rolls the cpack pack phase). Before every
+  `radio.close()` (normal, reconfigure, last-good revert): `fabric_down()`, best-effort in
+  `finally`. **`enable()` can raise after its `write_seq` already ran** (the STATUS check), so
+  `fabric_up` must catch, `disable()`, then re-raise - otherwise `fabric_on` stays False on a
+  live fabric. No ssh inside the capture loop: enable costs ~2 round trips, only at
+  start/reconfigure.
+- TX gain is **clamped** in `start()` to `SDR_TX_GAIN_MAX_DB` (warns, does not raise). Since
+  2026-09-13 the clamp is **0.0 dB**, i.e. full TX power (~+6.5 dBm at 5.8 GHz) is reachable:
+  with physical attenuators on the bench the software ceiling was only getting in the way.
+  The consequence is that **the EIRP guard is now the operator and the pads, not the code** -
+  read the regulatory section before radiating, and set `SDR_TX_GAIN_DB` by hand.
 - Known doc/code mismatch: Part F's write-up said the `start()` RX-live check was made relative
   (a fixed 0.01 normalized amplitude is unreachable through 40 dB of pad at low RX gain), but
   `sdr.py` still tests an absolute `>= 0.01`.
@@ -301,7 +323,7 @@ antsdr-fmcw-radar -> firmware/ -> plutosdr-fw/ -> hdl/ (+ linux/, u-boot, buildr
 | 0x1C | CHIRP_COUNT | R | chirp periods, gray-crossed. Delta/s = 10000 sawtooth, **5000 triangle** (fires per period, not per leg) |
 | 0x20 | COMMIT | W | any write arms shadow -> active |
 | 0x24 | DECHIRP_DELAY | RW | shadow, same COMMIT; replica delay in samples, **must be < 128** (`G_MAX_DELAY`, wraps silently above) |
-| 0x28 | DECIM_SEL | RW | reserved for I5 |
+| 0x28 | DECIM_SEL | RW | reserved on FMC3. Phase 5 guide defines it: select code `0` = passthrough, `1` = decimate by 8, **not** commit-latched (drives the IP's `active` pin); lands with MAGIC FMC4 |
 | 0x2C | IF_SEL | RW | 1 = dechirped IF onto the capture (ADC) path, 0 = raw passthrough. A register, **not** a CTRL bit |
 | 0x30 | - | - | unmapped on purpose (tb probe), reads `0xDEADC0DE` |
 | 0x34 | STATUS | R | bit0 = `dac_enable_i0`. 0 means `dac_data_sel != DMA` and the NCO output is being discarded at the DAC mux |
@@ -362,16 +384,36 @@ factor 8 upstream of the core would alias the chirp; `sdr.start()` should write 
 
 ### Fabric IF mode on the Python side (`FABRIC_DECHIRP_EN`)
 
-- `capture_rx_data` returns the raw `read_block()` (no frame sync, no TargetSim: fake targets
-  are meaningless on a dechirped stream); `process_rx_data` skips `mix_signal`. `sync_src=1`
-  makes every DMA transfer start on a chirp boundary, so the block is already frame-aligned.
-- `register_image(cfg)` adds DECHIRP_DELAY and IF_SEL and sets `tx_src|sync_src` in CTRL when
-  the flag is on; it never sets `nco_en` or COMMIT (sequencing, not state). It raises if the
-  delay is outside `[0, 128)`.
-- Fabric IF output is Q15 but `_read_deinterleaved` normalizes by `2^11-1`; the RD maps are
-  peak-relative so the scale cancels, but absolute IF amplitude is 16x what raw RX would be.
-- The app has **no register writer yet** (I4b, `fabric_ctl.py`): `dechirp_verify.py` is the only
-  enable path. Do not flip the config default until that lands.
+- `capture_rx_data` returns the raw `read_block()` with no frame sync (`sync_src=1` makes every
+  DMA transfer start on a chirp boundary) and runs `TargetSim.apply_if` on it;
+  `process_rx_data` skips `mix_signal`.
+- `register_image(cfg)` is the **only encoder** (RadarConfig -> register values): adds
+  DECHIRP_DELAY and IF_SEL and sets `tx_src|sync_src` in CTRL when the flag is on; never sets
+  `nco_en` or COMMIT; raises if the delay is outside `[0, 128)`. `fabric_ctl.FabricCtl` owns
+  **sequencing only**: `enable(image)` = shadows -> CTRL(triangle_en) -> COMMIT -> CTRL|nco_en
+  -> IF_SEL last -> separate STATUS round trip (also the settle margin the first refill()
+  needs); `disable()` = IF_SEL=0 -> CTRL=0 -> COMMIT; `set_calib_delay()` = DECHIRP_DELAY +
+  COMMIT only; `check_magic()`; refuses an image with `ramp_en`. Transport `SshDevmem`: one
+  ssh call per sequence (`devmem` at base+offset, `&&`-chained, BatchMode so a missing key
+  fails fast instead of hanging the worker on a password prompt; `ssh-copy-id root@<ip>`
+  once). The write order is unit-tested through a recording transport
+  (`online/test_fabric_ctl.py`). `dechirp_verify.py` uses the same module.
+- **`apply_if` conventions** (fake targets on the dechirped stream - software, downstream of
+  the DMA, never exercises the fabric): a delay on an IF stream is a *frequency* shift, so each
+  target is a beat tone `exp(+2j*pi*f_b*t_fast)` with `f_b = S*2r/c`, `S = BW/T`, fast time
+  reset every chirp (`% N`), sign of `f_b` flipped on odd chirps in triangle mode, amplitude
+  relative to the block RMS (the fabric IF is Q15 normalized by `2^11-1`, 16x raw RX, so never
+  an absolute level), then `dsp.apply_doppler_shift(echo, -v, cfg)` - **negated**, because that
+  function's sign is calibrated for the pre-mix RX domain and `mix_signal`'s `conj(RX)` is what
+  flips it; `apply_if` writes into the IF domain and must flip it itself (found on hardware
+  2026-09-13: unnegated gave v = -v_true). Targets with `|f_b| >= FS/2` are skipped (logged
+  once). Kinematics shared with `apply()` via `_kinematics()`.
+- Signals tab in fabric mode: the RX spectrogram *is* the IF, so the worker emits `if_spec =
+  None` and the GUI hides the IF plot and relabels the remaining one. The Configuration tab's
+  TX instantaneous-frequency plot stays: it is derived from the config, and the NCO sweeps the
+  same BW/T/FS.
+- `sdr.start()` pins the `cf-ad9361-lpc` channel `sampling_frequency` to FS (I4b-2) so the
+  stock `rx_fir_decimator` stays at factor 1.
 
 ## RF reality (AD9361 numbers, verified against the datasheet)
 
@@ -391,9 +433,10 @@ Typical values, Table 1 of the AD9361 datasheet (nearest characterized band is 5
   pads are needed on the bench.
 - **Attenuating the TX makes leakage relatively worse**: at 40 dB attenuation carrier leakage is
   only −30 dBc, and that lands in the close-in range bins the mask already covers.
-- **RF input absolute maximum is +2.5 dBm peak.** With `SDR_TX_GAIN_MAX_DB = -40` (≈ −33.5 dBm
-  out) there is huge margin, but that clamp is the only thing standing between a mistyped gain
-  and a dead front end on a cable loop. Keep ≥30 dB of pads in any TX→RX cable path.
+- **RF input absolute maximum is +2.5 dBm peak.** With `SDR_TX_GAIN_MAX_DB = 0.0` a mistyped
+  gain puts ~+6.5 dBm straight at the RX port, over the absolute max, so **the pads are now the
+  only protection**: keep >=30 dB of attenuation in any TX->RX cable path, and check the pad is
+  actually in line before raising `SDR_TX_GAIN_DB`.
 - FMCW is **100% duty and constant envelope**: p.e.p. = average power, and any PA needs a
   continuous-rated heatsink/dummy load, not a burst rating.
 
@@ -419,10 +462,11 @@ inside BOTH license-free regimes.** Two routes, per PTSFS 2025:1 (PTS exemption 
 | SRD, non-specific (§204) | 5.725–5.875 GHz | **25 mW e.i.r.p.** (14 dBm) | nothing |
 | Amateur (§203) | 5.65–5.85 GHz | **200 W p.e.p. fed to the antenna** (antenna gain not counted) | HAREC certificate + call sign |
 
-- SRD route, with the planned 19 dBi TX sector: TX port must be **≤ −5 dBm**. Current clamp
-  (`SDR_TX_GAIN_MAX_DB = -40` → ≈ −33.5 dBm) leaves ~28 dB of unused headroom; raising the clamp
-  to about **−12 dB** puts the port at ≈ −5.5 dBm, i.e. right at the legal EIRP ceiling. That is
-  the correct Part G setting, and it is worth 28 dB of link budget for free.
+- SRD route, with the planned 19 dBi TX sector: TX port must be **≤ −5 dBm**. The clamp is now
+  0.0 dB (full power, ~+6.5 dBm) and therefore enforces nothing - for radiated Part G work set
+  `SDR_TX_GAIN_DB` ≈ **−12 dB** by hand, which puts the port at ≈ −5.5 dBm, right at the legal
+  EIRP ceiling. If an unattended/long radiated run is ever left running, put the ceiling back
+  into `SDR_TX_GAIN_MAX_DB` for that session rather than trusting the field.
 - Amateur route (Swedish HAREC via SSA exam) unlocks the Part H PA legally: a 2 W FPV PA is
   33 dBm, far under the 200 W ceiling. Amateur use is defined as non-commercial "tekniska
   undersökningar", which covers radar experiments; an unattended radar counts as an automatic

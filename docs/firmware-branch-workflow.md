@@ -49,7 +49,7 @@ fact: "the submodule should be at commit SHA X" (a gitlink). Consequences:
   always the thing a fresh clone should get (`.gitmodules` `branch =` entries
   point at it).
 - Feature work happens on short-lived branches in `hdl` only:
-  `feat/rx-tap`, `feat/axi-regs`, `feat/chirp-nco`, `feat/deramp`, ...
+  `feature/rx-tap`, `feature/axi-regs`, `feature/chirp-nco`, `feature/deramp`, ...
   Branch from `e200-custom`, commit at every working milestone, merge back
   when the feature is proven on hardware.
 - `plutosdr-fw` and `firmware` do NOT get per-feature branches. They stay on
@@ -65,7 +65,7 @@ When a feature merges into `hdl`'s `e200-custom`:
 
 ```
 cd firmware/plutosdr-fw/hdl
-git switch e200-custom && git merge feat/<name>       # fast-forward usually
+git switch e200-custom && git merge feature/<name>       # fast-forward usually
 git push origin e200-custom
 
 cd ..                       # plutosdr-fw
@@ -102,7 +102,7 @@ Instead:
   linux/buildroot/u-boot-xlnx were cleaned (their patches sit uncommitted).
 - The one real use: migrating to a new upstream firmware release (v0.40+).
   Commit + push everything first, reset, apply new patches, new checkpoint
-  commits, rebase/cherry-pick feat/* work on top. Planned surgery, not routine.
+  commits, rebase/cherry-pick feature/* work on top. Planned surgery, not routine.
 
 If it does run: all five repos end up detached at upstream SHAs, patches gone;
 committed work survives (git switch e200-custom in the forks, setup.sh for the

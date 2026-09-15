@@ -1,3 +1,10 @@
+> **Archived 2026-09-15.** I2-I4 are closed on hardware. The register map here is
+> FMC1 and stale (current: FMC3, see `CLAUDE.md` "Firmware / HDL track"); Section 8.3
+> (`fabric_ctl`) was superseded by the implemented module; Sections 6.2/6.3 (I3) were
+> absorbed into I4. Still-live rules and troubleshooting entries were carried into
+> `docs/AntSDR_Phase5_IF_Decimation_Guide.md` Section 0. Kept for the NCO derivation
+> (Section 4), which is still the reference for `chirp_ftw` and `nco_reference.py`.
+
 # AntSDR E200 - Phase 4: chirp NCO + TX from fabric (Part I2 + I3)
 
 Follows the Phase 3 guide. Assumes Phase 3 is done: the AXI-Lite register bank
