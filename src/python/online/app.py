@@ -122,9 +122,13 @@ class RadarWorker(QThread):
                     rx_spec, t, f = dsp.spectrogram(
                         a_signal=rx[:n2], a_config=self.config
                     )
-                    if_spec, _, _ = dsp.spectrogram(
-                        a_signal=if_signal[:n2], a_config=self.config
-                    )
+                    if self.config.FABRIC_DECHIRP_EN:
+                        # Rx is IF signal, so skip IF spectrogram
+                        if_spec = None
+                    else:
+                        if_spec, _, _ = dsp.spectrogram(
+                            a_signal=if_signal[:n2], a_config=self.config
+                        )
                     self.signals.emit(rx_spec, if_spec, t, f)
                     self._last_spec_update = time.monotonic()
         except Exception as e:

@@ -19,13 +19,14 @@ def capture_rx_data(
 
     FABRIC_DECHIRP_EN: the PL dechirps before the DMA and (sync_src=1) starts
     every DMA transfer on a chirp boundary, so rx is already the frame-aligned
-    IF stream - nothing to search, no TX reference here. TargetSim injects on the
-    raw chirp and is not meaningful on a dechirped stream, so it is skipped.
+    IF stream - nothing to search, no TX reference here. TargetSim injects fake
+    targets as beat tones directly onto the IF stream via apply_if() - this is
+    software-only, downstream of the DMA, and never exercises the fabric.
     """
     # 1. Capture
     rx = a_sdr.read_block()
     if a_config.FABRIC_DECHIRP_EN:
-        return rx
+        return a_target_sim.apply_if(a_if_raw=rx, a_config=a_config, a_ctx=a_ctx)
     # 2. Simulate fake targets (if applicable)
     rx = a_target_sim.apply(a_rx_raw=rx, a_config=a_config)
     # 3. Frame-sync offset log (I3 determinism check). Only computed when DEBUG is

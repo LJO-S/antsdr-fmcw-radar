@@ -453,6 +453,8 @@ class RadarDisplay(QMainWindow):
             (self.rx_spec_image, a_rx_spec),
             (self.if_spec_image, a_if_spec),
         ]:
+            if spec is None:
+                continue
             image.setImage(spec, levels=(-80, 0))
             image.setRect(rect)
 
@@ -502,6 +504,14 @@ class RadarDisplay(QMainWindow):
     def set_config(self, a_config):
         # Store new config
         self._config = a_config
+
+        # Fabric IF mode: captured array is IF so hide IF spectrogram
+        self.if_spec_plot.setVisible(not a_config.FABRIC_DECHIRP_EN)
+        self.rx_spec_plot.setTitle(
+            "RX (fabric IF) Instantaneuous Freq"
+            if a_config.FABRIC_DECHIRP_EN
+            else "RX Instantaneuous Freq"
+        )
 
         # Update radar params
         radar_params = a_config.derived_params()

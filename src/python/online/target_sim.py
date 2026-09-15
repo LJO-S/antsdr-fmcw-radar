@@ -1,3 +1,4 @@
+import logging
 import time
 import numpy as np
 from dataclasses import dataclass, field
@@ -48,6 +49,7 @@ class FakeTarget:
         },
     )
     t_spawn: float = 0.0
+    nyquist_warned: bool = False
 
 
 class TargetSim:
@@ -63,20 +65,89 @@ class TargetSim:
             targets.append(t)
         self.fake_targets = targets
 
+    def _kinematics(self, a_target: FakeTarget, a_config: config.RadarConfig):
+        age = time.monotonic() - a_target.t_spawn
+        if age > a_target.duration:
+            a_target.t_spawn = time.monotonic()
+            age = 0.0
+        r = a_target.r0 + a_target.v0 * age + 0.5 * a_target.a0 * age**2
+        r = np.clip(r, 0, a_config.MAX_RANGE)
+        v = a_target.v0 + a_target.a0 * age
+        v = np.clip(v, -a_config.MAX_VELOCITY, a_config.MAX_VELOCITY)
+        return r, v
+
+    def apply_if(
+        self,
+        a_if_raw: np.ndarray,
+        a_config: config.RadarConfig,
+        a_ctx: dsp.CPIContext,
+    ) -> np.ndarray:
+        ret = a_if_raw.copy()
+
+        n = len(a_if_raw)
+        N = a_ctx.N_chirp_samples
+        # The beat tone is periodic: fast time resets every chirp, so one chirp
+        # (one triangle period) of phasor tiles across the whole CPI. Building it
+        # full-length instead would be ~CHIRP_REPS times the np.exp work and more memory.
+        # The np.roll below is cheap and vectorized, so this is faster.
+        t_chirp = np.arange(N) / a_config.FS
+
+        S = a_config.CHIRP_BW_HZ / a_config.CHIRP_DUR_S
+        rms = np.sqrt(np.mean(np.abs(a_if_raw) ** 2))
+        rms = rms if rms > 0 else 1.0
+
+        for target in self.fake_targets:
+            r, v = self._kinematics(target, a_config)
+
+            f_b = S * 2 * r / dsp.c
+            if abs(f_b) >= a_config.FS / 2:
+                if not target.nyquist_warned:
+                    logging.getLogger(__name__).warning(
+                        "apply_if: target at r=%.1fm has beat freq %.3f MHz "
+                        ">= Nyquist (%.3f MHz), skipping",
+                        r,
+                        f_b / 1e6,
+                        a_config.FS / 2e6,
+                    )
+                    target.nyquist_warned = True
+                continue
+            target.nyquist_warned = False
+
+            tone_up = np.exp(2j * np.pi * f_b * t_chirp).astype(a_if_raw.dtype)
+            if a_config.TRIANGLE_EN:
+                # Down-legs have slope -S, i.e. beat -f_b which is exactly the
+                # conjugate of the up-leg tone.
+                period = np.concatenate((tone_up, tone_up.conj()))
+            else:
+                period = tone_up
+            tone = np.tile(period, -(-n // len(period)))[:n]
+
+            echo = (target.amp * rms * tone).astype(a_if_raw.dtype, copy=False)
+
+            # dsp.apply_doppler_shift's minus-sign convention is calibrated for
+            # pre-mix RX-domain use (mix_signal's conj(RX) flips it to the correct
+            # sign downstream). apply_if writes directly into the IF domain,
+            # skipping that conjugation, so the velocity must be negated here to
+            # land on the same measured-sign convention as the baseband path.
+            echo = dsp.apply_doppler_shift(
+                a_signal=echo, a_velocity=-v, a_config=a_config
+            )
+
+            ret += echo
+
+        if a_config.SDR_LOOPBACK_EN:
+            ret = dsp.apply_noise(
+                a_signal=ret, a_snr_db=a_config.SDR_LOOPBACK_NOISE_SNR_DB
+            )
+
+        return ret
+
     def apply(self, a_rx_raw: np.ndarray, a_config: config.RadarConfig):
         ret = a_rx_raw.copy()
 
         # Loop over targets
         for target in self.fake_targets:
-            # Calculate current rng/vel values
-            age = time.monotonic() - target.t_spawn
-            if age > target.duration:
-                target.t_spawn = time.monotonic()
-                age = 0.0
-            r = target.r0 + target.v0 * age + 0.5 * target.a0 * age**2
-            r = np.clip(r, 0, a_config.MAX_RANGE)
-            v = target.v0 + target.a0 * age
-            v = np.clip(v, -a_config.MAX_VELOCITY, a_config.MAX_VELOCITY)
+            r, v = self._kinematics(target, a_config)
 
             # Convert into samples and rotate
             r_sample_offset = round(2 * r * a_config.FS / dsp.c)
