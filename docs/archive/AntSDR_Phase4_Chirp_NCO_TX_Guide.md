@@ -373,7 +373,7 @@ Category 4, bit-for-bit, each has a plausible wrong answer:
   `C_LUT_SIZE-idx` - worth ~-74 dBc, same order as the truncation spurs; not
   worth fixing, but a "correctly" mirrored model will never match.
 
-Structural fix: have `fabric_regs.py` **generate** `dds_lut.txt`, so the ROM,
+Structural fix: have `fabric_regs.py` **generate** `dds_init.txt`, so the ROM,
 VUnit vectors, and register image all come from one function.
 
 Amplitude note: `sdr.py` does `chirp * (2**15-1)` then truncating
@@ -547,7 +547,7 @@ hand-typed constants in the tb.
      reproduce every 4.6 "replicate" item (floor-quantized LUT, truncated
      12-bit address, `C_LUT_SIZE-1-idx` fold, `I=cos`/`Q=sin`).
    - `dds_lut_table()` -> the 4096 quarter-wave entries, plus an entry point
-     that writes `src/nco/dds/dds_lut.txt`. Generating the ROM from the same
+     that writes `src/nco/dds/dds_init.txt`. Generating the ROM from the same
      function as the model keeps them from drifting apart. Regenerate-and-
      diff in CI, or assert the checked-in file matches on import.
    - Unit tests (offline): (a) `nco_reference` vs `generate_chirp` float -

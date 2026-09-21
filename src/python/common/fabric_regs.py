@@ -28,7 +28,7 @@ REG_STATUS = 0x34  # read-only; 0x30 is unmapped (tb probe), reads 0xDEADC0DE
 
 # Must match C_MAGIC in fmcw_core.vhd. Bump both together on every map change;
 # a stale host reads garbage rather than failing loudly otherwise.
-MAGIC = 0x464D4333  # "FMC3"
+MAGIC = 0x464D43334  # "FMC4"
 
 
 # -------------------

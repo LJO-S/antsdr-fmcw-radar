@@ -19,13 +19,14 @@ hardening, cable loopback = first real RF), with a handful of small open items s
 FMC3) are proven on hardware in digital loopback (I4 closed 2026-09-10); the app drives the
 fabric through `online/fabric_ctl.py` (I4b, 2026-09-13) and fake targets work on the IF
 stream (I4c). Next: I5, decimation to IF rate - `docs/AntSDR_Phase5_IF_Decimation_Guide.md`
-is the spec. Decided 2026-09-15: operational range 800 m at the steepest chirp (56 MHz /
-100 us), one fixed divide-by-8 (ADI `ad_add_decimation_filter` = Xilinx fir_compiler, own
-coefficients) outside the core; every chirp parameter stays free - the core drops the last
-`SWEEP_LEN mod 8` IF samples per leg so the host always gets whole samples per chirp;
-`OP_RANGE_FACTOR` is replaced by `MAX_RANGE_M` plus a derived effective range. DSP48 budget
-(7020: 220): 75 used, 3 ours; the IP costs ~16 and the two unused ADI filters it replaces
-cost more, so the reclaim step makes it net negative.
+is the spec. Decided 2026-09-16: operational range 800 m at the steepest chirp (56 MHz /
+100 us); one fixed divide-by-8 as own HDL inside `fmcw_core` - CIC by 4 (4 stages, zero DSPs)
+then a 23-tap halfband by 2 (6 multiplies per channel) - both restarting their output grid on
+the chirp-leg mark, so every chirp parameter stays free and each leg yields `SWEEP_LEN // 8`
+IF samples; `OP_RANGE_FACTOR` is replaced by `MAX_RANGE_M` plus a derived effective range.
+The Xilinx fir_compiler route was dropped: ~16 DSP48 slices (7020 has 220, 75 used, 3 ours),
+an encrypted model the user's Questa FSE cannot run, and no per-chirp phase restart. The
+two unused ADI FIR blocks (~50 slices) get reclaimed in a separate build.
 Part G (antennas, first radiated RF) is the next RF step. Part H (PA/LNA/BPF) deferred.
 Part J (synthetic wideband) blocks nothing.
 
@@ -299,7 +300,7 @@ antsdr-fmcw-radar -> firmware/ -> plutosdr-fw/ -> hdl/ (+ linux/, u-boot, buildr
   ...) exist in `hdl` only.
 - Custom HDL lives in `firmware/plutosdr-fw/hdl/projects/e200/`: `src/fmcw_core.vhd` (top:
   AXI-Lite slave, CDC, muxes) with `src/nco/` (chirp_generator, chirp_dds, dds_lut + the
-  generated `dds_lut.txt`), `src/mixer/mixer_dechirp.vhd`, `src/delay/delay_line.vhd`,
+  generated `dds_init.txt`), `src/mixer/mixer_dechirp.vhd`, `src/delay/delay_line.vhd`,
   `src/arithmetic/complex_mult.vhd`; plus `system_bd.tcl`, `Makefile`, `system_constr.xdc`.
   VUnit testbenches under `test/` (`run.py`, `fmcw_core/`, `mixer_dechirp/`). AXI-Lite slave at
   **0x43C10000**; MAGIC bumps on every register-map change (`RXT1` → `FMC1` → `FMC3`; current
@@ -323,7 +324,7 @@ antsdr-fmcw-radar -> firmware/ -> plutosdr-fw/ -> hdl/ (+ linux/, u-boot, buildr
 | 0x1C | CHIRP_COUNT | R | chirp periods, gray-crossed. Delta/s = 10000 sawtooth, **5000 triangle** (fires per period, not per leg) |
 | 0x20 | COMMIT | W | any write arms shadow -> active |
 | 0x24 | DECHIRP_DELAY | RW | shadow, same COMMIT; replica delay in samples, **must be < 128** (`G_MAX_DELAY`, wraps silently above) |
-| 0x28 | DECIM_SEL | RW | reserved on FMC3. Phase 5 guide defines it: select code `0` = passthrough, `1` = decimate by 8, **not** commit-latched (drives the IP's `active` pin); lands with MAGIC FMC4 |
+| 0x28 | DECIM_SEL | RW | reserved on FMC3. Phase 5 guide defines it: `0` = passthrough, `1` = decimate by 8 (own CIC + halfband inside the core), **not** commit-latched; lands with MAGIC FMC4 |
 | 0x2C | IF_SEL | RW | 1 = dechirped IF onto the capture (ADC) path, 0 = raw passthrough. A register, **not** a CTRL bit |
 | 0x30 | - | - | unmapped on purpose (tb probe), reads `0xDEADC0DE` |
 | 0x34 | STATUS | R | bit0 = `dac_enable_i0`. 0 means `dac_data_sel != DMA` and the NCO output is being discarded at the DAC mux |
