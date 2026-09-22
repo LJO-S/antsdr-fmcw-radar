@@ -268,7 +268,7 @@ samples as today.
 
 `o_adc_valid` is now the decimated valid, which is what cpack sees, so
 **`p_dma_sync_latch` needs no change**: it already counts `r_adc_valid`.
-Change only its trigger: when `if_sel = 1`, set the latch on the decimated
+Change only its trigger: when `decim_sel = 1`, set the latch on the decimated
 stream's period tag (`o_tag(1)` out of stage 3) instead of the NCO's
 `new_period`. The DMA transfer then starts on the first IF sample of a period,
 give or take the cpack pair phase.
@@ -327,7 +327,7 @@ init files - and the four missing today
 
 ### 3.4 Testbenches
 
-One new standalone bench, same shape as `tb_mixer_dechirp` (stimulus file in,
+(Optional) One new standalone bench, same shape as `tb_mixer_dechirp` (stimulus file in,
 `output_data.txt` out, Python `post_check` bit-exact):
 
 - `tb_halfband_decimate`, run per stage (7, 11 and 27 taps) and as the `M = 8`
@@ -341,7 +341,7 @@ One new standalone bench, same shape as `tb_mixer_dechirp` (stimulus file in,
   output happens to align with the tagged input's own index - data/valid can
   look correct while the tag is silently one output off.
 
-`tb_fmcw_core`, extend:
+(Mandatory) `tb_fmcw_core`, extend:
 
 - Registers: DECIMATE_SEL write/readback, STATUS bit1, MAGIC FMC4, `0x30` still
   `0xDEADC0DE`.

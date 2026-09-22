@@ -1,5 +1,11 @@
 # TODO
 
+---------------------------------------------------------------
+Ludvig's DO-NOT-FORGET:
+- Fix the offline and online tests if they fail
+---------------------------------------------------------------
+
+
 Roadmap for the FMCW radar. Carrier is **5.8 GHz** (cheap WiFi/FPV hardware).
 
 **This file tracks unfinished work only.** Completed parts get one line each and
@@ -227,7 +233,7 @@ Ladder (each rung proven before the next; sim first):
             unmodified, the package reads `(4, 6, 14)` / `(1, 2, 6)`, and the three
             tap sets each sum to 16384.
 
-      - [ ] **2. Model + tests** (Python, no board; G5, G2.3). New
+      - [X] **2. Model + tests** (Python, no board; G5, G2.3). New
             `projects/e200/scripts/decimate_reference.py`, built on the filters repo's
             `scripts/model/halfband_filter.py`: `load_taps()` reads the **checked-in
             init files** (never designs its own - model and RTL must share one tap
