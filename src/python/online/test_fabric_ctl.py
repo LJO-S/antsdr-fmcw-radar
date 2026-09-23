@@ -69,6 +69,7 @@ def check_enable_order(transport, image):
 
     commit_idx = idx(fabric_regs.REG_COMMIT)
     if_sel_idx = idx(fabric_regs.REG_IF_SEL)
+    decim_idx = idx(fabric_regs.REG_DECIM_SEL)
     ctrl_idx = idx(fabric_regs.REG_CTRL)
     sweep_idx = idx(fabric_regs.REG_SWEEP_LEN)
     ftw_start_idx = idx(fabric_regs.REG_FTW_START)
@@ -77,17 +78,26 @@ def check_enable_order(transport, image):
 
     assert len(commit_idx) == 1, "enable() must COMMIT exactly once"
     assert len(if_sel_idx) == 1, "enable() must write IF_SEL exactly once"
+    assert len(decim_idx) == 1, "enable() must write DECIM_SEL exactly once"
     assert len(ctrl_idx) == 2, "enable() writes CTRL twice: pre-COMMIT, then nco_en"
 
-    # IF_SEL up LAST - after both CTRL words - carrying the image's own value
-    # (a bare position check would pass a stray IF_SEL=0 that never opens the
-    # IF path onto the capture side).
+    # IF_SEL up LAST - after both CTRL words AND after DECIM_SEL - carrying the
+    # image's own value (a bare position check would pass a stray IF_SEL=0
+    # that never opens the IF path onto the capture side).
     assert if_sel_idx[0] > ctrl_idx[0] and if_sel_idx[0] > ctrl_idx[1], (
         "IF_SEL must be written after both CTRL words"
     )
+    assert if_sel_idx[0] > decim_idx[0], "IF_SEL must be written after DECIM_SEL"
     assert (
         transport.writes[if_sel_idx[0]][1] == image[fabric_regs.REG_IF_SEL]
     ), "IF_SEL must carry the image's value, not just land in the right slot"
+
+    # DECIM_SEL is live (no COMMIT dependency) but must land between nco_en and
+    # IF_SEL, and carry the image's own value.
+    assert decim_idx[0] > ctrl_idx[1], "DECIM_SEL must follow the nco_en CTRL word"
+    assert (
+        transport.writes[decim_idx[0]][1] == image[fabric_regs.REG_DECIM_SEL]
+    ), "DECIM_SEL must carry the image's value, not just land in the right slot"
 
     # Shadow registers (FTW_START/FTW_SLOPE/SWEEP_LEN/DECHIRP_DELAY) precede
     # COMMIT and carry the image's values verbatim.
@@ -159,9 +169,23 @@ def test_disable_order():
     assert offs[0] == fabric_regs.REG_IF_SEL, "IF_SEL must go down FIRST"
     assert transport.writes[0][1] == 0, "IF_SEL must be cleared, not just reordered"
 
+    assert offs[1] == fabric_regs.REG_DECIM_SEL, "DECIM_SEL must follow IF_SEL"
+    assert (
+        transport.writes[1][1] == fabric_regs.DECIM_SEL_PASSTHROUGH
+    ), "DECIM_SEL must be cleared to passthrough"
+
     ctrl_i = offs.index(fabric_regs.REG_CTRL)
     assert transport.writes[ctrl_i][1] == 0, "CTRL must clear fully"
     assert offs[-1] == fabric_regs.REG_COMMIT, "COMMIT must be written last"
+
+
+def test_register_image_software_mode_no_fabric_regs():
+    # Software mode (FABRIC_DECHIRP_EN=False) must not emit DECIM_SEL/IF_SEL/
+    # DECHIRP_DELAY - those only exist in fabric IF mode.
+    image = fabric_regs.register_image(config.RadarConfig())
+    assert fabric_regs.REG_DECIM_SEL not in image
+    assert fabric_regs.REG_IF_SEL not in image
+    assert fabric_regs.REG_DECHIRP_DELAY not in image
 
 
 def test_ramp_en_rejected():
@@ -239,6 +263,7 @@ if __name__ == "__main__":
         test_enable_order,
         test_enable_triangle_bit,
         test_disable_order,
+        test_register_image_software_mode_no_fabric_regs,
         test_ramp_en_rejected,
         test_ramp_en_absent_from_normal_image,
         test_set_calib_delay,

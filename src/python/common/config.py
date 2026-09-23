@@ -3,6 +3,9 @@ import numpy as np
 
 c = 3e8  # Speed of light in m/s
 
+# Fixed in HDL (three cascaded halfband stages)
+FABRIC_DECIMATE_RATIO = 8
+
 
 @dataclass
 class RadarConfig:
@@ -58,7 +61,16 @@ class RadarConfig:
             "group": "fabric",
         },
     )
-
+    # IF samples dropped from the front of each fabric block. 0 by construction; I5 step 8 confirms.
+    FABRIC_FRAME_TRIM: int = field(
+        default=0,
+        metadata={
+            "label": "Frame Trim",
+            "unit": "samp",
+            "scale": 1,
+            "group": "fabric",
+        },
+    )
     # Sampling
     FS: float = field(
         default=56.6e6,
@@ -183,22 +195,65 @@ class RadarConfig:
     )
 
     # --------------------------------
-    # Miscellaneous
+    # Decimation
     # --------------------------------
-    OP_RANGE_FACTOR: float = field(
-        default=0.15,
+    MAX_RANGE_M: float = field(
+        default=800,
         metadata={
-            "label": "Operational Range Factor",
-            "unit": "",
+            "label": "Max Range",
+            "unit": "m",
             "scale": 1,
-            "group": "misc",
+            "group": "decimation",
         },
     )
+    FABRIC_DECIM_EN: bool = field(
+        default=True,
+        metadata={
+            "label": "Fabric Decimation",
+            "unit": "",
+            "scale": 1,
+            "group": "decimation",
+        },
+    )
+    # --------------------------------
+    # Miscellaneous
+    # --------------------------------
 
     # CHARACTERISTICS
     @property
+    def _decimating(self) -> bool:
+        # Decimation only exists downstream of the fabric dechirp path.
+        return self.FABRIC_DECHIRP_EN and self.FABRIC_DECIM_EN
+
+    @property
+    def FS_IF(self) -> float:
+        return self.FS / FABRIC_DECIMATE_RATIO if self._decimating else self.FS
+
+    @property
+    def SWEEP_LEN(self) -> int:
+        # Rounded to a multiple of the ratio so N_IF is exact, not a floor
+        # Costs at most 7 samples of sweep time.
+        n = round(self.CHIRP_DUR_S * self.FS)
+        if self._decimating:
+            n -= n % FABRIC_DECIMATE_RATIO
+        return n
+
+    @property
+    def T_EFF(self) -> float:
+        return self.SWEEP_LEN / self.FS
+
+    @property
+    def N_IF(self) -> int:
+        ratio = FABRIC_DECIMATE_RATIO if self._decimating else 1
+        return self.SWEEP_LEN // ratio
+
+    @property
+    def EFFECTIVE_RANGE(self) -> float:
+        return 0.4 * self.FS_IF * c * self.T_EFF / (2 * self.CHIRP_BW_HZ)
+
+    @property
     def MAX_RANGE(self) -> float:
-        return self.OP_RANGE_FACTOR * (c * self.CHIRP_DUR_S) / 2
+        return min(self.MAX_RANGE_M, self.EFFECTIVE_RANGE)
 
     @property
     def MAX_VELOCITY(self) -> float:
@@ -210,7 +265,6 @@ class RadarConfig:
         print(f"  Chirp Center Frequency: {self.CHIRP_FC_HZ / 1e9} GHz")
         print(f"  Chirp Bandwidth: {self.CHIRP_BW_HZ/ 1e6} MHz")
         print(f"  Chirp Duration: {self.CHIRP_DUR_S * 1e6} us")
-        print(f"  Theoretical Max Range: {(c * self.CHIRP_DUR_S) / 2} m")
         for name, (value, unit) in self.derived_params().items():
             print(f"\t{name}: {value:.1f} {unit}")
 
@@ -230,4 +284,7 @@ class RadarConfig:
             10 * np.log10(self.CHIRP_DUR_S * self.FS * self.CHIRP_REPS),
             "dB",
         )
+        r["IF Sample Rate"] = (self.FS_IF / 1e6, "MHz")
+        r["IF Samples / CPI leg"] = (self.N_IF, "")
+        r["Effective Range"] = (self.EFFECTIVE_RANGE, "m")
         return r

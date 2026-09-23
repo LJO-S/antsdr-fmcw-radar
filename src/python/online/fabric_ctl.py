@@ -7,6 +7,9 @@ Rules:
   - IF_SEL up LAST, down FIRST      (while IF_SEL=1 the ADC valid is gated by
                                      the NCO, so an in-flight refill() starves)
   - ramp_en never                   (outranks IF_SEL in the ADC output mux)
+  - DECIM_SEL is live, not commit-latched, so it carries no ordering constraint
+    of its own - it sits between nco_en and IF_SEL on enable (IF_SEL must stay
+    last) and right after IF_SEL=0 on disable
 """
 
 import subprocess
@@ -126,9 +129,16 @@ class FabricCtl:
             (fabric_regs.REG_CTRL, ctrl & fabric_regs.CTRL_TRIANGLE_EN),
             (fabric_regs.REG_COMMIT, 1),
             (fabric_regs.REG_CTRL, ctrl | fabric_regs.CTRL_NCO_EN),
-            # IF_SEL LAST.
-            (fabric_regs.REG_IF_SEL, a_image.get(fabric_regs.REG_IF_SEL, 0)),
         ]
+        # DECIM_SEL is live (not commit-latched), so it has no ordering
+        # constraint against COMMIT - it goes between nco_en and IF_SEL only
+        # because IF_SEL must stay last (below).
+        if fabric_regs.REG_DECIM_SEL in a_image:
+            seq.append(
+                (fabric_regs.REG_DECIM_SEL, a_image[fabric_regs.REG_DECIM_SEL])
+            )
+        # IF_SEL LAST.
+        seq.append((fabric_regs.REG_IF_SEL, a_image.get(fabric_regs.REG_IF_SEL, 0)))
 
         self.transport.write_seq(seq)
 
@@ -144,11 +154,13 @@ class FabricCtl:
 
     def disable(self) -> None:
         """
-        Restore passthrough: IF_SEL down FIRST, then NCO off, then COMMIT.
+        Restore passthrough: IF_SEL down FIRST, then DECIM_SEL, then NCO off,
+        then COMMIT.
         """
         self.transport.write_seq(
             [
                 (fabric_regs.REG_IF_SEL, 0),
+                (fabric_regs.REG_DECIM_SEL, fabric_regs.DECIM_SEL_PASSTHROUGH),
                 (fabric_regs.REG_CTRL, 0),
                 (fabric_regs.REG_COMMIT, 1),
             ]

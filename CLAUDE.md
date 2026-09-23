@@ -538,3 +538,7 @@ Part G's link budget (0 dBm TX, 19 dBi sector + 30 dBi grid, 1 m² target) gives
 turns into ~60 dB / ~35 dB post-processing SNR. **Antennas before PA**: TX power buys range^(1/4),
 NF buys SNR linearly. The real ceiling on a monostatic 100%-duty FMCW system is TX/RX isolation,
 not the PA and not the law.
+
+
+## Rules
+Be short and concise. To the point. No extra jargong and over-explaining unless asked for.

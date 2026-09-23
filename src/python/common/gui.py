@@ -515,12 +515,21 @@ class RadarDisplay(QMainWindow):
 
         # Update radar params
         radar_params = a_config.derived_params()
+        # Flag when the chirp, not MAX_RANGE_M, caps the range axis.
+        range_short = a_config.EFFECTIVE_RANGE < a_config.MAX_RANGE_M
         self.param_widget.setRowCount(len(radar_params))  # Flush rows
         for i, (name, (value, unit)) in enumerate(radar_params.items()):
+            flag = range_short and name == "Effective Range"
             for col, item in enumerate((name, f"{value:.1f}", unit)):
                 table_item = QTableWidgetItem(item)
                 table_item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
                 table_item.setForeground(QBrush(QColor("white")))
+                if flag:
+                    table_item.setBackground(QBrush(QColor("#5c2a2a")))
+                    table_item.setToolTip(
+                        f"Below Max Range ({a_config.MAX_RANGE_M:.0f} m): "
+                        f"the range axis stops here"
+                    )
                 self.param_widget.setItem(i, col, table_item)
 
         # Populate widgets

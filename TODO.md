@@ -245,7 +245,7 @@ Ladder (each rung proven before the next; sim first):
             "DC out within **one** count and exactly equal to the model", not
             "exact", because of the two floors. Done when they pass.
 
-      - [ ] **3. Fork `halfband_decimate` -> `halfband_decimate` + tb** (HDL + VUnit;
+      - [X] **3. Fork `halfband_decimate` -> `halfband_decimate` + tb** (HDL + VUnit;
             G2.3, G2.4, G3.4). `G_MULTIRATE_FACTOR = 8`, three stages from the
             generate loop. Add `i_restart` resetting `r_sel` only - delay lines keep
             their history - and a 2-bit `i_tag`/`o_tag` per stage, so stage k+1's
@@ -257,12 +257,12 @@ Ladder (each rung proven before the next; sim first):
             clip, gain is 1.0). Bit-exact vs `decimate_golden`, and `N // 8` outputs
             per leg. Done when green.
 
-      - [ ] **4. Core integration** (HDL + VUnit; G3.1-G3.4). Tag lane:
+      - [X] **4. Core integration** (2026-09-22; HDL + VUnit; G3.1-G3.4). Tag lane:
             `chirp_generator.o_new_leg`, 2-bit tag through `delay_line` and
             `mixer_dechirp` (same delay as valid). Chain after the ADC output mux,
             bypassed when `decimate_sel=0`; sync latch set from stage 3's period tag
             when `if_sel=1`; ramp counter resets on the IF period tag when
-            `nco_en`; DECIMATE_SEL live + STATUS bit1 (2-flop sync, false path);
+            `nco_en`; DECIMATE_SEL live (2-flop sync, false path);
             MAGIC `0x464D4334`; `set_max_delay` on `r_dechirp_dly -> delay_line`;
             Makefile `M_DEPS` (every `src/decimate/` file incl. the three init files,
             plus the 4 missing today). No new `fmcw_core` ports. `tb_fmcw_core`:
@@ -270,28 +270,50 @@ Ladder (each rung proven before the next; sim first):
             triangle), 262 when off - 262 not 260, so the restart has an irregular
             gap to absorb; chain bit-exact vs `decimate_golden(mixer_golden())`;
             `period-framing` x `decimate_sel=1`; ramp reset. Done when all green.
+            **STATUS bit1 skipped** (2026-09-22): DECIMATE_SEL readback is the
+            same round trip, so the mirror bit earns nothing on either side.
+            `STATUS_DECIMATE_ACTIVE` drops out of session 5 with it.
+            Closed at **45/45 VUnit, 7/7 offline**. What the session actually
+            cost, beyond the plan: the DMA sync was tapped one register too
+            late, so the window opened a full IF sample after the period-tagged
+            sample at `decimate_sel=1`. Fixed by driving the latch from
+            `w_out_tag`, the combinational tag feeding the output register -
+            lag 0 in both modes, so `FABRIC_FRAME_TRIM` is 0 by construction
+            and session 8 is a confirmation. That fix is only safe because
+            `mixer_dechirp` now gates its tag with its valid; ungated, the
+            held-level tag rose a cycle early and tapping earlier as well would
+            fire a beat early. Three tests were missing and now exist:
+            `ramp-reset` (the first config ever to set `ramp_en|nco_en`
+            together - `w_ramp_restart` had never fired in sim), four
+            `period-framing` configs at `decimate_sel=1`, and `decimate-legs`
+            swept over `chirp_len` 256/257/262/263 so the restart is graded at
+            four `mod 8` residues instead of one. The `mod 8 = 0` case is the
+            one that matters: it is the only length where a restart that did
+            nothing would still produce the right count.
 
-      - [ ] **5. Host side** (Python, no board; G6). `config.py`: delete
+      - [X] **5. Host side** (2026-09-23; Python, no board; G6). `config.py`: delete
             `OP_RANGE_FACTOR`; add `MAX_RANGE_M`=800, `FABRIC_DECIMATE` {1,8},
             `FABRIC_FRAME_TRIM`=0; properties `FS_IF`, `SWEEP_LEN` (multiple of
             `FABRIC_DECIMATE`), `T_EFF = SWEEP_LEN / FS`, `N_IF`, `EFFECTIVE_RANGE`,
             `MAX_RANGE=min(...)`; every range axis off `T_EFF`, not `CHIRP_DUR_S`.
-            `fabric_regs.py`: MAGIC FMC4, `DECIMATE_CODE`, `STATUS_DECIMATE_ACTIVE`,
+            `fabric_regs.py`: MAGIC FMC4, `DECIMATE_CODE`,
             image adds DECIMATE_SEL, `chirp_ftw` takes the rounded sweep length and
             **recomputes the slope from it** (else B shrinks). `fabric_ctl.py`:
             DECIMATE_SEL after `nco_en` / before IF_SEL on enable, between IF_SEL and
-            CTRL on disable, STATUS bit1 checked; `test_fabric_ctl.py` asserts the
+            CTRL on disable; `test_fabric_ctl.py` asserts the
             positions. `dsp.py`: `CPIContext.N_if_samples`/`fs_if`, `process_cpi` on
             them, `spectrogram(..., a_fs=)`. `sdr.py`: buffer from `N_IF`; FS
             readback warning. `capture.py`: trim slice. `target_sim.apply_if`:
             FS_IF/N_IF. GUI derived table: FS_IF, N_IF, effective range (flag if <
             MAX_RANGE_M). Done when `test_fabric_ctl`, `test_target_sim`,
             `test_soft_model` pass and the GUI still runs in software mode with the
-            usual RD map.
+            usual RD map. Done: `FABRIC_DECIMATE` became `FABRIC_DECIM_EN` (ratio
+            is fixed in HDL). Software mode's range axis now stops at 800 m.
 
       - [ ] **6. Build** (Vivado; G3.3). No block-design change. Full image, flash.
-            Done when `/dev/uio0` exists, MAGIC reads FMC4, STATUS bit1 follows a
-            DECIMATE_SEL write, and the app runs at `FABRIC_DECIMATE=1` as before.
+            Done when `/dev/uio0` exists, MAGIC reads FMC4, DECIMATE_SEL reads
+            back what was written, and the app runs at `FABRIC_DECIM_EN=False` as
+            before.
 
       - [ ] **7. Ramp** (board; G7.1). CTRL `ramp_en|nco_en`, DECIMATE_SEL=1, IF_SEL=0,
             one block: step exactly 8 (mod 2^16), drop every `SWEEP_LEN // 8`,

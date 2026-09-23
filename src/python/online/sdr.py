@@ -31,6 +31,14 @@ class AntSDR:
         """
         Start TX and RX DMA for one CPI of data.
         """
+        # Checked before any hardware write so RE-CONFIGURE reverts cleanly.
+        legs = 2 if self.config.TRIANGLE_EN else 1
+        margin = self.config.SDR_RX_MARGIN_PERIODS * legs * self.config.N_IF
+        trim = self.config.FABRIC_FRAME_TRIM
+        if self.config.FABRIC_DECHIRP_EN and not 0 <= trim <= margin:
+            raise ValueError(
+                f"FABRIC_FRAME_TRIM {trim} outside [0, {margin}] (RX margin)"
+            )
 
         # --------------------
         # Configure TX
@@ -65,6 +73,15 @@ class AntSDR:
         self.ctrl.find_channel("voltage0").attrs["sampling_frequency"].value = str(
             int(self.config.FS)
         )
+        # A phy that silently clamps/rejects the write scales the whole range axis (dsp.py derives it from cfg.FS).
+        fs_readback = float(
+            self.ctrl.find_channel("voltage0").attrs["sampling_frequency"].value
+        )
+        if abs(fs_readback - self.config.FS) > 1.0:
+            print(
+                f"WARNING! RX sampling_frequency readback {fs_readback / 1e6:.3f} MHz "
+                f"!= configured FS {self.config.FS / 1e6:.3f} MHz - range axis will be off"
+            )
         self.ctrl.find_channel("voltage0").attrs[
             "gain_control_mode"
         ].value = self.config.SDR_RX_GAIN_MODE
@@ -104,9 +121,17 @@ class AntSDR:
         # --------------------
         # RX buffer (= one CPI + margin)
         # --------------------
+        # Sized in IF-domain samples (N_IF), not TX/ADC-rate chirp samples: in
+        # fabric decimated mode what the DMA delivers per leg is N_IF, not
+        # len(chirp). N_IF collapses to len(chirp) (per leg) in software and
+        # fabric-passthrough mode, so this formula is exact in all three - see
+        # RadarConfig.N_IF
+        legs_per_period = 2 if self.config.TRIANGLE_EN else 1
         rx_buf_samples = (
-            self.config.CHIRP_REPS + self.config.SDR_RX_MARGIN_PERIODS
-        ) * len(chirp)
+            (self.config.CHIRP_REPS + self.config.SDR_RX_MARGIN_PERIODS)
+            * legs_per_period
+            * self.config.N_IF
+        )
         self.rx_buff = iio.Buffer(self.rx, samples_count=rx_buf_samples, cyclic=False)
 
         # --------------------

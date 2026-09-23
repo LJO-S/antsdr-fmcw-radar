@@ -85,14 +85,18 @@ class TargetSim:
         ret = a_if_raw.copy()
 
         n = len(a_if_raw)
-        N = a_ctx.N_chirp_samples
+        N = a_ctx.N_if_samples
         # The beat tone is periodic: fast time resets every chirp, so one chirp
         # (one triangle period) of phasor tiles across the whole CPI. Building it
         # full-length instead would be ~CHIRP_REPS times the np.exp work and more memory.
         # The np.roll below is cheap and vectorized, so this is faster.
-        t_chirp = np.arange(N) / a_config.FS
+        # Decimated IF domain: N/fs_if, not N_chirp_samples/FS.
+        t_chirp = np.arange(N) / a_config.FS_IF
 
-        S = a_config.CHIRP_BW_HZ / a_config.CHIRP_DUR_S
+        # T_EFF, not CHIRP_DUR_S: SWEEP_LEN (and so T_EFF) shrinks by up to 7
+        # samples under decimation, and B is what must stay exact (I5 guide
+        # Section 6).
+        S = a_config.CHIRP_BW_HZ / a_config.T_EFF
         rms = np.sqrt(np.mean(np.abs(a_if_raw) ** 2))
         rms = rms if rms > 0 else 1.0
 
@@ -100,14 +104,14 @@ class TargetSim:
             r, v = self._kinematics(target, a_config)
 
             f_b = S * 2 * r / dsp.c
-            if abs(f_b) >= a_config.FS / 2:
+            if abs(f_b) >= a_config.FS_IF / 2:
                 if not target.nyquist_warned:
                     logging.getLogger(__name__).warning(
                         "apply_if: target at r=%.1fm has beat freq %.3f MHz "
                         ">= Nyquist (%.3f MHz), skipping",
                         r,
                         f_b / 1e6,
-                        a_config.FS / 2e6,
+                        a_config.FS_IF / 2e6,
                     )
                     target.nyquist_warned = True
                 continue
@@ -130,7 +134,7 @@ class TargetSim:
             # skipping that conjugation, so the velocity must be negated here to
             # land on the same measured-sign convention as the baseband path.
             echo = dsp.apply_doppler_shift(
-                a_signal=echo, a_velocity=-v, a_config=a_config
+                a_signal=echo, a_velocity=-v, a_config=a_config, a_fs=a_config.FS_IF
             )
 
             ret += echo

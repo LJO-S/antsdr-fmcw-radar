@@ -26,6 +26,12 @@ def capture_rx_data(
     # 1. Capture
     rx = a_sdr.read_block()
     if a_config.FABRIC_DECHIRP_EN:
+        # sync_src=1 starts the DMA on the period-tagged sample; trim and cut come
+        # out of the SDR_RX_MARGIN_PERIODS tail.
+        rows = 2 * a_config.CHIRP_REPS if a_config.TRIANGLE_EN else a_config.CHIRP_REPS
+        n_cpi = rows * a_config.N_IF
+        trim = a_config.FABRIC_FRAME_TRIM
+        rx = rx[trim : trim + n_cpi]
         return a_target_sim.apply_if(a_if_raw=rx, a_config=a_config, a_ctx=a_ctx)
     # 2. Simulate fake targets (if applicable)
     rx = a_target_sim.apply(a_rx_raw=rx, a_config=a_config)

@@ -1,9 +1,11 @@
 """
-FMCW register encoding for fmcw_core (Phase 4 chirp NCO).
+FMCW register encoding for fmcw_core (Phase 4 chirp NCO, Phase 5 decimation).
 
-Formulas are docs/AntSDR_Phase4_Chirp_NCO_TX_Guide.md
-Section 4.2 - read that before changing anything here, especially the `+ s/2`
-term in `chirp_ftw`, which is not a fudge factor (see the guide).
+Formulas are docs/AntSDR_Phase4_Chirp_NCO_TX_Guide.md Section 4.2 (the `+ s/2`
+term in `chirp_ftw`, not a fudge factor) and
+docs/AntSDR_Phase5_IF_Decimation_Guide.md Section 6 (slope recomputed from the
+decimation-rounded SWEEP_LEN, so B stays exact even though T shrinks by up to
+7 samples) - read those before changing anything here.
 """
 
 from .config import RadarConfig
@@ -22,13 +24,13 @@ REG_SWEEP_LEN = 0x18
 REG_CHIRP_COUNT = 0x1C
 REG_COMMIT = 0x20
 REG_DECHIRP_DELAY = 0x24  # TX->RX sample latency compensation
-REG_DECIM_SEL = 0x28  # reserved, Phase 5 (I5)
+REG_DECIM_SEL = 0x28  # live, not commit-latched: 0 = passthrough, 1 = /8
 REG_IF_SEL = 0x2C  # mux between dechirped IF and passthrough RX onto o_adc
 REG_STATUS = 0x34  # read-only; 0x30 is unmapped (tb probe), reads 0xDEADC0DE
 
 # Must match C_MAGIC in fmcw_core.vhd. Bump both together on every map change;
 # a stale host reads garbage rather than failing loudly otherwise.
-MAGIC = 0x464D43334  # "FMC4"
+MAGIC = 0x464D4334  # "FMC4"
 
 
 # -------------------
@@ -45,6 +47,12 @@ CTRL_SYNC_SRC = 1 << 5
 # IF SEL
 # -------------------
 IF_SEL_IF_OUT = 1  #  (0 = passthrough)
+
+# -------------------
+# DECIM SEL
+# -------------------
+DECIM_SEL_DECIMATE = 1  # /8 halfband cascade active
+DECIM_SEL_PASSTHROUGH = 0
 
 # -------------------
 # STATUS REG
@@ -65,9 +73,15 @@ def _u32(value: int) -> int:
     return value & 0xFFFFFFFF
 
 
-def chirp_ftw(bw_hz: float, dur_s: float, fs_hz: float) -> tuple[int, int, int]:
+def chirp_ftw(bw_hz: float, sweep_len: int, fs_hz: float) -> tuple[int, int]:
     """
-    FTW_START, FTW_SLOPE, SWEEP_LEN for a -bw/2 -> +bw/2 sweep over dur_s at fs_hz.
+    FTW_START, FTW_SLOPE for a -bw/2 -> +bw/2 sweep over `sweep_len` samples at
+    fs_hz. `sweep_len` is `RadarConfig.SWEEP_LEN` i.e.
+    `round(dur_s * fs_hz)` in software DMA mode, and rounded down to a multiple of
+    the decimation ratio when fabric decimation is active, so the slope must be
+    recomputed from it rather than from dur_s directly. Otherwise the chirp
+    sweeps less than the configured bandwidth: B sets the range axis, T does
+    not, so the sweep time is what gives up the (at most 7) samples.
 
     FTW lives on the half-sample grid, phase on the sample grid.
     The `+ s/2` term corrects for that - omitting it delays the fabric chirp by
@@ -75,24 +89,22 @@ def chirp_ftw(bw_hz: float, dur_s: float, fs_hz: float) -> tuple[int, int, int]:
     Returned words are two's-complement-encoded (unsigned 0..2**32-1), ready to
     write into FTW_START/FTW_SLOPE.
     """
-    slope = bw_hz / (dur_s * fs_hz**2)  # cycles / sample^2
+    slope = bw_hz / (sweep_len * fs_hz)  # cycles / sample^2
     ftw_start = round((-bw_hz / (2 * fs_hz) + slope / 2) * 2**32)
     ftw_slope = round(slope * 2**32)
-    sweep_len = round(dur_s * fs_hz)
-    return _u32(ftw_start), _u32(ftw_slope), sweep_len
+    return _u32(ftw_start), _u32(ftw_slope)
 
 
 def register_image(cfg: RadarConfig) -> dict[int, int]:
     """
     RadarConfig -> {offset: value} for FTW_START/FTW_SLOPE/SWEEP_LEN + CTRL
-    (+ DECHIRP_DELAY in fabric IF mode).
+    (+ DECHIRP_DELAY/IF_SEL/DECIM_SEL in fabric IF mode).
 
     Does not set COMMIT or nco_en since those are sequencing (write this image,
     then COMMIT, then enable), not persistent config state.
     """
-    ftw_start, ftw_slope, sweep_len = chirp_ftw(
-        cfg.CHIRP_BW_HZ, cfg.CHIRP_DUR_S, cfg.FS
-    )
+    sweep_len = cfg.SWEEP_LEN
+    ftw_start, ftw_slope = chirp_ftw(cfg.CHIRP_BW_HZ, sweep_len, cfg.FS)
 
     ctrl = 0
     if cfg.TRIANGLE_EN:
@@ -118,4 +130,7 @@ def register_image(cfg: RadarConfig) -> dict[int, int]:
             )
         image[REG_DECHIRP_DELAY] = _u32(cfg.FABRIC_DECHIRP_DELAY)
         image[REG_IF_SEL] = IF_SEL_IF_OUT
+        image[REG_DECIM_SEL] = (
+            DECIM_SEL_DECIMATE if cfg.FABRIC_DECIM_EN else DECIM_SEL_PASSTHROUGH
+        )
     return image

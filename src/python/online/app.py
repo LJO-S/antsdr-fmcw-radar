@@ -118,14 +118,22 @@ class RadarWorker(QThread):
                     rd_map_db_up, rd_map_db_down, detections, ranges, velocities
                 )
                 if time.monotonic() - self._last_spec_update > 0.5:
-                    n2 = 2 * len(ctx.tx_chirp)  # 2 chirps
-                    rx_spec, t, f = dsp.spectrogram(
-                        a_signal=rx[:n2], a_config=self.config
-                    )
                     if self.config.FABRIC_DECHIRP_EN:
-                        # Rx is IF signal, so skip IF spectrogram
+                        # rx is already the (possibly decimated) IF stream, at
+                        # ctx.fs_if rather than ctx tx-chirp/FS rate - slice and
+                        # label the spectrogram accordingly.
+                        legs = 2 if self.config.TRIANGLE_EN else 1
+                        n2 = 2 * legs * ctx.N_if_samples  # 2 periods, IF domain
+                        rx_spec, t, f = dsp.spectrogram(
+                            a_signal=rx[:n2], a_config=self.config, a_fs=ctx.fs_if
+                        )
+                        # Rx is already the IF signal, so skip the separate IF plot
                         if_spec = None
                     else:
+                        n2 = 2 * len(ctx.tx_chirp)  # 2 chirps
+                        rx_spec, t, f = dsp.spectrogram(
+                            a_signal=rx[:n2], a_config=self.config
+                        )
                         if_spec, _, _ = dsp.spectrogram(
                             a_signal=if_signal[:n2], a_config=self.config
                         )

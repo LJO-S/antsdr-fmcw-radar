@@ -215,6 +215,8 @@ class CPIContext:
     tx_chirp: np.ndarray
     tx_seq: np.ndarray
     N_chirp_samples: int
+    N_if_samples: int
+    fs_if: float
     T_rep: float
     ranges_pos: np.ndarray
     velocities: np.ndarray
@@ -225,19 +227,26 @@ class CPIContext:
 def build_cpi_context(a_config: RadarConfig) -> CPIContext:
     tx_chirp = generate_chirp(a_config=a_config)
     tx_seq = generate_chirp_sequence(a_config=a_config)
+    # N_chirp_samples is the TX/ADC-rate chirp length (unaffected by fabric
+    # decimation - that only shrinks what leaves the board). N_if_samples/fs_if
+    # are what the RD map is actually built from: equal to N_chirp_samples/FS
+    # in software mode (I5 guide Section 6), FS/8 and SWEEP_LEN/8 in fabric
+    # decimated mode.
     N_chirp_samples = int(round(a_config.CHIRP_DUR_S * a_config.FS))
+    N_if_samples = a_config.N_IF
+    fs_if = a_config.FS_IF
     T_rep = 2 * a_config.CHIRP_DUR_S if a_config.TRIANGLE_EN else a_config.CHIRP_DUR_S
 
-    range_freqs = np.fft.fftfreq(N_chirp_samples, d=1 / a_config.FS)
+    range_freqs = np.fft.fftfreq(N_if_samples, d=1 / fs_if)
     doppler_freqs = np.fft.fftshift(np.fft.fftfreq(a_config.CHIRP_REPS, d=T_rep))
-    ranges = range_freqs * c / (2 * a_config.CHIRP_BW_HZ / a_config.CHIRP_DUR_S)
+    # Slope S = B/T_EFF, not B/CHIRP_DUR_S: SWEEP_LEN (and so T_EFF) shrinks by
+    # up to 7 samples under decimation, and B is what must stay exact.
+    ranges = range_freqs * c / (2 * a_config.CHIRP_BW_HZ / a_config.T_EFF)
     velocities = doppler_freqs * c / (2 * a_config.CHIRP_FC_HZ)
 
-    pos = (ranges >= 0) & (
-        ranges <= a_config.OP_RANGE_FACTOR * (c * a_config.CHIRP_DUR_S) / 2
-    )
+    pos = (ranges >= 0) & (ranges <= a_config.MAX_RANGE)
 
-    range_window = np.blackman(N_chirp_samples)
+    range_window = np.blackman(N_if_samples)
     doppler_window = np.blackman(a_config.CHIRP_REPS)
     window_2d = doppler_window[:, np.newaxis] * range_window[np.newaxis, :]
 
@@ -245,6 +254,8 @@ def build_cpi_context(a_config: RadarConfig) -> CPIContext:
         tx_chirp,
         tx_seq,
         N_chirp_samples,
+        N_if_samples,
+        fs_if,
         T_rep,
         ranges[pos],
         velocities,
@@ -268,7 +279,7 @@ def process_cpi(a_if_signal: np.ndarray, a_config: RadarConfig, a_ctx: CPIContex
     3. Perform CFAR detection
     4. Clustering
     """
-    N = a_ctx.N_chirp_samples
+    N = a_ctx.N_if_samples
     pos = a_ctx.pos
     rng = a_ctx.ranges_pos
     vel = a_ctx.velocities
@@ -431,13 +442,19 @@ def process_cpi(a_if_signal: np.ndarray, a_config: RadarConfig, a_ctx: CPIContex
 
 
 # ===================================================================================
-def apply_doppler_shift(a_signal: np.ndarray, a_velocity: float, a_config: RadarConfig):
+def apply_doppler_shift(
+    a_signal: np.ndarray, a_velocity: float, a_config: RadarConfig, a_fs: float = None
+):
     """
-    Simulate Doppler shift on a raw RX capture
+    Simulate Doppler shift on a signal sampled at a_fs (default a_config.FS,
+    the raw-RX rate). Pass a_config.FS_IF when shifting a signal already in
+    the decimated IF domain (target_sim.apply_if) - the phasor's time base
+    must match the signal's actual sample spacing, not the ADC rate.
     """
+    fs = a_fs if a_fs is not None else a_config.FS
     # Doppler shift = 2*v/c * f_c
     doppler_hz = 2 * a_velocity * a_config.CHIRP_FC_HZ / c
-    t = np.arange(len(a_signal)) / a_config.FS
+    t = np.arange(len(a_signal)) / fs
     # Phase computed in float64 then cast so complex64 captures stay complex64
     phasor = np.exp(-2j * np.pi * doppler_hz * t).astype(a_signal.dtype, copy=False)
     return a_signal * phasor
@@ -466,8 +483,9 @@ def inst_freq(a_signal: np.ndarray, a_radar_config: RadarConfig):
 
 
 # ===================================================================================
-def spectrogram(a_signal: np.ndarray, a_config: RadarConfig, a_nperseg=256):
-    f, t, S = stft(x=a_signal, fs=a_config.FS, nperseg=a_nperseg, return_onesided=False)
+def spectrogram(a_signal: np.ndarray, a_config: RadarConfig, a_nperseg=256, a_fs=None):
+    fs = a_fs if a_fs is not None else a_config.FS
+    f, t, S = stft(x=a_signal, fs=fs, nperseg=a_nperseg, return_onesided=False)
     S = np.fft.fftshift(S, axes=0)
     f = np.fft.fftshift(f)
     S_db = 20 * np.log10(np.abs(S.T) + 1e-12)  # shape: (n_time, NFFT)
