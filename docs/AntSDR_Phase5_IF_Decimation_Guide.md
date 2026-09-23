@@ -270,8 +270,22 @@ samples as today.
 **`p_dma_sync_latch` needs no change**: it already counts `r_adc_valid`.
 Change only its trigger: when `decim_sel = 1`, set the latch on the decimated
 stream's period tag (`o_tag(1)` out of stage 3) instead of the NCO's
-`new_period`. The DMA transfer then starts on the first IF sample of a period,
-give or take the cpack pair phase.
+`new_period`.
+
+**Tap the tag BEFORE the output register, not after it.** `o_dma_sync` is
+itself registered, so a latch fed from the registered tag rises one cycle
+after the sample it belongs to, i.e. one whole IF sample late once the stream
+is decimated. Mux the two pre-register tags instead -
+`w_out_tag <= w_decimated_if_data_tag_out when decim_sel = '1' else r_mux_adc_tag` -
+and drive both `o_dma_sync` and the latch from that. The sync then rises in
+the same cycle as the `o_adc_data` it marks, in both modes, and the DMA
+transfer starts on sample 0 of the period rather than sample 1.
+
+This only works once `mixer_dechirp` gates `o_if_data_tag` with
+`o_if_data_valid`. Its tag lane rides `delay_line`, whose valid is a held
+level, so an ungated tag rises a cycle *before* its own valid: in passthrough
+that accidentally cancelled the sync register, and tapping earlier as well
+would fire a beat early. Gate the tag first, then move the tap.
 
 Ramp mode gets two changes, both so the ramp is a *bit-exact* test vector and
 not just an approximately-right sawtooth.
@@ -308,7 +322,7 @@ decimator (7.2).
 | Offset | Name | Change |
 |---|---|---|
 | 0x28 | DECIMATE_SEL | Live. `0` = passthrough, `1` = divide by 8. Takes effect immediately; **not** commit-latched. |
-| 0x34 | STATUS | bit0 unchanged; **bit1 = `decimate_sel` as seen in `l_clk`** |
+| 0x34 | STATUS | Unchanged. A `decimate_sel` mirror on bit1 was planned and **skipped** (2026-09-22): DECIMATE_SEL reads back, so the mirror costs a synchronizer and proves nothing extra. |
 | 0x00 | MAGIC | `0x464D4334` "FMC4" |
 
 No new ports on `fmcw_core`. No block-design change for the decimator.
@@ -317,6 +331,11 @@ Constraints (`system_constr.xdc`): a 2-flop synchronizer for `decimate_sel` (cop
 the `r_if_sel` idiom, ASYNC_REG) and its `set_false_path -to *r_decimate_sel_meta*`.
 While there: `r_dechirp_dly -> delay_line` is an unconstrained clock crossing
 today; give it `set_max_delay -datapath_only`.
+
+`w_out_tag` (3.2) puts a new path in `l_clk`: stage 3's `o_tag` straight into
+`o_dma_sync` and the sync latch, with no register between. It is a 2-bit 2:1
+mux and needs no constraint, but it did not exist before, so check it in
+`timing_impl.log` on the first build that carries it.
 
 Makefile `M_DEPS`: add every `src/decimate/` file - `halfband_decimate.vhd`,
 `halfband_decimate_stage.vhd`, `halfband_decimate_pkg.vhd` and the three coefficient
@@ -343,7 +362,7 @@ init files - and the four missing today
 
 (Mandatory) `tb_fmcw_core`, extend:
 
-- Registers: DECIMATE_SEL write/readback, STATUS bit1, MAGIC FMC4, `0x30` still
+- Registers: DECIMATE_SEL write/readback, MAGIC FMC4, `0x30` still
   `0xDEADC0DE`.
 - **Samples per leg:** dechirp config with `chirp_len = 262`, `decimate_sel = 1`,
   sawtooth and triangle: exactly 32 decimated samples between consecutive leg
@@ -502,8 +521,7 @@ ordinary IF at a lower rate.
 - `describe()`: print FS_IF, N_IF, effective range.
 
 **`fabric_regs.py`**: `MAGIC = 0x464D4334`; `DECIMATE_CODE = {1: 0, 8: 1}`;
-`register_image` adds `REG_DECIMATE_SEL` when the fabric flag is on;
-`STATUS_DECIMATE_ACTIVE = 1 << 1`.
+`register_image` adds `REG_DECIMATE_SEL` when the fabric flag is on.
 
 Also: **`SWEEP_LEN` becomes a multiple of the ratio** (2.4). Put it in one
 place - a `RadarConfig.SWEEP_LEN` property, `n = round(CHIRP_DUR_S * FS)` then
@@ -526,8 +544,8 @@ does not. The effective sweep time is then `SWEEP_LEN / FS` - use it, not
 800 m, well under a bin, but free to get right).
 
 **`fabric_ctl.py`**: `enable()`: ... -> CTRL with `nco_en` -> DECIMATE_SEL ->
-IF_SEL last. `disable()`: IF_SEL=0 -> DECIMATE_SEL=0 -> CTRL=0 -> COMMIT. After
-the STATUS read, require bit1 to match. `test_fabric_ctl.py`: assert the
+IF_SEL last. `disable()`: IF_SEL=0 -> DECIMATE_SEL=0 -> CTRL=0 -> COMMIT. The
+STATUS read still checks bit0 only (3.3). `test_fabric_ctl.py`: assert the
 positions; a software-mode image writes no DECIMATE_SEL.
 
 **`dsp.py`**: `CPIContext` gains `N_if_samples`, `fs_if`. Range axis from
@@ -555,16 +573,36 @@ highlighted when below `MAX_RANGE_M`.
 Sim green first (3.4). Then digital loopback, fabric mode.
 
 **7.1 Ramp: ratio and gain.** CTRL = `ramp_en | nco_en`, DECIMATE_SEL = 1,
-IF_SEL = 0. The block is a sawtooth: consecutive samples differ by exactly 8
-(every stage is exact unity gain, by the forced 16384 tap sum of 2.3) and the
-drop repeats every `SWEEP_LEN // 8` samples. Compare the whole block with
-`decimate_golden` test (c): `np.array_equal`, bit for bit. A step reading
-8, 8, 8, 7 is a tap sum that is not 16384. Compare the whole block with `decimate_golden` test
-(c): `np.array_equal`, bit for bit.
+IF_SEL = 0. The ramp counter resets at every period tag, so the input is a
+sawtooth carrying a full-scale cliff once per period, and the output has two
+regions that must be read differently.
+
+Away from the drop, consecutive samples differ by **exactly 8**: a straight
+line through a unity-gain linear-phase FIR is still a straight line, and one
+sample in eight survives. That is the forced 16384 tap sum of 2.3 doing its
+job, and a step reading 8, 8, 8, 7 there is a tap sum that is not 16384 (9s
+scattered through the 8s is the sum being over).
+
+Across the drop there is a transient, and it is **expected**. The delay lines
+are never cleared (2.4), so while the cascade still holds end-of-leg samples
+its output mixes the two legs and steps by anything: measured at **13
+decimated outputs**, with excursions far outside the ramp's own range (-188
+on a 0..261 ramp). At `SWEEP_LEN = 5656` that is 13 of the 707 samples in a
+leg. It is harmless in normal operation, where the IF is a smooth beat tone
+rather than a cliff.
+
+So the acceptance test is `np.array_equal` against `decimate_golden` test (c)
+over the whole block, bit for bit - the model reproduces the transient
+exactly. "Steps by 8" is an eyeball check away from the drops, not the
+criterion.
 
 **7.2 Frame trim.** Same capture with `sync_src = 1`. The first drop's index
-is `FABRIC_FRAME_TRIM`; expect 0 or 1 (the cpack pair phase), since the sync
-now fires on the decimated period tag. Record it, re-run, drop at index 0.
+is `FABRIC_FRAME_TRIM`; expect **0**. The latch is tapped before the output
+register (3.2), so the window opens on the period-tagged sample itself in both
+modes, and `decimate-chain` asserts exactly that
+(`SYNC_LAG_PASSTHROUGH = SYNC_LAG_DECIMATED = 0` in `decimate_reference.py`).
+A 1 is still legal - that is the cpack pair phase - but anything else means
+the tap moved. Record it, re-run, drop at index 0.
 
 **7.3 RD map A/B.** `dechirp_verify.py --decimate 1` then `--decimate 8`, fake
 targets 100 / 300 / 500 m, +-20 m/s. Below 750 m: same detections in the same
@@ -602,6 +640,9 @@ into `CLAUDE.md`. Then Section 4.2's reclaim build.
 - **Ramp step is not 8** -> a stage's non-centre taps do not sum to 16384 (2.3)
   if it reads 8, 8, 8, 7 (or 9s scattered through 8s, which is the sum being
   *over* 16384); a valid counted twice or a stage bypassed if it is 4 or 16.
+  But the ~13 samples right after each drop step by anything at all, including
+  values outside the ramp's range: that is the leg-boundary transient (2.4,
+  7.1), not a fault. Grade those against `decimate_golden`, never against 8.
 - **Halfband saturation never trips in the testbench** -> a DC stimulus cannot
   do it, the gain is 1.0. Use the sign-matched burst from 3.4.
 - **Everything about 1 count low on a DC input** -> expected, that is the floor
