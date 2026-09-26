@@ -12,11 +12,12 @@ Roadmap for the FMCW radar. Carrier is **5.8 GHz** (cheap WiFi/FPV hardware).
 their design conclusions move to `CLAUDE.md`, which is the maintained map - don't
 grow narrative back in here as parts close.
 
-Current state (2026-09-26): Parts A-F and I are done. Part I (HDL offload) is proven
-in digital loopback: fabric chirp NCO, dechirp and /8 decimation (MAGIC FMC4), up to
-~30 fps in the GUI. **Next: Part G** (antennas, first radiated RF), which also gates
-making fabric mode the default. Part H stays deferred behind G. Part J blocks
-nothing and can run in parallel.
+Current state (2026-09-26): Parts A-G and I are done. G (antennas, no PA) passed in
+software mode in 2026-08: cars, people on foot and bikes, on default settings. I (HDL
+offload) is proven in digital loopback: fabric chirp NCO, dechirp and /8 decimation
+(MAGIC FMC4), up to ~30 fps in the GUI. **Next: Part K (Phase 6)** - tracking,
+patch antennas and 2R1T angle, including fabric mode on real RF (K6). Part H stays
+deferred. Part J blocks nothing and can run in parallel.
 
 ---
 
@@ -28,6 +29,9 @@ nothing and can run in parallel.
 - **D - moving fake targets**: `online/target_sim.py`.
 - **E - DSP hardening**: MTI + live checkbox, 5.8 GHz at 128 reps, close-in CFAR mask.
 - **F - cable loopback, first real RF**: `CFAR_MASK_N`, MGC window, leakage shape.
+- **G - antennas, no PA** (2026-08, software mode): TX sector + RX grid ~1.5 m apart;
+  cars, people on foot and bikes detected with every setting at its default (close-in
+  mask, MTI, gains). Video recordings only, no IQ data. Isolation experiments skipped.
 - **I - HDL offload** (2026-07-27 to 2026-09-26): register bank (I1), chirp NCO (I2),
   I3 skipped (the capture jitter was in the RX/DMA path), fabric dechirp with
   loopback delay 34 (I4), `fabric_ctl.py` + worker wiring (I4b), fake targets on the
@@ -37,13 +41,10 @@ nothing and can run in parallel.
 ## Open small items
 
 - [ ] MTI beyond mean subtraction: 2-pulse canceller (`x[k] - x[k-1]`, wider notch,
-      3 dB SNR cost), then an exponential-average clutter map. Revisit against real
-      clutter in Part G.
+      3 dB SNR cost), then an exponential-average clutter map. The Part G field test
+      needed no change, so only if clutter becomes a problem.
 - [ ] Frame sync (software mode): earliest-peak-above-threshold lock instead of argmax.
 - [ ] 1/R^2 amplitude realism via `soft_model.add_amplitude`.
-- [ ] Throughput: fabric /8 reaches ~30 CPIs/s in the GUI but drops as detections
-      increase - profile `process_cpi` (CFAR / NMS / sub-bin / pairing) against the
-      GUI scatter. Software mode (2.9 MB per CPI over ~118 MB/s GbE) is unmeasured.
 - [ ] Offline soft model runs with MTI_EN both ways (detector self-test regression).
 - [-] I5b - DSP reclaim, deferred until a fabric FFT runs short of DSPs (123/220 used;
       a range + Doppler FFT is ~10-35, and a 2D FFT is bound by corner-turn BRAM, not
@@ -55,36 +56,39 @@ nothing and can run in parallel.
 
 ---
 
-## Part G - Antennas, no PA
+## Part K - Phase 6: tracking, patch antennas, 2R1T angle (active)
 
-The link budget (`CLAUDE.md`, "Physical range note") says the PA can wait: 0 dBm TX
-into a 19 dBi sector and a 30 dBi grid gives ~60 / ~35 dB post-processing SNR at
-100 / 500 m on a 1 m^2 target. Antennas first.
+Spec: `docs/AntSDR_Phase6_Tracking_Antennas_2R_Guide.md` ("G" = its sections).
+Two lanes in parallel (software K1-K3, antennas K0/K4/K5); each lane starts with
+the reading in G12. Fabric FFT/CFAR is not planned - decision gate in G10.
 
-- [ ] Mount TX sector + RX grid on tripods, >= 1-2 m apart; dummy-load discipline
-      until pointed away from people. SRD limit is 25 mW EIRP: with the 19 dBi
-      sector that is `SDR_TX_GAIN_DB` ~ -12 dB (TX port <= -5 dBm). Amateur route:
-      `CLAUDE.md` regulatory section.
-- [ ] First target: a corner reflector or a car at 50-200 m, then a walking person.
-      MTI earns its keep here - the first real v=0 ridge.
-- [ ] Isolation experiments: spacing, sheet-metal septum, antenna pointing. Measure
-      leakage vs the digital-loopback baseline; re-run the MGC window sweep.
-- [ ] Revisit the close-in mask width (`CFAR_MASK_N`) and the MTI notch width against
-      real clutter (wind-blown vegetation smears around bin 0).
-- [ ] Fabric mode on real RF, after the above works in software mode (never debug new
-      RF and new HDL at once): confirm `FABRIC_DECHIRP_DELAY` (61 on cable) with
-      `dechirp_verify.py --sweep --no-loopback`, then repeat the targets at /8. When
-      they match, make fabric mode the default.
-- Parked idea, not a task: a second RX channel for angle. The board runs an AD9364
-  image (1R1T in the device tree), so it needs a DT/firmware rebuild first; the
-  silicon is an AD9361.
+- [ ] K0 - 2R2T boot check (G2): `uEnv.txt` switch, `iio_info` shows ad9361 and
+      `voltage0..3`, 5.8 GHz / 56.6 MSPS still accepted, loopback tests unchanged,
+      RX2 alive. Gates the RX pair layout.
+- [ ] K1 - profile the host (G3): ms per `process_cpi` stage vs detection count,
+      plus the GUI slot; fix what grows with detections.
+- [ ] K2 - recorder + replay (G4): raw blocks + index + config + live detections
+      per session; replay reproduces the detections exactly.
+- [ ] K3 - tracker in (r, v) (G5): CV Kalman, GNN, M-of-N; tests (a)-(e), live
+      fake targets tracked.
+- [ ] K4 - single patch on FR4 (G6.3): simulate, fab, S11, back out eps_r.
+- [ ] K5 - columns + bench (G6.4-6.5): TX 1x8, RX 2x(1x8) at lambda/2; S11,
+      coupling, isolation vs spacing, gain +-1 dB, pattern (+ phase vs angle).
+- [ ] K6 - field day 1 (G7, needs K2, weather): COTS first, delay sweep (expect
+      61 +-1), software vs fabric /8, then patches; record everything; flip the
+      `FABRIC_DECHIRP_EN` default.
+- [ ] K7 - second RX channel in fabric (G8): second mixer + /8, equal latency,
+      MAGIC FMC5; VUnit + ramp on both channels + splitter sweep.
+- [ ] K8 - angle on the host (G9.1): 4-lane capture, phase-difference angle,
+      calibration, x-y view.
+- [ ] K9 - tracker in (x, y) + field day 2 (G9.2): EKF on (r, theta, v_r).
 
 ---
 
 ## Part H - PA + LNA + BPF (deferred purchases)
 
-Only after Part G shows the real range limit, and only into a dummy load, a cage, or
-with an amateur licence. The LNA likely pays off before the PA (NF buys SNR
+Part G worked without any of it, so buy only if a real range limit shows up, and
+only into a dummy load, a cage, or with an amateur licence. The LNA likely pays off before the PA (NF buys SNR
 linearly, TX power buys range^(1/4)).
 
 - [ ] LNA at the RX antenna (sets system NF, ~+20 dB / NF ~1.3 dB class) + 3-6 dB
@@ -221,5 +225,6 @@ Part J's job, NF and link budget Part H's, EIRP the law's.
   its motion smear.
 - **FFT + CFAR in fabric**: microsecond detection latency, and detections-only over
   the link (kB/s) makes the E200 a standalone mast sensor.
-- **Second RX channel**: 2R2T doubles the raw rate, hopeless over GbE at full rate,
-  easy after dechirp + decimation - the entry ticket to the angle idea in Part G.
+- **Second RX channel** for angle: 2R2T doubles the raw rate, hopeless over GbE at
+  full rate, easy after dechirp + decimation. Now Part K (K0, K7-K9): 2R2T is a
+  boot-env switch in `uEnv.txt`, not a firmware rebuild.

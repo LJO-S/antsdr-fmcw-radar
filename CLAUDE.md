@@ -5,8 +5,8 @@ FMCW radar at **5.8 GHz** on an ANTSDR E200 (Zynq + AD9361). Two tracks run in p
 1. **Python radar** — a reusable `common` DSP/GUI core, an `offline` simulation, and an
    `online` (live SDR) path. Working end to end.
 2. **PL fabric offload** — custom HDL in the forked firmware stack moving chirp generation
-   and dechirp into the FPGA. Done in digital loopback (`TODO.md` Part I); making fabric mode
-   the daily driver waits for Part G on real RF.
+   and dechirp into the FPGA. Done in digital loopback (`TODO.md` Part I); next is running
+   it on real RF, then making it the default.
 
 **Terminology:** *offline* = simulation / soft model. *online* = real-time hardware.
 
@@ -14,8 +14,8 @@ FMCW radar at **5.8 GHz** on an ANTSDR E200 (Zynq + AD9361). Two tracks run in p
 As of 2026-08 it tracks **unfinished work only**: closed parts are one line each and their
 design conclusions live *here* instead. When a part closes, summarize it there and move
 anything worth keeping into this file — don't let narrative grow back in `TODO.md`.
-Short version (2026-09): Parts A–F done (offline model, online app, GUI, target sim, DSP
-hardening, cable loopback = first real RF), with a handful of small open items still listed.
+Short version (2026-09): Parts A–G done (offline model, online app, GUI, target sim, DSP
+hardening, cable loopback, antenna field test), with a handful of small open items still listed.
 **Part I (HDL offload) is done** in digital loopback, only I5b (DSP reclaim) deferred:
 fabric NCO + fabric dechirp (I4, 2026-09-10), the app drives the fabric through
 `online/fabric_ctl.py` (I4b), fake targets work on the IF stream (I4c), and **I5, decimation
@@ -34,8 +34,11 @@ uniform decimation grid, so a per-leg phase restart must also clear its integrat
 state - miss that and the output runs away past the 24-bit range, and it only shows when
 `SWEEP_LEN mod 4 != 0`; plus 2.2 dB of droop). Reclaiming the two unused ADI FIR blocks
 (44 DSPs) is deferred until the FFT work needs DSPs.
-**Next: Part G** (antennas, first radiated RF), which also gates the fabric-mode cutover.
-Part H (PA/LNA/BPF) deferred. Part J (synthetic wideband) blocks nothing.
+Part G (antennas, first radiated RF) passed in software mode in 2026-08. **Next: Part K**
+(`docs/AntSDR_Phase6_Tracking_Antennas_2R_Guide.md`): software tracking, own patch antennas,
+2R1T angle, and fabric mode on real RF on the first field day. Fabric FFT/CFAR sits behind a
+decision gate (guide Section 10). Part H (PA/LNA/BPF) deferred. Part J (synthetic wideband)
+blocks nothing.
 
 ## Project structure
 
@@ -64,7 +67,8 @@ src/python/                 # import root
     app.py         # RadarWorker (QThread) + main(); owns (config, ctx, sdr)
     fabric_ctl.py  # FabricCtl (enable/disable/set_calib_delay sequencing) + SshDevmem transport
     test_fabric_ctl.py, test_target_sim.py  # board-free asserts, run as __main__
-docs/              # firmware-branch-workflow.md, rf-power-and-spectrum-sweden.pdf,
+docs/              # AntSDR_Phase6_Tracking_Antennas_2R_Guide.md (Part K spec, active),
+                   #   firmware-branch-workflow.md, rf-power-and-spectrum-sweden.pdf,
                    #   fmcw_fabric_architecture.svg, datasheets/, archive/ (Phase 1-5 guides;
                    #   Phase 5 Section 4.2 = the deferred FIR reclaim recipe)
 hardware/          # materials.md (phased buy list), fmcw_58ghz_block_diagram.svg
@@ -220,12 +224,13 @@ CFAR cell with clutter. `CHIRP_REPS` owns detection and resolution; `subbin_refi
 2. **Close-in mask** — `process_cpi` overwrites the first `CFAR_MASK_N` range bins of the RD map
    with the map's **median magnitude** (not zero: a zeroed block distorts the CFAR training
    estimate). Real leakage is smeared over the first few bins by analog group delay and
-   multipath, so one bin is not enough. `CFAR_MASK_N=5` was confirmed against Part F cable data.
+   multipath, so one bin is not enough. `CFAR_MASK_N=5` was confirmed against Part F cable data
+   and held unchanged in the Part G field test.
 3. **MTI** (`MTI_EN`, live checkbox) — per-range-bin slow-time mean subtraction, computed on
    unwindowed rows after step 1 and before windowing, both ramps in triangle mode. It is a notch
    exactly at Doppler bin 0; real clutter has spectral width. Upgrade path: 2-pulse canceller
-   (`x[k] - x[k-1]`), then an exponential-average clutter map. Revisit against real clutter in
-   Part G.
+   (`x[k] - x[k-1]`), then an exponential-average clutter map. The Part G field test needed
+   no change.
    **The notch width is fixed in BINS, which is why `CHIRP_REPS` is the lever.** At 32 reps a
    1.5 m/s target sits 0.19 bins from DC and loses ~9–10 dB of itself to the mean subtraction;
    at 256 reps it is 1.5 bins out and loses ~0.2 dB. Longer CPIs are cheap — 25.6 ms at 256
@@ -332,8 +337,8 @@ antsdr-fmcw-radar -> firmware/ -> plutosdr-fw/ -> hdl/ (+ linux/, u-boot, buildr
 - Target architecture: chirp NCO **and** dechirp in fabric, Ethernet carries IF samples, frame
   sync deleted. `dsp.py` becomes the golden model verifying fabric output sample-for-sample.
   Bypass bits default to today's behavior. Full spec: `docs/archive/AntSDR_Phase4_Chirp_NCO_TX_Guide.md`.
-- Cutover to the fabric path waits for Parts F+G on real RF — never debug new RF and new HDL
-  at the same time.
+- Cutover to the fabric path waited for Parts F+G on real RF; both passed in software mode,
+  so it is unblocked. The rule stands: never debug new RF and new HDL at the same time.
 
 ### fmcw_core register map (FMC4) - hardware-proven (I4 2026-09-10, I5 2026-09-26)
 
@@ -392,7 +397,8 @@ Rules learned on hardware (all of them cost a hang or a wrong map once):
   artifact at valid-gap edges is pipeline timing, not an RTL bug.
 - **Loopback TX->RX digital latency = 34 samples** (`FABRIC_DECHIRP_DELAY`), measured by
   sweeping DECHIRP_DELAY until the leakage peak lands in range bin 0. The real-RF constant
-  differs (loopback taps inside the AD9361 chain) and is still to be measured in Part G.
+  differs (loopback taps inside the AD9361 chain): 61 on cable, still to be confirmed with
+  the antennas (Part G ran in software mode).
 
 ### Stock RX FIR decimator - how it is controlled (investigated 2026-09-10)
 
@@ -586,6 +592,10 @@ Part G's link budget (0 dBm TX, 19 dBi sector + 30 dBi grid, 1 m² target) gives
 turns into ~60 dB / ~35 dB post-processing SNR. **Antennas before PA**: TX power buys range^(1/4),
 NF buys SNR linearly. The real ceiling on a monostatic 100%-duty FMCW system is TX/RX isolation,
 not the PA and not the law.
+
+**Confirmed in the Part G field test** (2026-08, software mode, every setting at its default,
+no PA): cars, people on foot and bikes detected, with the TX sector and RX grid ~1.5 m apart.
+That spacing was enough isolation; no septum was needed. Only video was recorded, no IQ.
 
 
 ## Rules
