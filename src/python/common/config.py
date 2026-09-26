@@ -50,6 +50,16 @@ class RadarConfig:
         default=False,
         metadata={"label": "Fabric Dechirp", "unit": "", "scale": 1, "group": "fabric"},
     )
+    # Fabric /8 halfband decimation of the IF (only acts with FABRIC_DECHIRP_EN)
+    FABRIC_DECIM_EN: bool = field(
+        default=True,
+        metadata={
+            "label": "Fabric Decimation",
+            "unit": "",
+            "scale": 1,
+            "group": "fabric",
+        },
+    )
     # TX->RX digital loopback latency in samples
     FABRIC_DECHIRP_DELAY: int = field(
         default=61,
@@ -116,6 +126,16 @@ class RadarConfig:
         metadata={
             "label": "Zero Bin Mask",
             "unit": "",
+            "scale": 1,
+            "group": "cfar",
+        },
+    )
+    # Caps the range axis and the CFAR search (MAX_RANGE = min(this, EFFECTIVE_RANGE))
+    MAX_RANGE_M: float = field(
+        default=800,
+        metadata={
+            "label": "Max Range",
+            "unit": "m",
             "scale": 1,
             "group": "cfar",
         },
@@ -191,28 +211,6 @@ class RadarConfig:
             "unit": "dB",
             "scale": 1,
             "group": "loopback",
-        },
-    )
-
-    # --------------------------------
-    # Decimation
-    # --------------------------------
-    MAX_RANGE_M: float = field(
-        default=800,
-        metadata={
-            "label": "Max Range",
-            "unit": "m",
-            "scale": 1,
-            "group": "decimation",
-        },
-    )
-    FABRIC_DECIM_EN: bool = field(
-        default=True,
-        metadata={
-            "label": "Fabric Decimation",
-            "unit": "",
-            "scale": 1,
-            "group": "decimation",
         },
     )
     # --------------------------------
