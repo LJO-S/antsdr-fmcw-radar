@@ -5,7 +5,8 @@ FMCW radar at **5.8 GHz** on an ANTSDR E200 (Zynq + AD9361). Two tracks run in p
 1. **Python radar** — a reusable `common` DSP/GUI core, an `offline` simulation, and an
    `online` (live SDR) path. Working end to end.
 2. **PL fabric offload** — custom HDL in the forked firmware stack moving chirp generation
-   and dechirp into the FPGA. Active track (`TODO.md` Part I).
+   and dechirp into the FPGA. Done in digital loopback (`TODO.md` Part I); making fabric mode
+   the daily driver waits for Part G on real RF.
 
 **Terminology:** *offline* = simulation / soft model. *online* = real-time hardware.
 
@@ -13,16 +14,17 @@ FMCW radar at **5.8 GHz** on an ANTSDR E200 (Zynq + AD9361). Two tracks run in p
 As of 2026-08 it tracks **unfinished work only**: closed parts are one line each and their
 design conclusions live *here* instead. When a part closes, summarize it there and move
 anything worth keeping into this file — don't let narrative grow back in `TODO.md`.
-Short version (2026-08): Parts A–F done (offline model, online app, GUI, target sim, DSP
+Short version (2026-09): Parts A–F done (offline model, online app, GUI, target sim, DSP
 hardening, cable loopback = first real RF), with a handful of small open items still listed.
-**Part I (HDL offload) is active** - I1, I2 and I4 (fabric NCO + fabric dechirp, MAGIC
-FMC3) are proven on hardware in digital loopback (I4 closed 2026-09-10); the app drives the
-fabric through `online/fabric_ctl.py` (I4b, 2026-09-13) and fake targets work on the IF
-stream (I4c). **I5, decimation to IF rate, is in progress** -
-`docs/AntSDR_Phase5_IF_Decimation_Guide.md` is the spec. Decided 2026-09-16: operational
-range 800 m at the steepest chirp (56 MHz / 100 us); one fixed divide-by-8 as own HDL inside
+**Part I (HDL offload) is done** in digital loopback, only I5b (DSP reclaim) deferred:
+fabric NCO + fabric dechirp (I4, 2026-09-10), the app drives the fabric through
+`online/fabric_ctl.py` (I4b), fake targets work on the IF stream (I4c), and **I5, decimation
+to IF rate, closed 2026-09-26** (MAGIC FMC4; spec
+`docs/archive/AntSDR_Phase5_IF_Decimation_Guide.md`). I6 closed with it (the fabric path
+needs no frame sync). I5 design: operational range 800 m at the steepest chirp
+(56 MHz / 100 us); one fixed divide-by-8 as own HDL inside
 `fmcw_core` - **three cascaded decimate-by-2 halfband stages** (7 / 11 / 27 taps, 2 / 3 / 7
-multiplies per channel, 24 DSPs for I+Q), each restarting its decimation phase on the
+multiplies per channel; 48 DSPs for I+Q as built), each restarting its decimation phase on the
 chirp-leg tag, so every chirp parameter stays free and each leg yields `SWEEP_LEN // 8` IF
 samples; 0.03 dB droop, -51.4 dB worst alias. `OP_RANGE_FACTOR` is replaced by `MAX_RANGE_M`
 plus a derived effective range. Two routes were rejected and should not be re-proposed: the
@@ -30,10 +32,10 @@ Xilinx fir_compiler IP (~16 DSP48 slices, an encrypted model the user's Questa F
 run, no per-chirp phase restart) and CIC-by-4 plus one halfband (a CIC is only valid on a
 uniform decimation grid, so a per-leg phase restart must also clear its integrator and comb
 state - miss that and the output runs away past the 24-bit range, and it only shows when
-`SWEEP_LEN mod 4 != 0`; plus 2.2 dB of droop). The two unused ADI FIR blocks (~50 slices)
-get reclaimed in a separate build.
-Part G (antennas, first radiated RF) is the next RF step. Part H (PA/LNA/BPF) deferred.
-Part J (synthetic wideband) blocks nothing.
+`SWEEP_LEN mod 4 != 0`; plus 2.2 dB of droop). Reclaiming the two unused ADI FIR blocks
+(44 DSPs) is deferred until the FFT work needs DSPs.
+**Next: Part G** (antennas, first radiated RF), which also gates the fabric-mode cutover.
+Part H (PA/LNA/BPF) deferred. Part J (synthetic wideband) blocks nothing.
 
 ## Project structure
 
@@ -54,6 +56,7 @@ src/python/                 # import root
   online/
     sdr.py         # AntSDR: connect/find_device in __init__; attrs+buffers in start()
     capture.py     # capture_rx_data(): read_block -> TargetSim.apply -> frame_sync_linear
+                   #   (fabric mode: FABRIC_FRAME_TRIM slice -> TargetSim.apply_if, no sync)
     target_sim.py  # FakeTarget / TargetSim — moving fake targets: apply() on raw RX (roll delay),
                    #   apply_if() on the fabric IF stream (beat-tone synthesis)
     processing.py  # process_rx_data(): stateless mix_signal + process_cpi wrapper
@@ -61,14 +64,17 @@ src/python/                 # import root
     app.py         # RadarWorker (QThread) + main(); owns (config, ctx, sdr)
     fabric_ctl.py  # FabricCtl (enable/disable/set_calib_delay sequencing) + SshDevmem transport
     test_fabric_ctl.py, test_target_sim.py  # board-free asserts, run as __main__
-docs/              # firmware-branch-workflow.md, AntSDR_Phase5_IF_Decimation_Guide.md (I5 spec),
-                   #   fmcw_fabric_architecture.svg, datasheets/, archive/ (Phase 1-4 guides)
+docs/              # firmware-branch-workflow.md, rf-power-and-spectrum-sweden.pdf,
+                   #   fmcw_fabric_architecture.svg, datasheets/, archive/ (Phase 1-5 guides;
+                   #   Phase 5 Section 4.2 = the deferred FIR reclaim recipe)
 hardware/          # materials.md (phased buy list), fmcw_58ghz_block_diagram.svg
 firmware/          # submodule stack (see below), branch e200-custom
 scripts/bringup/   # hardware bringup references (reference.py, trx_loopback.py, pluto_sdr_ref.py)
-                   #   + dechirp_verify.py (I4 exit test: sw vs fabric RD map, --sweep delay),
-                   #   chirp_count_check.py (CHIRP_COUNT delta/s = PRF meter)
-data/shortcut_quick_commands.txt  # rxtap register recipes: NCO debug views, IF mode, safe reset
+                   #   + dechirp_verify.py (sw vs fabric RD map at --decimate 1|8; --ab fabric
+                   #   /1 vs /8 with fake targets; --rate S headless CPIs/s; --sweep delay)
+                   #   + decim_ramp_check.py (ramp through the decimator, bit-exact vs
+                   #   decimate_golden; --sync measures the frame trim)
+data/info.txt      # iio_info dump of the board
 vhdl_ls.toml       # rust_hdl LSP config, points at firmware/.../projects/e200
 pypkgs.txt         # numpy, matplotlib, pylibiio, scipy, PySide6, pyqtgraph, vunit_hdl
 ```
@@ -95,7 +101,10 @@ python -m online.sdr                # standalone loopback test with matplotlib d
   Fields carry `metadata` (`label`/`unit`/`scale`/`group`, optional `readonly`) that the GUI
   config tab auto-generates its form from — adding a tagged field adds a GUI row for free.
   `MAX_RANGE` / `MAX_VELOCITY` are `@property` (recomputed per access; `MAX_VELOCITY` is
-  triangle-aware via `T_rep`) — do NOT turn them back into class attributes; RE-CONFIGURE
+  triangle-aware via `T_rep`), and so are the I5 rate properties `FS_IF`, `SWEEP_LEN`
+  (rounded down to a multiple of 8 when decimating), `T_EFF = SWEEP_LEN / FS`, `N_IF`,
+  `EFFECTIVE_RANGE`, with `MAX_RANGE = min(MAX_RANGE_M, EFFECTIVE_RANGE)`. Range axes use
+  `T_EFF`, never `CHIRP_DUR_S` — do NOT turn them back into class attributes; RE-CONFIGURE
   builds fresh instances. The parameter banner is `describe()`, called by the entry points,
   never at import. Configs are **immutable by convention**: never mutate a live instance,
   construct a new one and swap the reference. (The one deliberate exception is
@@ -143,7 +152,7 @@ GUI spectrogram needs it).
 | TRIANGLE_EN / MTI_EN | False / False |
 | fs (FS) | 56.6 MHz (AD9361 caps: FS 2.083–61.44 MSPS, rf_bandwidth 0.2–56 MHz) |
 | CFAR guard / training / pfa / mask_N | 4 / 5 / 1e-6 / 5 |
-| OP_RANGE_FACTOR | 0.15 → MAX_RANGE 2250 m |
+| MAX_RANGE_M | 800 m → MAX_RANGE 800 m (effective range 848 m at /8, 50 MHz / 100 µs) |
 | Derived | range res 3.0 m, velocity res 2.02 m/s, MAX_VELOCITY 129 m/s, proc gain 58.6 dB |
 | Soft-model only | TX_PWR_DBM 10, TX_GAIN_DB 13, RX_GAIN_DB 14, ISOLATION_DB 40, DC/IQ errors 0 |
 | SDR_IP | 192.168.5.10 |
@@ -152,6 +161,7 @@ GUI spectrogram needs it).
 | SDR_RX_MARGIN_PERIODS | 1 |
 | SDR_LOOPBACK_EN / SDR_LOOPBACK_NOISE_SNR_DB | True / 1.0 |
 | FABRIC_DECHIRP_EN / FABRIC_DECHIRP_DELAY | False / **61** (pure path delay, non-loopback). **34** is the digital-loopback constant (measured 2026-09-10), kept commented out in `config.py` - swap when `SDR_LOOPBACK_EN` flips |
+| FABRIC_DECIM_EN / FABRIC_FRAME_TRIM | True / 0 (only active with `FABRIC_DECHIRP_EN`; ratio fixed at `FABRIC_DECIMATE_RATIO` = 8 → FS_IF 7.075 MSPS, SWEEP_LEN 5656, N_IF 707) |
 
 Noise figure is a `run_simulation` argument (`a_noise_figure_db`), not a config field.
 
@@ -288,8 +298,10 @@ Verified against the v0.x binding source (vendored copy reviewed 2026-07; the pi
 - Attr values must be **strings** (`str(value)`); errors raise `OSError` with real errno
   (incl. `refill()` timeouts — `ctx.set_timeout(ms)` to adjust).
 - `dev.set_kernel_buffers_count(n)` (default 4) trades RX staleness vs dropped data.
-- Throughput: RX buffer = `(CHIRP_REPS + margin) * N_chirp * 4 B` = 2.9 MB per CPI at 128 reps.
-  GbE moves ~118 MB/s, so expect a few frames per second until the fabric IF path (Part I5).
+- Throughput: RX buffer = `(CHIRP_REPS + margin) * N_IF * 4 B` = 2.9 MB per CPI at 128 reps
+  at full rate (software or fabric /1), a few frames per second over ~118 MB/s GbE. Fabric /8
+  cuts it to 365 kB: measured **up to ~30 CPIs/s in the GUI** (I5 exit, 2026-09-26), falling
+  as detections increase, so the bound is host processing, not the link.
 
 ## Firmware / HDL track
 
@@ -315,20 +327,19 @@ antsdr-fmcw-radar -> firmware/ -> plutosdr-fw/ -> hdl/ (+ linux/, u-boot, buildr
   `Makefile` `M_DEPS` is manual and must list every source *and* init file, or `make` will not
   notice an edit. AXI-Lite slave at **0x43C10000**; MAGIC bumps on every register-map change
   (`RXT1` → `FMC1` → `FMC3` → `FMC4`), mirrored in `common/fabric_regs.py` and must match
-  `C_MAGIC` in the VHDL. **FMC3 `0x464D4333` is what is on hardware; `feature/decimate` carries
-  FMC4 `0x464D4334`.**
+  `C_MAGIC` in the VHDL. **FMC4 `0x464D4334` is what is on hardware** (I5, 2026-09-26).
 - **Do not run `resetGit.sh`** — it strips the MicroPhase patches and the fork checkpoints.
 - Target architecture: chirp NCO **and** dechirp in fabric, Ethernet carries IF samples, frame
   sync deleted. `dsp.py` becomes the golden model verifying fabric output sample-for-sample.
-  Bypass bits default to today's behavior. Full spec: `docs/AntSDR_Phase4_Chirp_NCO_TX_Guide.md`.
+  Bypass bits default to today's behavior. Full spec: `docs/archive/AntSDR_Phase4_Chirp_NCO_TX_Guide.md`.
 - Cutover to the fabric path waits for Parts F+G on real RF — never debug new RF and new HDL
   at the same time.
 
-### fmcw_core register map (FMC3) - hardware-proven, I4 closed 2026-09-10
+### fmcw_core register map (FMC4) - hardware-proven (I4 2026-09-10, I5 2026-09-26)
 
 | Offset | Name | Access | Function |
 |---|---|---|---|
-| 0x00 | MAGIC | R | `0x464D4333` "FMC3" |
+| 0x00 | MAGIC | R | `0x464D4334` "FMC4" |
 | 0x04 | CTRL | RW | bit0 `ramp_en`, bit1 `nco_en`, bit2 `tx_src` (0=DMA, 1=NCO), bit3 `triangle_en`, bit4 `rx_dbg_mux` (NCO onto RX ch0), bit5 `sync_src` (0=TDD, 1=chirp_start) |
 | 0x08 | SCRATCH | RW | |
 | 0x0C | COUNT | R | `valid_in` counter |
@@ -336,7 +347,7 @@ antsdr-fmcw-radar -> firmware/ -> plutosdr-fw/ -> hdl/ (+ linux/, u-boot, buildr
 | 0x1C | CHIRP_COUNT | R | chirp periods, gray-crossed. Delta/s = 10000 sawtooth, **5000 triangle** (fires per period, not per leg) |
 | 0x20 | COMMIT | W | any write arms shadow -> active |
 | 0x24 | DECHIRP_DELAY | RW | shadow, same COMMIT; replica delay in samples, **must be < 128** (`G_MAX_DELAY`, wraps silently above) |
-| 0x28 | DECIM_SEL | RW | reserved on FMC3. Phase 5 defines it: `0` = passthrough, `1` = decimate by 8 (three halfband stages inside the core), **not** commit-latched; lands with MAGIC FMC4 |
+| 0x28 | DECIM_SEL | RW | `0` = passthrough, `1` = decimate by 8 (three halfband stages after the ADC output mux, so ramp and IF both go through them). Live, **not** commit-latched (2-flop sync). The guide calls it DECIMATE_SEL |
 | 0x2C | IF_SEL | RW | 1 = dechirped IF onto the capture (ADC) path, 0 = raw passthrough. A register, **not** a CTRL bit |
 | 0x30 | - | - | unmapped on purpose (tb probe), reads `0xDEADC0DE` |
 | 0x34 | STATUS | R | bit0 = `dac_enable_i0`. 0 means `dac_data_sel != DMA` and the NCO output is being discarded at the DAC mux |
@@ -355,19 +366,25 @@ Rules learned on hardware (all of them cost a hang or a wrong map once):
   output and its valid is gated by the NCO: IF_SEL=1 with the NCO off means zero ADC valids,
   and any `refill()` in flight starves (ETIMEDOUT).
 - Proven enable order: FTW_START, FTW_SLOPE, SWEEP_LEN, DECHIRP_DELAY -> CTRL (`triangle_en`
-  only) -> COMMIT -> CTRL = `nco_en|tx_src|sync_src(|triangle_en)` -> IF_SEL=1 -> read STATUS
-  and require bit0. Disable: IF_SEL=0 -> CTRL=0 -> COMMIT. Recipes in
-  `data/shortcut_quick_commands.txt`.
+  only) -> COMMIT -> CTRL = `nco_en|tx_src|sync_src(|triangle_en)` -> DECIM_SEL -> IF_SEL=1 ->
+  read STATUS and require bit0. Disable: IF_SEL=0 -> DECIM_SEL=0 -> CTRL=0 -> COMMIT.
+  Recovery from a shell: `devmem 0x43C1002C 32 0; devmem 0x43C10028 32 0; devmem 0x43C10004 32 0;
+  devmem 0x43C10020 32 1`.
 - DECHIRP_DELAY can be re-committed while the NCO runs (reloads the delay line at the next
   boundary, ~100 us) - that is how `dechirp_verify.py --sweep` works without touching CTRL.
 - **DMA sync is a level, not a pulse.** `axi_dmac` SYNC_TRANSFER_START clears its wait only on
   a beat *accepted* with sync high in the same cycle; cpack emits one 64-bit beat per 2
   samples, so a 1-sample pulse overlapped a beat only by luck of pack phase (re-rolled every
-  `start()`, and flipped by the IF_SEL switch). `o_dma_sync` is now held from `new_period`
-  until 2 output valids have passed (+1 cycle), counted on `o_adc_valid` so it stays
-  rate- and IF_SEL-latency-independent. Caveat for I6: the transfer starts on the first beat
-  after the boundary and a beat holds 2 samples, so capture may begin 0 or 1 sample early
-  depending on pack phase. Dechirp alignment is unaffected (DECHIRP_DELAY is pre-DMA).
+  `start()`, and flipped by the IF_SEL switch). `o_dma_sync` is now held from the output
+  stream's period tag until 2 output valids have passed (+1 cycle), counted on `o_adc_valid`
+  so it stays rate- and IF_SEL-latency-independent. Since FMC4 the tag is `w_out_tag`: the
+  **pre-output-register** tag, muxed between the decimated and full-rate streams by
+  DECIM_SEL, so sync rises in the same cycle as the sample it marks in both modes (tapped one
+  register later it opened a whole IF sample late at /8). That is only safe because
+  `mixer_dechirp` gates its tag with its valid - ungated, the tag rides `delay_line`'s held
+  valid level and rises a cycle early. Measured (I5 step 8): capture begins 0 or 1 sample
+  early depending on pack phase, per `start()`. `FABRIC_FRAME_TRIM` stays 0; the A/B maps
+  match either way. Dechirp alignment is unaffected (DECHIRP_DELAY is pre-DMA).
 - One sync per `refill()`: the DMA holds off until the first sync-tagged beat, then free-runs
   for the programmed length.
 - `mixer_dechirp` computes **IF = delayed_TX * conj(RX)**, the same convention as
@@ -394,12 +411,14 @@ factor 8 upstream of the core would alias the chirp; `sdr.start()` should write 
 `sampling_frequency` = FS explicitly as a guard. For I5 this block is not reusable in place
 (wrong side of the mixer), and reusing the *pattern* - a second `ad_add_decimation_filter`
 between `fmcw_core` and cpack, `active` driven from DECIM_SEL - was rejected with the rest of
-the fir_compiler route (no per-chirp phase restart). Both unused ADI filter pairs get deleted
-instead, in the reclaim build.
+the fir_compiler route (no per-chirp phase restart). Deleting both unused ADI filter pairs (44
+DSPs) is deferred until the FFT work needs DSPs (guide 4.2 has the reviewed recipe). If the DT
+property is removed, the lpc `sampling_frequency` write is **not** rejected: it falls through
+to `clk_set_rate(RX_SAMPL_CLK)` on the AD9361.
 
-### I5 decimation - conclusions and build state (2026-09-21)
+### I5 decimation - conclusions (closed 2026-09-26)
 
-Spec: `docs/AntSDR_Phase5_IF_Decimation_Guide.md`. What outlives the part:
+Spec: `docs/archive/AntSDR_Phase5_IF_Decimation_Guide.md`. What outlives the part:
 
 - **Coefficients are checked in and never regenerated at build time.**
   `src/decimate/HBF_16_{0,1,2}.txt` are the shipped taps (4 / 6 / 14 non-centre taps ->
@@ -421,28 +440,56 @@ Spec: `docs/AntSDR_Phase5_IF_Decimation_Guide.md`. What outlives the part:
   cascade: stage k+1 restarts on stage k's *tagged output*, not on the leg tag directly - a tag
   lane one stage late is exactly the "samples per leg drifting" symptom. Any leg of N inputs
   yields `N // 8` outputs.
+- **The decimator costs 48 DSPs, not the 24 designed** (build of 2026-09-23; totals 123/220
+  DSPs = 51 core + 28 `axi_ad9361` + 44 ADI FIRs, 4/140 BRAM36, 26% LUTs). Cause:
+  `halfband_decimate_stage` is a transposed FIR that folds *after* the multiplier - each of the
+  U/2 products feeds two chain adders (`tap`, `high - tap`). A DSP48E1 has no M output and one
+  post-adder, so Vivado maps every chain add+register onto its own slice (P = PCIN + M cascade)
+  and duplicates the multiplier: U slices per channel. A DSP48 shares only on the *input* side
+  (pre-adder, `(x_a + x_b) * h`). Fixes, only if the FFT work runs short of DSPs:
+  **(A)** register the product and put `use_dsp "no"` on the partial-sum chain - 24 DSPs,
+  ~+1.7k LUT/FF, +1 clock per stage, same arithmetic; **(B)** direct form with the pre-adder and
+  a fabric adder tree - 24 DSPs, less fabric than today, but rewrites the stage core and the
+  centre-tap alignment; **(C)** time-share one slice per stage (>= 2 / 4 / 8 clocks per output)
+  - ~6 DSPs, most control logic. All three stay bit-exact against `decimate_golden`.
 
-Build state on HDL branch `feature/decimate` (MAGIC bumped to FMC4 in the VHDL). Done:
-coefficients vendored and verified; `scripts/decimate_reference.py` - the golden model
-(`load_taps` / `check_taps` / `hb_stage_golden` / `decimate_golden`) - passes 6/6 offline,
-droop -0.031 dB, worst alias -51.42 dB; `halfband_decimate{,_stage}.vhd` forked with the tag
-lane and restart; `fmcw_core` wiring (tag lane, I/Q instances, `decim_sel` bypass, 2-flop
-sync, combinatorial ramp restart so the tagged sample *is* the ramp origin);
-`system_constr.xdc` false path + `set_max_delay`; `M_DEPS`. Not done: `tb_halfband_decimate`
-(no standalone bench exists at all), the `tb_fmcw_core` decimation tests, STATUS bit1 in the
-core, and the entire host side (`config.py` still has `OP_RANGE_FACTOR`).
+- **The ramp is a bit-exact test vector only if it is built like one.** With `nco_en` the
+  counter advances on NCO valids (the strobe the ramp mux emits on; `i_adc_valid` only when
+  the NCO is idle), resets on the NCO's own period tag, and the value is taken
+  combinationally so the tagged sample itself reads 0. A registered reset still steps by 8
+  and passes the ramp test, then reads a first-drop index of 1 in the trim test.
+- **Leg-boundary transient**: since the delay lines are never cleared, ~13 decimated outputs
+  after each chirp boundary mix two legs (on a ramp: excursions outside the ramp's range).
+  Expected, reproduced exactly by `decimate_golden`; grade against the model, never against
+  "step 8". On a real IF it sits under the range window's edge.
+- Golden model `scripts/decimate_reference.py` (`load_taps` / `check_taps` /
+  `hb_stage_golden` / `decimate_golden`): a restart-tagged input vetoes its own output and the
+  tag lands on the next output - the only convention giving `N // 8` per leg for odd N.
+
+Verification: 45/45 VUnit (`tb_fmcw_core`, incl. `decimate-legs` at `chirp_len`
+256/257/262/263, `period-framing` x `decimate_sel=1`, `ramp-reset`), 7/7 offline in
+`decimate_reference.py`. The optional standalone `tb_halfband_decimate` was never built - the
+chain is graded bit-exact inside `tb_fmcw_core` - and the STATUS bit1 mirror was skipped
+(DECIM_SEL reads back). Hardware, digital loopback: ramp through /8 bit-exact vs
+`decimate_golden` (`decim_ramp_check.py`); frame trim 0 or 1 per `start()`, left at 0;
+`dechirp_verify.py --ab` /1 vs /8 matched; RE-CONFIGURE to T = 50 us, B = 25 MHz and
+triangle without a hang; up to ~30 CPIs/s in the GUI, dropping as detections increase.
 
 ### Fabric IF mode on the Python side (`FABRIC_DECHIRP_EN`)
 
 - `capture_rx_data` returns the raw `read_block()` with no frame sync (`sync_src=1` makes every
-  DMA transfer start on a chirp boundary) and runs `TargetSim.apply_if` on it;
-  `process_rx_data` skips `mix_signal`.
+  DMA transfer start on a chirp boundary), slices `rx[TRIM : TRIM + rows * N_IF]`
+  (`FABRIC_FRAME_TRIM`) and runs `TargetSim.apply_if` on it; `process_rx_data` skips
+  `mix_signal`. `sdr.start()` sizes the RX buffer from `N_IF` and warns if the phy's
+  `sampling_frequency` reads back different from FS.
 - `register_image(cfg)` is the **only encoder** (RadarConfig -> register values): adds
-  DECHIRP_DELAY and IF_SEL and sets `tx_src|sync_src` in CTRL when the flag is on; never sets
+  DECHIRP_DELAY, IF_SEL and DECIM_SEL and sets `tx_src|sync_src` in CTRL when the flag is on;
+  `chirp_ftw` takes `SWEEP_LEN` and recomputes the slope from it, so B stays exact when the
+  sweep is rounded to a multiple of 8; never sets
   `nco_en` or COMMIT; raises if the delay is outside `[0, 128)`. `fabric_ctl.FabricCtl` owns
   **sequencing only**: `enable(image)` = shadows -> CTRL(triangle_en) -> COMMIT -> CTRL|nco_en
-  -> IF_SEL last -> separate STATUS round trip (also the settle margin the first refill()
-  needs); `disable()` = IF_SEL=0 -> CTRL=0 -> COMMIT; `set_calib_delay()` = DECHIRP_DELAY +
+  -> DECIM_SEL -> IF_SEL last -> separate STATUS round trip (also the settle margin the first
+  refill() needs); `disable()` = IF_SEL=0 -> DECIM_SEL=0 -> CTRL=0 -> COMMIT; `set_calib_delay()` = DECHIRP_DELAY +
   COMMIT only; `check_magic()`; refuses an image with `ramp_en`. Transport `SshDevmem`: one
   ssh call per sequence (`devmem` at base+offset, `&&`-chained, BatchMode so a missing key
   fails fast instead of hanging the worker on a password prompt; `ssh-copy-id root@<ip>`
@@ -456,8 +503,9 @@ core, and the entire host side (`config.py` still has `OP_RANGE_FACTOR`).
   an absolute level), then `dsp.apply_doppler_shift(echo, -v, cfg)` - **negated**, because that
   function's sign is calibrated for the pre-mix RX domain and `mix_signal`'s `conj(RX)` is what
   flips it; `apply_if` writes into the IF domain and must flip it itself (found on hardware
-  2026-09-13: unnegated gave v = -v_true). Targets with `|f_b| >= FS/2` are skipped (logged
-  once). Kinematics shared with `apply()` via `_kinematics()`.
+  2026-09-13: unnegated gave v = -v_true). Fast time runs at `FS_IF` over `N_IF` samples, and
+  targets with `|f_b| >= FS_IF/2` are skipped (logged once). Kinematics shared with `apply()`
+  via `_kinematics()`.
 - Signals tab in fabric mode: the RX spectrogram *is* the IF, so the worker emits `if_spec =
   None` and the GUI hides the IF plot and relabels the remaining one. The Configuration tab's
   TX instantaneous-frequency plot stays: it is derived from the config, and the NCO sweeps the

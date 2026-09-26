@@ -3,7 +3,7 @@ FMCW register encoding for fmcw_core (Phase 4 chirp NCO, Phase 5 decimation).
 
 Formulas are docs/AntSDR_Phase4_Chirp_NCO_TX_Guide.md Section 4.2 (the `+ s/2`
 term in `chirp_ftw`, not a fudge factor) and
-docs/AntSDR_Phase5_IF_Decimation_Guide.md Section 6 (slope recomputed from the
+docs/archive/AntSDR_Phase5_IF_Decimation_Guide.md Section 6 (slope recomputed from the
 decimation-rounded SWEEP_LEN, so B stays exact even though T shrinks by up to
 7 samples) - read those before changing anything here.
 """
