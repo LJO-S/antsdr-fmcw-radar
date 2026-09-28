@@ -179,6 +179,8 @@ class AntSDR:
         """
         Same as _read_deinterleaved() but public.
         """
+        # TODO K2: split into a raw int16 read (for the recorder) and a module-level
+        #   iq_from_raw() that replay reuses, so both convert identically.
         return self._read_deinterleaved()
 
     def set_loopback(self, a_en: bool):

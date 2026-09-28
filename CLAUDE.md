@@ -35,11 +35,13 @@ state - miss that and the output runs away past the 24-bit range, and it only sh
 `SWEEP_LEN mod 4 != 0`; plus 2.2 dB of droop). Reclaiming the two unused ADI FIR blocks
 (44 DSPs) is deferred until the FFT work needs DSPs.
 Part G (antennas, first radiated RF) passed in software mode in 2026-08. **Next: Part K**
-(`docs/AntSDR_Phase6_Tracking_Antennas_2R_Guide.md`): software tracking, own patch antennas,
-2R1T angle, and fabric mode on real RF on the first field day. Fabric FFT/CFAR sits behind a
-decision gate (guide Section 10). Part H (PA/LNA/BPF) deferred. Part J (synthetic wideband)
-blocks nothing. K0 (2R2T boot check) passed 2026-09-28 except the RX2 cable test; **2R2T caps
-FS at 30.72 MSPS** on this board (see "2R2T mode" below).
+(`docs/AntSDR_Phase6_Tracking_Antennas_Angle_Guide.md`): software tracking, an RF bench lane
+(VNA, soldering), own patch antennas, **2T1R angle through a fabric-switched TX** (time-division
+MIMO), and fabric mode on real RF on the first field day. Fabric FFT/CFAR sits behind a decision
+gate (guide Section 11). Part H (PA/LNA/BPF) deferred. Part J (synthetic wideband) blocks
+nothing. K0 (2R2T boot check) passed 2026-09-28, but **2R2T caps FS at 30.72 MSPS** on this
+board (~6 m bins, see "2R2T mode" below), which is why angle moved from 2R1T to 2T1R. The user's
+goal is to learn RF engineering, so Part K favours hands-on RF work over more FPGA work.
 
 ## Project structure
 
@@ -57,6 +59,8 @@ src/python/                 # import root
   offline/
     soft_model.py        # SoftFMCWModel — target/noise/impairment sim, __main__ entry
     test_soft_model.py   # numeric detector self-test
+    profile_cpi.py       # K1: median ms per process_cpi stage + apply_if vs fake-target
+                         #   count (staged mirror of process_cpi, asserted equal to it)
   online/
     sdr.py         # AntSDR: connect/find_device in __init__; attrs+buffers in start()
     capture.py     # capture_rx_data(): read_block -> TargetSim.apply -> frame_sync_linear
@@ -68,7 +72,7 @@ src/python/                 # import root
     app.py         # RadarWorker (QThread) + main(); owns (config, ctx, sdr)
     fabric_ctl.py  # FabricCtl (enable/disable/set_calib_delay sequencing) + SshDevmem transport
     test_fabric_ctl.py, test_target_sim.py  # board-free asserts, run as __main__
-docs/              # AntSDR_Phase6_Tracking_Antennas_2R_Guide.md (Part K spec, active),
+docs/              # AntSDR_Phase6_Tracking_Antennas_Angle_Guide.md (Part K spec, active),
                    #   firmware-branch-workflow.md, rf-power-and-spectrum-sweden.pdf,
                    #   fmcw_fabric_architecture.svg, datasheets/, archive/ (Phase 1-5 guides;
                    #   Phase 5 Section 4.2 = the deferred FIR reclaim recipe)
@@ -537,8 +541,8 @@ triangle without a hang; up to ~30 CPIs/s in the GUI, dropping as detections inc
   switch here (board wiring). So 2R means a ~25 MHz chirp and ~6 m range bins. The phy boots at
   30.72 MSPS, so the 2R2T probe itself is fine. TX `rf_bandwidth` max is 40 MHz.
 - **The fabric is transparent to it** (HDL has `MODE_1R1T 0`; `fmcw_core` channels 2/3 are
-  passthrough until K7). At FS 30.72 / BW 25 MHz / 100 us: `decim_ramp_check.py` bit-exact
-  (trim 0), `dechirp_verify.py --ab` PASS.
+  passthrough; 2T1R never touches them). At FS 30.72 / BW 25 MHz / 100 us:
+  `decim_ramp_check.py` bit-exact (trim 0), `dechirp_verify.py --ab` PASS.
 - **DECHIRP_DELAY is counted in samples, so it moves with FS**: digital loopback 20 at 30.72
   MSPS vs 34 at 56.6 (both ~0.6 us). Re-measure with `dechirp_verify.py --sweep` at every FS,
   starting the sweep at 0: above the true delay the beat goes negative, off the positive range
@@ -546,7 +550,16 @@ triangle without a hang; up to ~30 CPIs/s in the GUI, dropping as detections inc
 - The bringup scripts build their config from `RadarConfig()` defaults (FS 56.6), so they need
   an FS/BW override to run in 2R2T.
 - RX2 data path proven (4-lane capture, noise follows RX2 gain, uncorrelated with RX1). RX2 on
-  a real signal is still open.
+  a real signal is still open (not needed for the 2T1R plan).
+- **RX2 and TX2 are IPEX (U.FL) connectors**, not SMA (MicroPhase docs: "SMA:1T1R IPEX:1T1R").
+
+### E200 GPIO header J30 (verified 2026-09-28, schematic `ANT-E200_Public.pdf` p.10)
+
+10-pin 2.54 mm footprint, **not fitted** on this board: pin 1 VCC_3V3, pin 2 GND, pins 3-10
+GPIO_00-07 (ESD diodes). HDL `GPIOB[7:0]` (bank 13, LVCMOS33, XDC order V5, U7, V7, T9, U10,
+Y7, Y6, Y9), routed to the PS through `ad_iobuf` as EMIO 35-42 = Linux sysfs gpio 995-1002.
+Upstream MicroPhase constraints reuse Y9/Y6 as a UART; this project maps all eight to `GPIOB`.
+Part K7 takes one pin out of the iobuf to drive the TX switch from `fmcw_core`.
 
 ## RF reality (AD9361 numbers, verified against the datasheet)
 

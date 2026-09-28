@@ -135,6 +135,7 @@ class RadarDisplay(QMainWindow):
         self.mti_en_box.setChecked(a_config.MTI_EN)
         middle_col.addWidget(self.mti_en_box)
         self.mti_en_box.toggled.connect(self.mti_signal_changed)
+        # TODO K2: "Record" checkbox -> record_changed(bool), wired like MTI
 
         # ---------------------------------
         # C. Right column = detections list

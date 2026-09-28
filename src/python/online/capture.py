@@ -24,6 +24,9 @@ def capture_rx_data(
     software-only, downstream of the DMA, and never exercises the fabric.
     """
     # 1. Capture
+    # TODO K2: record the raw int16 block here (before trim and TargetSim), and move
+    #   everything below into a function of the IQ block that replay can call.
+    #   Take t = time.monotonic() once: it goes to write_block and to TargetSim's a_now.
     rx = a_sdr.read_block()
     if a_config.FABRIC_DECHIRP_EN:
         # sync_src=1 starts the DMA on the period-tagged sample; trim and cut come

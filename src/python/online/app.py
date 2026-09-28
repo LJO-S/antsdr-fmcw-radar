@@ -114,6 +114,10 @@ class RadarWorker(QThread):
                     velocities,
                     if_signal,
                 ) = processing.process_rx_data(a_rx=rx, a_config=self.config, a_ctx=ctx)
+                # TODO K2: recorder.write_detections(block, MTI_EN, detections). The
+                #   session opens/closes here between CPIs on record_changed, and
+                #   RE-CONFIGURE closes it and opens a new one (one config per session).
+                #   A fake-target edit does the same: set_targets resets t_spawn.
                 self.results.emit(
                     rd_map_db_up, rd_map_db_down, detections, ranges, velocities
                 )

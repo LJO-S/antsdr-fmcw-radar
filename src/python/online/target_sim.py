@@ -65,6 +65,18 @@ class TargetSim:
             targets.append(t)
         self.fake_targets = targets
 
+    def snapshot(self) -> list[dict]:
+        """Targets incl. t_spawn, for session.json."""
+        # TODO K2: [dataclasses.asdict(t) for t in self.fake_targets]
+        raise NotImplementedError
+
+    def restore(self, a_snapshot: list[dict]):
+        """Inverse of snapshot(): keeps the recorded t_spawn, unlike set_targets()."""
+        # TODO K2
+        raise NotImplementedError
+
+    # TODO K2: a_now=None (-> time.monotonic()) on _kinematics, apply_if and apply, so
+    #   replay drives the kinematics from index.csv. Expiry must reset t_spawn to a_now.
     def _kinematics(self, a_target: FakeTarget, a_config: config.RadarConfig):
         age = time.monotonic() - a_target.t_spawn
         if age > a_target.duration:
