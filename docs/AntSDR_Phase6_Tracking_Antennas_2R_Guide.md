@@ -61,34 +61,37 @@ matter more than it did in Part G.
 
 Do this before laying out a two-RX board: it is the gate for the RX pair.
 
-The E200 runs the 1R1T (AD9364) personality by default. The firmware README
-("Support 2r2t mode", SD mode) switches it at boot with four `uEnv.txt` edits on
-the SD card:
+**Status 2026-09-28: passed, except the RX2 cable test.** The switch procedure
+and the details are in `CLAUDE.md` ("2R2T mode").
 
-1. `adi_loadvals=fdt addr ${devicetree_load_address}...` (not `${fit_load_address}`).
-2. `mode=2r2t`.
-3. `sdboot=...` gains `&& run adi_loadvals;` before `bootm`, as in the README.
-4. Append `attr_name=compatible`, `attr_val=ad9361`, `compatible=ad9361`.
+The E200 boots in 1R1T (AD9364). `zynq-e200.dts` already enables 2R2T; only the
+phy's `compatible = "adi,ad9364"` holds it back, because the driver forces 1R1T for
+that part. So the switch is one property in the dtb on the SD card:
 
-The boot script keeps `attr_val=ad9361` only when the DT model is
-`Analog Devices ANTSDR Rev.C (Z7020/AD9363)`, which is exactly what `zynq-e200.dtsi`
-sets. Any other value gets rewritten to `ad9363a`, whose driver limits would reject
-5.8 GHz. So check the LO still takes 5.8e9 after the switch.
+    fdtput -t s devicetree.dtb /amba/spi@e0006000/ad9361-phy@0 compatible adi,ad9361
 
-Checks, in order:
+The firmware README's route (four `uEnv.txt` edits so u-boot patches the dtb at
+boot) ends up in the same place with more moving parts.
 
-- `iio_info -u ip:192.168.5.10`: `ad9361-phy` model ad9361 (not ad9364),
-  `cf-ad9361-lpc` exposes `voltage0..3`.
-- `python -m online.app` in software mode: `start()` accepts 5.8 GHz and FS 56.6
-  MSPS (the datasheet allows 61.44 MSPS in LVDS 2R2T; confirm the board agrees).
-- `decim_ramp_check.py` and `dechirp_verify.py --ab` still pass. The interface
-  cadence changes in 2R2T and the core runs on valid, so this should be
-  transparent - prove it.
-- RX2 alive: a throwaway script enabling `voltage2/3`, cable + >= 30 dB pad from TX1
-  into RX2, the chirp visible in the spectrogram.
+**The sample-rate cap.** The E200 wires the AD9361 in CMOS mode, not LVDS. In
+CMOS 2R2T the interface clock runs at 2 x FS and tops out at 61.44 MHz, so FS is
+at most **30.72 MSPS**, and 56.6 MSPS is rejected. All 2R work (K7-K9) therefore
+runs at FS <= 30.72 MSPS with a ~25 MHz chirp: range bins ~6 m instead of 3 m.
+One-RX work (K6) stays in 1R1T at 56.6 MSPS / 50 MHz.
 
-Done when all four hold. If 2R2T will not come up, the antenna lane still works
-with one RX column and the angle steps drop out.
+Checks (run at FS 30.72 MSPS, BW 25 MHz):
+
+- **Done** - `iio_info`: `cf-ad9361-lpc` exposes `voltage0..3`, `ad9361-phy` gains
+  the RX2/TX2 attributes, dmesg says `probe : enter (ad9361)`.
+- **Done** - 5.8 GHz LO accepted. FS 56.6 MSPS rejected (EINVAL), 30.72 accepted.
+- **Done** - `decim_ramp_check.py` bit-exact (trim 0), `dechirp_verify.py --ab`
+  PASS: the fabric is transparent to 2R2T. The loopback dechirp delay moved from
+  34 to 20 samples (both ~0.6 us): it is counted in samples, so re-measure it at
+  every FS.
+- **Done** - RX2 data path: a 4-lane capture shows RX2 noise that follows its gain
+  and is uncorrelated with RX1.
+- **Open** - RX2 on a real signal: a throwaway script enabling `voltage2/3`, cable
+  + >= 30 dB pad from TX1 into RX2, the chirp visible in the spectrogram.
 
 ---
 
@@ -384,8 +387,8 @@ samples, so cpack would pack garbage.
 - **Second decimator pair** (I/Q), restarted by the second mixer's own tag lane.
 - **Equal latency is a hard requirement.** A skew between the channels is a phase
   error that grows with range, `2 pi f_b k / fs`, and a boresight calibration
-  cannot remove it. At the band edge (2.8 MHz) one raw sample is 18 deg; one IF
-  sample after /8 is 143 deg.
+  cannot remove it. At the band edge (~0.4 x FS_IF, at any FS) one raw sample is
+  ~18 deg; one IF sample after /8 is ~143 deg.
 - **DSPs**: +~52 as built (~175/220), +~28 with the halfband fold fix (I5b lever,
   ~127). Both fit; the fold fix leaves room for a later FFT.
 
@@ -397,10 +400,12 @@ samples, so cpack would pack garbage.
 - Hardware, in 2R2T:
   - `decim_ramp_check.py` on both channels.
   - **Bench latency check**: TX1 -> >= 30 dB pad -> a 6 GHz two-way splitter ->
-    RX1 and RX2 over equal cables. Sweep DECHIRP_DELAY from 60 down to 0: the cable
-    path walks from range bin ~0 to ~54 (up to ~160 m equivalent at 50 MHz /
-    100 us). The channel phase difference at the peak must stay constant (to within
-    noise) across the sweep. A linear drift means unequal latency.
+    RX1 and RX2 over equal cables. Sweep DECHIRP_DELAY from the real-RF delay down
+    to 0: the cable path walks up the range bins, ~0.8 bin per sample at 30.72
+    MSPS and 25 MHz / 100 us. Measure that delay at 30.72 MSPS first (it will not be
+    61); above it the beat goes negative and the peak just sits in bin 0. The
+    channel phase difference at the peak must stay constant (to within noise)
+    across the sweep. A linear drift means unequal latency.
 
 Digital loopback cannot test channel 2: it loops TX2 into RX2, and TX2 carries
 nothing.
@@ -481,9 +486,9 @@ Design notes for when it comes:
   (6.3) instead of trimming blindly.
 - **Pattern full of ripple** -> multipath, usually a floor or wall bounce. Go
   outdoors and higher.
-- **RX2 dead after the 2r2t switch** -> an incomplete `uEnv.txt` edit. `iio_info`
-  must show ad9361 and `voltage0..3`.
-- **5.8 GHz rejected after the switch** -> `attr_val` got rewritten to `ad9363a`.
+- **RX2 missing after the 2r2t switch** -> the booted dtb still says ad9364. Check
+  `/proc/device-tree/amba/spi@e0006000/ad9361-phy@0/compatible` on the board.
+- **`start()` fails with EINVAL in 2R2T** -> FS above 30.72 MSPS (the CMOS cap).
 - **Channel phase difference drifts with range** -> unequal channel latency (8.2).
   Run the splitter sweep.
 - **Angles mirrored** -> the conj convention or swapped channels (9.1). Fix by

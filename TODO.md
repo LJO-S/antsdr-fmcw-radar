@@ -62,9 +62,10 @@ Spec: `docs/AntSDR_Phase6_Tracking_Antennas_2R_Guide.md` ("G" = its sections).
 Two lanes in parallel (software K1-K3, antennas K0/K4/K5); each lane starts with
 the reading in G12. Fabric FFT/CFAR is not planned - decision gate in G10.
 
-- [ ] K0 - 2R2T boot check (G2): `uEnv.txt` switch, `iio_info` shows ad9361 and
-      `voltage0..3`, 5.8 GHz / 56.6 MSPS still accepted, loopback tests unchanged,
-      RX2 alive. Gates the RX pair layout.
+- [ ] K0 - 2R2T boot check (G2): passed 2026-09-28 except **RX2 on a real signal**
+      (TX1 -> >= 30 dB pad -> RX2, chirp in the spectrogram). 2R2T caps FS at
+      30.72 MSPS (CMOS interface); details in `CLAUDE.md` "2R2T mode". Gates the RX
+      pair layout.
 - [ ] K1 - profile the host (G3): ms per `process_cpi` stage vs detection count,
       plus the GUI slot; fix what grows with detections.
 - [ ] K2 - recorder + replay (G4): raw blocks + index + config + live detections
@@ -78,7 +79,9 @@ the reading in G12. Fabric FFT/CFAR is not planned - decision gate in G10.
       61 +-1), software vs fabric /8, then patches; record everything; flip the
       `FABRIC_DECHIRP_EN` default.
 - [ ] K7 - second RX channel in fabric (G8): second mixer + /8, equal latency,
-      MAGIC FMC5; VUnit + ramp on both channels + splitter sweep.
+      MAGIC FMC5; VUnit + ramp on both channels + splitter sweep. All 2R work runs
+      at FS <= 30.72 MSPS (~25 MHz chirp, ~6 m bins); bringup scripts need an FS/BW
+      option first (they use `RadarConfig()` defaults).
 - [ ] K8 - angle on the host (G9.1): 4-lane capture, phase-difference angle,
       calibration, x-y view.
 - [ ] K9 - tracker in (x, y) + field day 2 (G9.2): EKF on (r, theta, v_r).
@@ -227,4 +230,4 @@ Part J's job, NF and link budget Part H's, EIRP the law's.
   the link (kB/s) makes the E200 a standalone mast sensor.
 - **Second RX channel** for angle: 2R2T doubles the raw rate, hopeless over GbE at
   full rate, easy after dechirp + decimation. Now Part K (K0, K7-K9): 2R2T is a
-  boot-env switch in `uEnv.txt`, not a firmware rebuild.
+  one-property dtb switch, not a firmware rebuild, and caps FS at 30.72 MSPS.

@@ -38,7 +38,8 @@ Part G (antennas, first radiated RF) passed in software mode in 2026-08. **Next:
 (`docs/AntSDR_Phase6_Tracking_Antennas_2R_Guide.md`): software tracking, own patch antennas,
 2R1T angle, and fabric mode on real RF on the first field day. Fabric FFT/CFAR sits behind a
 decision gate (guide Section 10). Part H (PA/LNA/BPF) deferred. Part J (synthetic wideband)
-blocks nothing.
+blocks nothing. K0 (2R2T boot check) passed 2026-09-28 except the RX2 cable test; **2R2T caps
+FS at 30.72 MSPS** on this board (see "2R2T mode" below).
 
 ## Project structure
 
@@ -154,7 +155,7 @@ GUI spectrogram needs it).
 | T (CHIRP_DUR_S) | 100 µs |
 | chirp_reps (CHIRP_REPS) | **128** |
 | TRIANGLE_EN / MTI_EN | False / False |
-| fs (FS) | 56.6 MHz (AD9361 caps: FS 2.083–61.44 MSPS, rf_bandwidth 0.2–56 MHz) |
+| fs (FS) | 56.6 MHz (AD9361 caps: FS 2.083–61.44 MSPS, rf_bandwidth 0.2–56 MHz; **30.72 MSPS max in 2R2T**) |
 | CFAR guard / training / pfa / mask_N | 4 / 5 / 1e-6 / 5 |
 | MAX_RANGE_M | 800 m → MAX_RANGE 800 m (effective range 848 m at /8, 50 MHz / 100 µs) |
 | Derived | range res 3.0 m, velocity res 2.02 m/s, MAX_VELOCITY 129 m/s, proc gain 58.6 dB |
@@ -164,7 +165,7 @@ GUI spectrogram needs it).
 | SDR_RX_GAIN_MODE / SDR_RX_GAIN_DB | manual / 40.0 |
 | SDR_RX_MARGIN_PERIODS | 1 |
 | SDR_LOOPBACK_EN / SDR_LOOPBACK_NOISE_SNR_DB | True / 1.0 |
-| FABRIC_DECHIRP_EN / FABRIC_DECHIRP_DELAY | False / **61** (pure path delay, non-loopback). **34** is the digital-loopback constant (measured 2026-09-10), kept commented out in `config.py` - swap when `SDR_LOOPBACK_EN` flips |
+| FABRIC_DECHIRP_EN / FABRIC_DECHIRP_DELAY | False / **61** (pure path delay, non-loopback). **34** is the digital-loopback constant (measured 2026-09-10), kept commented out in `config.py` - swap when `SDR_LOOPBACK_EN` flips. Both are at 56.6 MSPS: the delay is in samples and scales with FS (loopback **20** at 30.72 MSPS) |
 | FABRIC_DECIM_EN / FABRIC_FRAME_TRIM | True / 0 (only active with `FABRIC_DECHIRP_EN`; ratio fixed at `FABRIC_DECIMATE_RATIO` = 8 → FS_IF 7.075 MSPS, SWEEP_LEN 5656, N_IF 707) |
 
 Noise figure is a `run_simulation` argument (`a_noise_figure_db`), not a config field.
@@ -518,6 +519,34 @@ triangle without a hang; up to ~30 CPIs/s in the GUI, dropping as detections inc
   same BW/T/FS.
 - `sdr.start()` pins the `cf-ad9361-lpc` channel `sampling_frequency` to FS (I4b-2) so the
   stock `rx_fir_decimator` stays at factor 1.
+
+### 2R2T mode (K0, 2026-09-28)
+
+- **The switch is one dtb property.** `zynq-e200.dts` already sets `adi,2rx-2tx-mode-enable`
+  and the ad9361 DDS compatible; only the phy's `compatible = "adi,ad9364"` keeps 1R1T, because
+  the driver forces 1R1T for that part (`ad9361.c`, `ID_AD9364`). On the SD boot partition:
+  `fdtput -t s devicetree.dtb /amba/spi@e0006000/ad9361-phy@0 compatible adi,ad9361`, reboot.
+  The card holds `devicetree_1r1t.dtb` / `devicetree_2r2t.dtb`; copy one over `devicetree.dtb`
+  to switch. Verify on the board: `/proc/device-tree/amba/spi@e0006000/ad9361-phy@0/compatible`,
+  dmesg `probe : enter (ad9361)`, `cf-ad9361-lpc` with `voltage0..3`. The firmware README's
+  `uEnv.txt` route does the same via u-boot `adi_loadvals`; `mode=1r1t` there strips the 2R2T
+  property again at boot.
+- **FS <= 30.72 MSPS in 2R2T.** The E200 runs the AD9361 interface in CMOS (HDL
+  `CMOS_OR_LVDS_N 1`, LVCMOS18), where DATA_CLK = 2 x FS in 2R2T and must stay <= 61.44 MHz.
+  56.6 MSPS returns EINVAL ("Failed CMOS MODE DATA_CLK > 61.44MSPS"). LVDS is not a firmware
+  switch here (board wiring). So 2R means a ~25 MHz chirp and ~6 m range bins. The phy boots at
+  30.72 MSPS, so the 2R2T probe itself is fine. TX `rf_bandwidth` max is 40 MHz.
+- **The fabric is transparent to it** (HDL has `MODE_1R1T 0`; `fmcw_core` channels 2/3 are
+  passthrough until K7). At FS 30.72 / BW 25 MHz / 100 us: `decim_ramp_check.py` bit-exact
+  (trim 0), `dechirp_verify.py --ab` PASS.
+- **DECHIRP_DELAY is counted in samples, so it moves with FS**: digital loopback 20 at 30.72
+  MSPS vs 34 at 56.6 (both ~0.6 us). Re-measure with `dechirp_verify.py --sweep` at every FS,
+  starting the sweep at 0: above the true delay the beat goes negative, off the positive range
+  axis, and the sweep just reports bin 0. Ignore the first sweep row (a stale block).
+- The bringup scripts build their config from `RadarConfig()` defaults (FS 56.6), so they need
+  an FS/BW override to run in 2R2T.
+- RX2 data path proven (4-lane capture, noise follows RX2 gain, uncorrelated with RX1). RX2 on
+  a real signal is still open.
 
 ## RF reality (AD9361 numbers, verified against the datasheet)
 
