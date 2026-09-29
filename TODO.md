@@ -103,7 +103,12 @@ Fabric FFT/CFAR is not planned - decision gate in G11.
       - [ ] CFAR: 19x19 `convolve` -> two `uniform_filter` box sums (outer - guard).
       - [ ] Time the GUI slot (`det_table` builds 4 `QTableWidgetItem`s per detection).
 - [ ] K2 - recorder + replay (G3): raw blocks + index + config + live detections
-      per session; replay reproduces the detections exactly.
+      per session; replay reproduces the detections exactly. Code done 2026-09-29
+      (`online/recorder.py`, `offline/replay.py`, Record checkbox; 12/12
+      `test_recorder.py`, and the worker loop headless against a fake radio in both
+      modes). Visual playback: `python -m offline.playback [dir]`. Left: on the
+      board, a 60 s loopback session with `SDR_LOOPBACK_NOISE_SNR_DB = 0` passes
+      `python -m offline.replay <dir> --check`.
 - [ ] K3 - tracker in (r, v) (G4): CV Kalman, GNN, M-of-N; tests (a)-(e), live
       fake targets tracked.
 - [ ] K4 - RF bench kit + VNA basics (G5): order a >= 6 GHz VNA + the soldering

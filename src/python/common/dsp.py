@@ -201,6 +201,18 @@ def cfar_ca_2d(
 
 
 # ===================================================================================
+def iq_from_raw(a_raw: np.ndarray) -> np.ndarray:
+    """
+    Raw interleaved int16 RX block -> normalized complex64 (12-bit ADC in an int16
+    word, hence 2^11 - 1). sdr.read_block and offline.replay both use it, so a
+    recorded block converts exactly like a live one; it lives here, not in sdr.py,
+    so replay runs without libiio.
+    """
+    raw = a_raw.astype(np.float32) / (2**11 - 1)
+    return raw[0::2] + 1j * raw[1::2]
+
+
+# ===================================================================================
 def mix_signal(a_rx_signal: np.ndarray, a_tx_signal: np.ndarray):
     """
     Mix input and output signal

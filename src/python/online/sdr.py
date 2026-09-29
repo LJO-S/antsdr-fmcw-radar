@@ -149,7 +149,7 @@ class AntSDR:
         # --------------------
         print("Flushing stale RX frames...")
         for _ in range(32):
-            if np.max(np.abs(self._read_deinterleaved())) >= 0.01:
+            if np.max(np.abs(self.read_block())) >= 0.01:
                 break
         else:
             self.close()
@@ -167,21 +167,18 @@ class AntSDR:
         self.rx_buff.refill()
         return self.rx_buff.read()
 
-    def _read_deinterleaved(self):
+    def read_raw_block(self) -> np.ndarray:
         """
-        Refill RX buffer and return normalized+de-interlweaved complex64 array.
+        Refill RX buffer and return the interleaved int16 block (read-only view),
+        exactly as the DMA delivered it. This is also what the recorder stores.
         """
-        data = self._read_raw()
-        raw = np.frombuffer(data, dtype=np.int16).astype(np.float32) / (2**11 - 1)
-        return raw[0::2] + 1j * raw[1::2]
+        return np.frombuffer(self._read_raw(), dtype=np.int16)
 
-    def read_block(self):
+    def read_block(self) -> np.ndarray:
         """
-        Same as _read_deinterleaved() but public.
+        Refill RX buffer and return normalized+de-interleaved complex64 array.
         """
-        # TODO K2: split into a raw int16 read (for the recorder) and a module-level
-        #   iq_from_raw() that replay reuses, so both convert identically.
-        return self._read_deinterleaved()
+        return dsp.iq_from_raw(self.read_raw_block())
 
     def set_loopback(self, a_en: bool):
         self.ctrl.debug_attrs["loopback"].value = str(int(a_en))

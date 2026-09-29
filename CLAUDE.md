@@ -54,24 +54,37 @@ src/python/                 # import root
     dsp.py       # pure DSP: generate_chirp(_sequence), estimate_chirp_offset,
                  #   frame_sync_linear/circ, mix_signal, cfar_ca_2d, nms, subbin_refine,
                  #   align_down_doppler, apply_doppler_shift, apply_noise, inst_freq,
-                 #   spectrogram, CPIContext, build_cpi_context, process_cpi
-    gui.py       # RadarDisplay (PySide6 + pyqtgraph), 3 tabs
+                 #   spectrogram, CPIContext, build_cpi_context, process_cpi,
+                 #   iq_from_raw (int16 block -> complex64; live and replay both use it)
+    gui.py       # RadarDisplay (PySide6 + pyqtgraph), 3 tabs; set_playback_mode() +
+                 #   PlayerBar (the playback toolbar)
   offline/
     soft_model.py        # SoftFMCWModel — target/noise/impairment sim, __main__ entry
     test_soft_model.py   # numeric detector self-test
     profile_cpi.py       # K1: median ms per process_cpi stage + apply_if vs fake-target
                          #   count (staged mirror of process_cpi, asserted equal to it)
+    replay.py            # K2: recorded session -> prepare_block -> process_rx_data;
+                         #   --check compares with detections.jsonl, exact. No libiio
+                         #   needed (never imports online.sdr). Player = random access
+                         #   to any block; replay() walks it in order
+    playback.py          # K2 visual playback: PlaybackWorker (QThread, owns a Player)
+                         #   + RadarDisplay in playback mode + PlayerBar
   online/
-    sdr.py         # AntSDR: connect/find_device in __init__; attrs+buffers in start()
-    capture.py     # capture_rx_data(): read_block -> TargetSim.apply -> frame_sync_linear
+    sdr.py         # AntSDR: connect/find_device in __init__; attrs+buffers in start();
+                   #   read_raw_block() (int16), read_block() = dsp.iq_from_raw of it
+    capture.py     # capture_rx_data(): read_raw_block -> Recorder.write_block ->
+                   #   prepare_block(): TargetSim.apply -> frame_sync_linear
                    #   (fabric mode: FABRIC_FRAME_TRIM slice -> TargetSim.apply_if, no sync)
+    recorder.py    # K2 Recorder: session dir = session.json, blocks.bin, index.csv,
+                   #   detections.jsonl (Phase 6 guide Section 3)
     target_sim.py  # FakeTarget / TargetSim — moving fake targets: apply() on raw RX (roll delay),
                    #   apply_if() on the fabric IF stream (beat-tone synthesis)
     processing.py  # process_rx_data(): stateless mix_signal + process_cpi wrapper
-                   #   (skips mix_signal when FABRIC_DECHIRP_EN)
+                   #   (skips mix_signal when FABRIC_DECHIRP_EN); spectrograms() for
+                   #   the Signals tab (live and playback)
     app.py         # RadarWorker (QThread) + main(); owns (config, ctx, sdr)
     fabric_ctl.py  # FabricCtl (enable/disable/set_calib_delay sequencing) + SshDevmem transport
-    test_fabric_ctl.py, test_target_sim.py  # board-free asserts, run as __main__
+    test_fabric_ctl.py, test_target_sim.py, test_recorder.py  # board-free, run as __main__
 docs/              # AntSDR_Phase6_Tracking_Antennas_Angle_Guide.md (Part K spec, active),
                    #   firmware-branch-workflow.md, rf-power-and-spectrum-sweden.pdf,
                    #   fmcw_fabric_architecture.svg, datasheets/, archive/ (Phase 1-5 guides;
@@ -101,6 +114,8 @@ python -m offline.soft_model        # run simulation + GUI
 python -m common.gui                # GUI with pseudo-data only
 python -m online.app                # live SDR app (needs AntSDR at SDR_IP)
 python -m online.sdr                # standalone loopback test with matplotlib debug plots
+python -m offline.playback [dir]    # recorded session in the GUI (no board); Open... picks one
+python -m offline.replay <dir> [--check]  # headless replay; --check vs the live detections
 ```
 
 ## Key classes / functions
@@ -134,6 +149,9 @@ python -m online.sdr                # standalone loopback test with matplotlib d
   `dsp.apply_doppler_shift`, and one `dsp.apply_noise` at the end. Expiry resets `t_spawn`, so
   trajectories loop. Known failure mode: at `amp` ≈ 1 a fake target steals the sync lock from
   the leakage.
+  Time base: `apply`/`apply_if` take `a_now` (default `time.monotonic()`), one timestamp for
+  every target in the block; the worker passes the capture timestamp, replay the recorded one.
+  `snapshot()` / `restore()` carry the targets incl. `t_spawn` through `session.json`.
 - **`RadarDisplay`** (`common/gui.py`) — Tab 0 "Radar" (up/down RD maps + detections scatter +
   MTI checkbox), Tab 1 "Signals" (RX/IF spectrograms), Tab 2 "Configuration" (auto-generated
   config form, TX instantaneous-frequency plot, derived-characteristics table, fake-target
@@ -261,9 +279,36 @@ gain ≈ +59 dB at 128 reps on ±1-normalized RX).
   payload `object` for numpy arrays). Cross-thread emits are auto-queued to the GUI thread.
 - GUI → worker: `reconfigure_requested` → `pending_cfg` (a fresh `RadarConfig`), swapped in
   between CPIs (new ctx, `radio.config = new`, `close()`/`start()`), with **last-good revert**
-  on exception and `reconfigure_done(ok, cfg)` back to the GUI. `fake_targets_changed` →
-  `TargetSim.set_targets` and `mti_signal_changed` → `_mti_en` need **no radio restart**.
+  on exception and `reconfigure_done(ok, cfg)` back to the GUI. `fake_targets_changed` ->
+  `pending_targets` (the worker calls `TargetSim.set_targets` between CPIs, so a block never
+  mixes two target sets) and `mti_signal_changed` -> `_mti_en` need **no radio restart**.
   No locks: single-reference / bool assignment is atomic under CPython.
+- **Recording (K2) is worker-owned too**: `Recorder` is built in `run()`; `record_changed(on)`
+  and `record_notes_changed(text)` (every edit) only set fields, and `rec_sync()`
+  opens/closes sessions between CPIs. One session = one config and one fake-target set, so
+  RE-CONFIGURE (incl. the revert) and a target edit start a new session. The detections line
+  stores the `MTI_EN` the CPI ran with. `recording(dir | None)` mirrors the state to the GUI
+  checkbox, including `None` from `finally` when the worker dies.
+  **A disk error ends the session, never the radar**: `write_block` / `write_detections` /
+  `close` never raise, they close the session and park the error in `Recorder.failure`;
+  `rec_sync` takes it before the next CPI, reports it once and clears `_record_en`, so a full
+  disk does not reopen a session every CPI. `open()` raises instead and removes its half-made
+  directory (`session.json` is written last). Replay is exact only without random input:
+  loopback noise off is `SDR_LOOPBACK_NOISE_SNR_DB = 0` (`apply_noise` returns early at
+  SNR <= 0). It survives a crash (a torn last line in `index.csv` / `detections.jsonl` is
+  skipped, an index line past the end of `blocks.bin` stops it) and config drift (removed
+  fields dropped, new ones defaulted, both printed). Exact equality holds on the recording
+  machine; another CPU can differ in the last bit (numpy SIMD dispatch).
+- **Playback** (`offline/playback.py`) mirrors this: `PlaybackWorker` owns a `replay.Player`
+  and emits the same `results` / `signals`, plus `recorded` (the live detections, drawn as
+  magenta rings, toggleable), `position` and `playing`. GUI -> worker goes through a
+  `queue.SimpleQueue` (open / play / step / seek / MTI), so no seek is lost or reordered;
+  the speed is a plain float. Pacing follows the recorded CPI times (0.25x-4x, or max) and
+  never skips a block to catch up (~24 CPIs/s at /8 is the processing bound). Seeking
+  backwards is cheap: `Player.render` restores the fake-target snapshot and runs
+  `TargetSim.advance()` (kinematics only) up to the block. MTI follows the recording or is
+  forced on/off from the bar. The display's config form and fake-target table are
+  read-only there (`set_playback_mode`).
 - Spectrogram emits are **throttled to ~2 Hz** (`_last_spec_update`) and cover only 2 chirps.
 - `AntSDR` lifecycle: connect + `find_device` in `__init__` (once); all attr writes,
   TX waveform, buffers in `start()` — so `close()` + `start()` is a full reconfigure.
@@ -300,7 +345,8 @@ Verified against the v0.x binding source (vendored copy reviewed 2026-07; the pi
   is mandatory, not style.
 - `buf.read()` returns raw interleaved bytes in channel-index order (`voltage0`=I,
   `voltage1`=Q) → deinterleave with `raw[0::2] + 1j*raw[1::2]`. RX normalization is
-  `/(2**11 - 1)` (12-bit ADC in an int16 word); TX scales by `2**15 - 1`.
+  `/(2**11 - 1)` (12-bit ADC in an int16 word); TX scales by `2**15 - 1`. The RX
+  conversion is `dsp.iq_from_raw`.
 - `buf.write()` silently truncates to the buffer size — assert the returned byte count.
 - No explicit buffer destroy; the kernel DMA buffer is freed on GC (`__del__`). To
   recreate (restart), `cancel()` + drop references first, else EBUSY (one buffer/device).
@@ -488,7 +534,7 @@ triangle without a hang; up to ~30 CPIs/s in the GUI, dropping as detections inc
 
 ### Fabric IF mode on the Python side (`FABRIC_DECHIRP_EN`)
 
-- `capture_rx_data` returns the raw `read_block()` with no frame sync (`sync_src=1` makes every
+- `capture.prepare_block` takes the block with no frame sync (`sync_src=1` makes every
   DMA transfer start on a chirp boundary), slices `rx[TRIM : TRIM + rows * N_IF]`
   (`FABRIC_FRAME_TRIM`) and runs `TargetSim.apply_if` on it; `process_rx_data` skips
   `mix_signal`. `sdr.start()` sizes the RX buffer from `N_IF` and warns if the phy's

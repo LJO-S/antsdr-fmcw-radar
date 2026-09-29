@@ -10,7 +10,7 @@ from PySide6.QtCore import QThread, Signal
 from PySide6.QtWidgets import QApplication
 
 from common import config, dsp, fabric_regs, gui
-from online import capture, processing, sdr, target_sim, fabric_ctl
+from online import capture, processing, recorder, sdr, target_sim, fabric_ctl
 
 
 class RadarWorker(QThread):
@@ -22,13 +22,19 @@ class RadarWorker(QThread):
     error = Signal(str)
     reconfigure_done = Signal(bool, object)
     signals = Signal(object, object, object, object)  # rx, if, t, f
+    recording = Signal(object)  # session dir (Path), or None when not recording
 
     def __init__(self, a_config: config.RadarConfig):
         super().__init__()
         self.config: config.RadarConfig = a_config
         self.pending_cfg: config.RadarConfig = None
+        self.pending_targets: list = (
+            None  # Applied by the worker between CPIs, like pending_cfg, so a recorded block never mixes two target sets
+        )
         self.target_sim = target_sim.TargetSim()
         self._mti_en = a_config.MTI_EN
+        self._record_en: bool = False
+        self._record_notes: str = ""
         self._last_spec_update: float = 0.0
         self._running: bool = True
 
@@ -36,6 +42,44 @@ class RadarWorker(QThread):
         radio = None
         fabric = None
         fabric_on = False
+        rec = recorder.Recorder()
+
+        def rec_failed():
+            # Prevent next CPI write opening a fresh session on the same full disk if error'd out...
+            err = rec.take_failure()
+            if err is None:
+                return False
+            self.error.emit(
+                "Recording stopped:\n" + "".join(traceback.format_exception(err))
+            )
+            self._record_en = False
+            self.recording.emit(None)
+            return True
+
+        def rec_sync(a_new_session):
+            # Sessions open and close only here, between CPIs. One session has one
+            # config and one fake-target set, so RE-CONFIGURE and a target edit
+            # (set_targets resets t_spawn) close it and open a new one.
+            if rec_failed():
+                return
+            if rec.active and (not self._record_en or a_new_session):
+                rec.close()
+                if rec_failed():
+                    return
+                if not self._record_en:
+                    self.recording.emit(None)
+            if self._record_en and not rec.active:
+                try:
+                    session_dir = rec.open(
+                        a_config=self.config,
+                        a_fake_targets=self.target_sim.snapshot(),
+                        a_notes=self._record_notes,
+                    )
+                except OSError:
+                    self.error.emit(traceback.format_exc())
+                    self._record_en = False
+                    session_dir = None
+                self.recording.emit(session_dir)
 
         def fabric_up(a_cfg):
             if not a_cfg.FABRIC_DECHIRP_EN:
@@ -73,7 +117,9 @@ class RadarWorker(QThread):
             radio.start()
             fabric_on = fabric_up(self.config)
             while self._running:
+                new_session = False
                 if self.pending_cfg is not None:
+                    new_session = True
                     new_cfg, self.pending_cfg = self.pending_cfg, None
                     old_cfg = self.config
                     fabric_down()
@@ -96,15 +142,22 @@ class RadarWorker(QThread):
                         radio.start()
                         fabric_on = fabric_up(old_cfg)
                         self.reconfigure_done.emit(False, old_cfg)
+                if self.pending_targets is not None:
+                    targets, self.pending_targets = self.pending_targets, None
+                    self.target_sim.set_targets(a_targets=targets)
+                    new_session = True
 
                 # MTI is pure DSP and must survive config swaps
                 self.config.MTI_EN = self._mti_en
+                # Sync recording if new session
+                rec_sync(new_session)
 
-                rx = capture.capture_rx_data(
+                rx, block_no = capture.capture_rx_data(
                     a_config=self.config,
                     a_ctx=ctx,
                     a_sdr=radio,
                     a_target_sim=self.target_sim,
+                    a_recorder=rec,
                 )
                 (
                     rd_map_db_up,
@@ -114,39 +167,40 @@ class RadarWorker(QThread):
                     velocities,
                     if_signal,
                 ) = processing.process_rx_data(a_rx=rx, a_config=self.config, a_ctx=ctx)
-                # TODO K2: recorder.write_detections(block, MTI_EN, detections). The
-                #   session opens/closes here between CPIs on record_changed, and
-                #   RE-CONFIGURE closes it and opens a new one (one config per session).
-                #   A fake-target edit does the same: set_targets resets t_spawn.
+                if block_no is not None:
+                    # The MTI_EN this CPI actually ran with, not _mti_en, which the
+                    # GUI may have flipped since. A disk error here is reported by
+                    # rec_sync before the next CPI.
+                    rec.write_detections(
+                        a_block=block_no,
+                        a_mti=self.config.MTI_EN,
+                        a_targets=detections,
+                    )
                 self.results.emit(
                     rd_map_db_up, rd_map_db_down, detections, ranges, velocities
                 )
                 if time.monotonic() - self._last_spec_update > 0.5:
-                    if self.config.FABRIC_DECHIRP_EN:
-                        # rx is already the (possibly decimated) IF stream, at
-                        # ctx.fs_if rather than ctx tx-chirp/FS rate - slice and
-                        # label the spectrogram accordingly.
-                        legs = 2 if self.config.TRIANGLE_EN else 1
-                        n2 = 2 * legs * ctx.N_if_samples  # 2 periods, IF domain
-                        rx_spec, t, f = dsp.spectrogram(
-                            a_signal=rx[:n2], a_config=self.config, a_fs=ctx.fs_if
+                    self.signals.emit(
+                        *processing.spectrograms(
+                            a_rx=rx,
+                            a_if_signal=if_signal,
+                            a_config=self.config,
+                            a_ctx=ctx,
                         )
-                        # Rx is already the IF signal, so skip the separate IF plot
-                        if_spec = None
-                    else:
-                        n2 = 2 * len(ctx.tx_chirp)  # 2 chirps
-                        rx_spec, t, f = dsp.spectrogram(
-                            a_signal=rx[:n2], a_config=self.config
-                        )
-                        if_spec, _, _ = dsp.spectrogram(
-                            a_signal=if_signal[:n2], a_config=self.config
-                        )
-                    self.signals.emit(rx_spec, if_spec, t, f)
+                    )
                     self._last_spec_update = time.monotonic()
         except Exception as e:
             # never let an exception kill the thread silently
             self.error.emit(traceback.format_exc())
         finally:
+            rec.close()
+            err = rec.take_failure()
+            if err is not None:
+                self.error.emit(
+                    "Recording stopped:\n" + "".join(traceback.format_exception(err))
+                )
+            # The worker is gone, so is any session: uncheck the GUI box
+            self.recording.emit(None)
             fabric_down()
             if radio is not None:
                 print("Stopping SDR...")
@@ -158,10 +212,17 @@ class RadarWorker(QThread):
         self.pending_cfg = a_config
 
     def set_fake_targets(self, a_fake_targets: list):
-        self.target_sim.set_targets(a_targets=a_fake_targets)
+        self.pending_targets = a_fake_targets
 
     def set_mti(self, a_value: bool):
         self._mti_en = a_value
+
+    def set_recording(self, a_on: bool):
+        self._record_en = a_on
+
+    def set_record_notes(self, a_notes: str):
+        # Kept current on every edit; read whenever a session opens
+        self._record_notes = a_notes
 
     def stop(self):
         print("Stopping app...")
@@ -193,6 +254,10 @@ def main():
     display.fake_targets_changed.connect(worker.set_fake_targets)
 
     display.mti_signal_changed.connect(worker.set_mti)
+
+    display.record_changed.connect(worker.set_recording)
+    display.record_notes_changed.connect(worker.set_record_notes)
+    worker.recording.connect(display.on_recording)
 
     worker.reconfigure_done.connect(
         lambda ok, cfg: display.on_reconfigure_done(ok, cfg)

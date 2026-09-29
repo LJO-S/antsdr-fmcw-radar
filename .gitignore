@@ -1,4 +1,5 @@
 .venv
 **.pyc
 **.jou
-**.logdata/sessions/
+**.log
+data/sessions/
