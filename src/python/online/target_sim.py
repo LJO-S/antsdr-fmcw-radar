@@ -1,3 +1,4 @@
+import dataclasses
 import logging
 import time
 import numpy as np
@@ -65,10 +66,31 @@ class TargetSim:
             targets.append(t)
         self.fake_targets = targets
 
-    def _kinematics(self, a_target: FakeTarget, a_config: config.RadarConfig):
-        age = time.monotonic() - a_target.t_spawn
+    def snapshot(self) -> list[dict]:
+        """Targets incl. t_spawn, for session.json."""
+        return [dataclasses.asdict(t) for t in self.fake_targets]
+
+    def restore(self, a_snapshot: list[dict]):
+        """Inverse of snapshot(): keeps the recorded t_spawn, unlike set_targets()."""
+        self.fake_targets = [FakeTarget(**t) for t in a_snapshot]
+
+    def advance(self, a_config: config.RadarConfig, a_now: float):
+        """The state change apply()/apply_if() would make at a_now (an expired target
+        restarts from a_now), without synthesizing any echo. Playback uses it to
+        skip blocks and still land every target where it was live."""
+        for target in self.fake_targets:
+            self._kinematics(target, a_config, a_now)
+
+    # a_now is the capture timestamp. Live it defaults to time.monotonic(); replay
+    # passes the recorded one from index.csv, so the kinematics (and the expiry
+    # reset of t_spawn) repeat exactly.
+    def _kinematics(
+        self, a_target: FakeTarget, a_config: config.RadarConfig, a_now: float = None
+    ):
+        now = time.monotonic() if a_now is None else a_now
+        age = now - a_target.t_spawn
         if age > a_target.duration:
-            a_target.t_spawn = time.monotonic()
+            a_target.t_spawn = now
             age = 0.0
         r = a_target.r0 + a_target.v0 * age + 0.5 * a_target.a0 * age**2
         r = np.clip(r, 0, a_config.MAX_RANGE)
@@ -81,7 +103,10 @@ class TargetSim:
         a_if_raw: np.ndarray,
         a_config: config.RadarConfig,
         a_ctx: dsp.CPIContext,
+        a_now: float = None,
     ) -> np.ndarray:
+        # One timestamp for every target in the block
+        now = time.monotonic() if a_now is None else a_now
         ret = a_if_raw.copy()
 
         n = len(a_if_raw)
@@ -101,7 +126,7 @@ class TargetSim:
         rms = rms if rms > 0 else 1.0
 
         for target in self.fake_targets:
-            r, v = self._kinematics(target, a_config)
+            r, v = self._kinematics(target, a_config, now)
 
             f_b = S * 2 * r / dsp.c
             if abs(f_b) >= a_config.FS_IF / 2:
@@ -146,12 +171,15 @@ class TargetSim:
 
         return ret
 
-    def apply(self, a_rx_raw: np.ndarray, a_config: config.RadarConfig):
+    def apply(
+        self, a_rx_raw: np.ndarray, a_config: config.RadarConfig, a_now: float = None
+    ):
+        now = time.monotonic() if a_now is None else a_now
         ret = a_rx_raw.copy()
 
         # Loop over targets
         for target in self.fake_targets:
-            r, v = self._kinematics(target, a_config)
+            r, v = self._kinematics(target, a_config, now)
 
             # Convert into samples and rotate
             r_sample_offset = round(2 * r * a_config.FS / dsp.c)

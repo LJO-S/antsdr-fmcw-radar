@@ -33,7 +33,7 @@ Chirp length: every mode runs CHIRP_DUR_S snapped to the /8 sweep length
 (5656 samples at 100 us / 56.6 MSPS), so software, fabric /1 and fabric /8 all
 sweep the identical chirp and their range bins line up one-to-one.
 
-Note: fabric IF output is Q15 (16-bit) but AntSDR._read_deinterleaved
+Note: fabric IF output is Q15 (16-bit) but dsp.iq_from_raw
 normalizes by 2^11-1 (12-bit ADC). The RD maps are peak-normalized dB,
 so the absolute scale cancels out in the comparison.
 """
@@ -82,7 +82,7 @@ class FrozenTargetSim(TargetSim):
     each echo costs ~8x longer, so later targets drift ~0.1 range bin further
     than at /8 and the A/B reads that drift as a map difference."""
 
-    def _kinematics(self, a_target, a_config):
+    def _kinematics(self, a_target, a_config, a_now=None):
         return a_target.r0, a_target.v0
 
 

@@ -2,6 +2,7 @@ import sys
 import numpy as np
 import dataclasses
 from collections import defaultdict
+from pathlib import Path
 from PySide6.QtCore import QRectF, Qt, QLocale, Signal
 from PySide6.QtWidgets import (
     QApplication,
@@ -20,8 +21,15 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QGroupBox,
     QPushButton,
+    QToolBar,
+    QLabel,
+    QSlider,
+    QComboBox,
+    QFileDialog,
+    QStyle,
+    QSizePolicy,
 )
-from PySide6.QtGui import QBrush, QColor, QDoubleValidator
+from PySide6.QtGui import QBrush, QColor, QDoubleValidator, QKeySequence
 import pyqtgraph as pg
 
 import common.dsp as dsp
@@ -36,6 +44,7 @@ class RadarDisplay(QMainWindow):
     │  Down-chirp RD map      │    Plot    │    List    │
     │                         ├─────────────────────────┤
     │                         │ [] MTI                  │
+    │                         │ [] Record [notes      ] │
     │                         │ [] Up-down detections   │
     └─────────────────────────┴─────────────────────────┘
 
@@ -57,6 +66,8 @@ class RadarDisplay(QMainWindow):
     reconfigure_requested = Signal(object)
     fake_targets_changed = Signal(object)
     mti_signal_changed = Signal(bool)
+    record_changed = Signal(bool)
+    record_notes_changed = Signal(str)
 
     FAKE_TGT_COLUMNS = [
         ("r0", "Range [m]", 500.0),
@@ -130,11 +141,38 @@ class RadarDisplay(QMainWindow):
         self.det_plot.addItem(self.scatter_both)
         self.det_plot.addItem(self.scatter_up)
         self.det_plot.addItem(self.scatter_down)
+        # Playback only: the detections recorded live, as rings around the replayed
+        # dots. Drawn last so they sit on top; hidden until update_recorded()
+        self.scatter_recorded = pg.ScatterPlotItem(
+            size=16,
+            symbol="o",
+            pen=pg.mkPen((255, 0, 255), width=2),
+            brush=pg.mkBrush(None),
+        )
+        self.det_plot.addItem(self.scatter_recorded)
+        self.scatter_recorded.setVisible(False)
+        self._recorded = []
+        self._show_recorded = False
 
         self.mti_en_box = QCheckBox("MTI")
         self.mti_en_box.setChecked(a_config.MTI_EN)
         middle_col.addWidget(self.mti_en_box)
         self.mti_en_box.toggled.connect(self.mti_signal_changed)
+
+        # Record: the worker owns the session so on_recording() mirrors its state back
+        record_row = QHBoxLayout()
+        self.record_box = QCheckBox("Record")
+        self.record_notes = QLineEdit()
+        self.record_notes.setPlaceholderText(
+            "Session notes (read when a session opens)"
+        )
+        record_row.addWidget(self.record_box)
+        record_row.addWidget(self.record_notes, stretch=1)
+        middle_col.addLayout(record_row)
+        self.record_box.toggled.connect(self.record_changed)
+        # Every edit, so a session opened later (RE-CONFIGURE, target edit) gets the
+        # current text, not the text from when Record was ticked
+        self.record_notes.textChanged.connect(self.record_notes_changed)
 
         # ---------------------------------
         # C. Right column = detections list
@@ -209,8 +247,11 @@ class RadarDisplay(QMainWindow):
         # Add widget
         config_layout_right_col.addWidget(config_scroll)
 
+        self._cfg_form_widget = form_widget  # set_playback_mode() disables it
+
         # Create Fake Targets section
         fake_target_box = QGroupBox("Fake Target Simulation")
+        self.fake_target_box = fake_target_box
         fake_targets_layout = QVBoxLayout(fake_target_box)
         # Targets
         self.fake_targets_table = QTableWidget(0, 5)
@@ -335,6 +376,82 @@ class RadarDisplay(QMainWindow):
         self.re_cfg_button.setEnabled(True)
         if not a_ok:
             self.set_config(a_config)
+
+    def on_recording(self, a_session_dir):
+        """Worker's session state: its directory, or None when not recording (or a
+        disk error stopped it). Does not re-emit record_changed."""
+        self.record_box.blockSignals(True)
+        self.record_box.setChecked(a_session_dir is not None)
+        self.record_box.blockSignals(False)
+        if a_session_dir is None:
+            self.record_box.setText("Record")
+            self.record_box.setToolTip("")
+        else:
+            self.record_box.setText(f"Record ({a_session_dir.name})")
+            self.record_box.setToolTip(str(a_session_dir))
+
+    # ---------------------------------
+    # Playback (offline.playback)
+    # ---------------------------------
+    def set_playback_mode(self):
+        """The session owns the config and the fake targets, so both turn read-only
+        and RE-CONFIGURE goes; no recording; a status bar says this is not live.
+        The MTI box only shows what each CPI ran with (the player bar overrides)."""
+        self.setWindowTitle("FMCW Radar - Playback")
+        self.record_box.hide()
+        self.record_notes.hide()
+        self.mti_en_box.setEnabled(False)
+        # The form, not its scroll area, so the long form still scrolls
+        self._cfg_form_widget.setEnabled(False)
+        self.fake_target_box.setEnabled(False)
+        self.re_cfg_button.hide()
+
+        badge = QLabel(" PLAYBACK - not live ")
+        badge.setStyleSheet(
+            "QLabel { background-color: #b26a00; color: white; font-weight: bold; }"
+        )
+        self.statusBar().addWidget(badge)
+        self.status_label = QLabel("Open a session (Ctrl+O)")
+        self.statusBar().addWidget(self.status_label, stretch=1)
+
+    def set_status(self, a_text, a_color=None):
+        self.status_label.setText(a_text)
+        style = f"QLabel {{ color: {a_color}; }}" if a_color else ""
+        self.status_label.setStyleSheet(style)
+
+    def show_fake_targets(self, a_targets):
+        """Fill the fake-target table without emitting fake_targets_changed."""
+        t = self.fake_targets_table
+        t.blockSignals(True)
+        t.setRowCount(0)
+        for row, target in enumerate(a_targets):
+            t.insertRow(row)
+            for col, (key, header, default) in enumerate(self.FAKE_TGT_COLUMNS):
+                t.setItem(row, col, QTableWidgetItem(str(target.get(key, default))))
+        t.blockSignals(False)
+
+    def show_mti(self, a_on):
+        """Mirror the MTI a CPI ran with, without emitting mti_signal_changed."""
+        self.mti_en_box.blockSignals(True)
+        self.mti_en_box.setChecked(a_on)
+        self.mti_en_box.blockSignals(False)
+
+    def update_recorded(self, a_targets):
+        """The detections recorded live for this CPI (None: no recorded line), drawn
+        as rings. Same kind filter as update()."""
+        self._recorded = a_targets or []
+        show_xs = self.xs_toggle.isChecked()
+        pos = [
+            (t["v"], t["r"])
+            for t in self._recorded
+            if not self._config.TRIANGLE_EN or t["kind"] == "both" or show_xs
+        ]
+        self.scatter_recorded.setData(pos=pos or [(0, 0)], size=16)
+        self.scatter_recorded.setVisible(self._show_recorded and len(pos) > 0)
+
+    def set_recorded_visible(self, a_on):
+        self._show_recorded = a_on
+        self.update_recorded(self._recorded)
 
     def read_cfg_reg(self, a_field):
         if a_field.type is bool:
@@ -504,6 +621,9 @@ class RadarDisplay(QMainWindow):
     def set_config(self, a_config):
         # Store new config
         self._config = a_config
+        # Sawtooth never writes the down map: do not leave a stale triangle one up
+        if not a_config.TRIANGLE_EN:
+            self.rd_down_image.clear()
 
         # Fabric IF mode: captured array is IF so hide IF spectrogram
         self.if_spec_plot.setVisible(not a_config.FABRIC_DECHIRP_EN)
@@ -550,6 +670,195 @@ class RadarDisplay(QMainWindow):
             v_min=-a_config.MAX_VELOCITY / 2,
             v_max=a_config.MAX_VELOCITY / 2,
         )
+
+
+class PlayerBar(QToolBar):
+    """
+    Playback transport (offline.playback), across the top of RadarDisplay:
+
+    [Open] session "notes" | |< < > > | ====o======== block/time | speed | MTI | rings
+
+    Emits requests only. The worker owns the position and reports it back through
+    on_loaded / on_position / on_playing, so the bar never runs ahead of the data.
+    Shortcuts: Ctrl+O open, Space play/pause, Left/Right step, Home first CPI.
+    """
+
+    open_requested = Signal(object)  # Path
+    play_requested = Signal(bool)
+    step_requested = Signal(int)
+    seek_requested = Signal(int)
+    speed_changed = Signal(float)  # 0 = as fast as possible
+    mti_mode_changed = Signal(object)  # None = as recorded, else bool
+    show_recorded_changed = Signal(bool)
+
+    SPEEDS = [
+        ("0.25x", 0.25),
+        ("0.5x", 0.5),
+        ("1x", 1.0),
+        ("2x", 2.0),
+        ("4x", 4.0),
+        ("max", 0.0),
+    ]
+    MTI_MODES = [("MTI as recorded", None), ("MTI on", True), ("MTI off", False)]
+
+    def __init__(self, a_start_dir):
+        super().__init__("Playback")
+        self.setMovable(False)
+        self._start_dir = Path(a_start_dir)
+        self._playing = False
+        self._n_blocks = 0
+        self._duration = 0.0
+        style = self.style()
+
+        open_action = self.addAction(
+            style.standardIcon(QStyle.SP_DirOpenIcon), "Open session...", self._open
+        )
+        open_action.setShortcut(QKeySequence.Open)
+        self.widgetForAction(open_action).setToolButtonStyle(
+            Qt.ToolButtonTextBesideIcon
+        )
+        self.session_label = QLabel("No session")
+        self.session_label.setMaximumWidth(360)
+        self.session_label.setContentsMargins(6, 0, 6, 0)
+        self.addWidget(self.session_label)
+        self.addSeparator()
+
+        def _action(a_icon, a_tip, a_key, a_slot):
+            action = self.addAction(style.standardIcon(a_icon), a_tip, a_slot)
+            action.setShortcut(QKeySequence(a_key))
+            action.setToolTip(f"{a_tip} ({QKeySequence(a_key).toString()})")
+            return action
+
+        self._transport = [
+            _action(
+                QStyle.SP_MediaSkipBackward,
+                "First CPI",
+                Qt.Key_Home,
+                lambda: self.seek_requested.emit(0),
+            ),
+            _action(
+                QStyle.SP_MediaSeekBackward,
+                "Step back",
+                Qt.Key_Left,
+                lambda: self.step_requested.emit(-1),
+            ),
+            _action(
+                QStyle.SP_MediaPlay,
+                "Play / pause",
+                Qt.Key_Space,
+                lambda: self.play_requested.emit(not self._playing),
+            ),
+            _action(
+                QStyle.SP_MediaSeekForward,
+                "Step forward",
+                Qt.Key_Right,
+                lambda: self.step_requested.emit(1),
+            ),
+        ]
+        self._play_action = self._transport[2]
+
+        self.slider = QSlider(Qt.Horizontal)
+        self.slider.setMinimumWidth(200)
+        self.slider.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        # Seek on release while dragging (each seek replays a CPI), at once on a
+        # click in the groove or a key
+        self.slider.valueChanged.connect(self._slider_changed)
+        self.slider.sliderReleased.connect(
+            lambda: self.seek_requested.emit(self.slider.value())
+        )
+        self.addWidget(self.slider)
+        self.pos_label = QLabel()
+        self.pos_label.setContentsMargins(6, 0, 6, 0)
+        self.pos_label.setStyleSheet("QLabel { font-family: monospace; }")
+        self.addWidget(self.pos_label)
+        self.addSeparator()
+
+        self.speed_box = QComboBox()
+        self.speed_box.addItems([name for name, _ in self.SPEEDS])
+        self.speed_box.setCurrentIndex(2)  # 1x
+        self.speed_box.setToolTip("Playback speed, paced on the recorded CPI times")
+        self.speed_box.currentIndexChanged.connect(
+            lambda i: self.speed_changed.emit(self.SPEEDS[i][1])
+        )
+        self.addWidget(self.speed_box)
+
+        self.mti_box = QComboBox()
+        self.mti_box.addItems([name for name, _ in self.MTI_MODES])
+        self.mti_box.setToolTip("Replay with the MTI each CPI ran with, or force it")
+        self.mti_box.currentIndexChanged.connect(
+            lambda i: self.mti_mode_changed.emit(self.MTI_MODES[i][1])
+        )
+        self.addWidget(self.mti_box)
+
+        self.recorded_box = QCheckBox("Live detections (rings)")
+        self.recorded_box.setChecked(True)
+        self.recorded_box.setToolTip(
+            "What the radar detected live, while this session was recorded, drawn as\n"
+            "rings around the replayed detections (dots). A dot without a ring, or a\n"
+            "ring without a dot, is where replay and the live run disagree."
+        )
+        self.recorded_box.toggled.connect(self.show_recorded_changed)
+        self.addWidget(self.recorded_box)
+
+        self._set_enabled(False)
+        self._show_position(-1, 0.0)
+
+    def _set_enabled(self, a_on):
+        for w in self._transport + [self.slider, self.speed_box, self.mti_box]:
+            w.setEnabled(a_on)
+
+    def _open(self):
+        path = QFileDialog.getExistingDirectory(
+            self, "Open session", str(self._start_dir)
+        )
+        if path:
+            self.open_requested.emit(Path(path))
+
+    def _slider_changed(self, a_value):
+        if not self.slider.isSliderDown():
+            self.seek_requested.emit(a_value)
+
+    def _show_position(self, a_block, a_t):
+        # Fixed widths from the session's size, so the label does not jitter
+        n_width = len(str(max(self._n_blocks, 1)))
+        t_width = len(f"{self._duration:.1f}")
+        self.pos_label.setText(
+            f"{a_block + 1:>{n_width}}/{self._n_blocks}  "
+            f"{a_t:>{t_width}.1f} / {self._duration:.1f} s"
+        )
+
+    def on_loaded(self, a_info):
+        """a_info: offline.playback's session dict (dir, cfg, notes, ...)."""
+        self._n_blocks = a_info["n_blocks"]
+        self._duration = a_info["duration"]
+        self._start_dir = a_info["dir"].parent
+        notes = a_info["notes"]
+        text = a_info["dir"].name + (f'  "{notes}"' if notes else "")
+        metrics = self.session_label.fontMetrics()
+        self.session_label.setText(
+            metrics.elidedText(text, Qt.ElideRight, self.session_label.maximumWidth())
+        )
+        self.session_label.setToolTip(a_info["summary"])
+        self.slider.blockSignals(True)
+        self.slider.setRange(0, self._n_blocks - 1)
+        self.slider.blockSignals(False)
+        # A new session replays with the MTI it was recorded with
+        self.mti_box.blockSignals(True)
+        self.mti_box.setCurrentIndex(0)
+        self.mti_box.blockSignals(False)
+        self._set_enabled(True)
+
+    def on_position(self, a_block, a_t):
+        if not self.slider.isSliderDown():
+            self.slider.blockSignals(True)
+            self.slider.setValue(a_block)
+            self.slider.blockSignals(False)
+        self._show_position(a_block, a_t)
+
+    def on_playing(self, a_on):
+        self._playing = a_on
+        icon = QStyle.SP_MediaPause if a_on else QStyle.SP_MediaPlay
+        self._play_action.setIcon(self.style().standardIcon(icon))
 
 
 # Pseudo-data helpers

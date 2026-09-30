@@ -1,10 +1,22 @@
+
 # TODO
 
 ---------------------------------------------------------------
 Ludvig's DO-NOT-FORGET:
 - Fix the offline and online tests if they fail
+
 ---------------------------------------------------------------
 
+# Order
+K1 -> K2 -> K6 -> K3
+
+- VNA, ≥ 6 GHz (K4)
+- Soldering kit, a 10-pin 2.54 mm header, Dupont leads (K5)
+- Two HMC8038 switch modules (K7). They're cheap and slow to ship, so they might as well arrive with the rest.
+- Optional: about 10 edge-mount SMA connectors for 1.6 mm boards, rated ≥ 6 GHz (K8)
+
+
+# Roadmap
 
 Roadmap for the FMCW radar. Carrier is **5.8 GHz** (cheap WiFi/FPV hardware).
 
@@ -12,12 +24,13 @@ Roadmap for the FMCW radar. Carrier is **5.8 GHz** (cheap WiFi/FPV hardware).
 their design conclusions move to `CLAUDE.md`, which is the maintained map - don't
 grow narrative back in here as parts close.
 
-Current state (2026-09-26): Parts A-G and I are done. G (antennas, no PA) passed in
+Current state (2026-09-28): Parts A-G and I are done. G (antennas, no PA) passed in
 software mode in 2026-08: cars, people on foot and bikes, on default settings. I (HDL
 offload) is proven in digital loopback: fabric chirp NCO, dechirp and /8 decimation
-(MAGIC FMC4), up to ~30 fps in the GUI. **Next: Part K (Phase 6)** - tracking,
-patch antennas and 2R1T angle, including fabric mode on real RF (K6). Part H stays
-deferred. Part J blocks nothing and can run in parallel.
+(MAGIC FMC4), up to ~30 fps in the GUI. **Next: Part K (Phase 6)** - tracking, an
+RF bench lane (VNA, soldering), patch antennas and 2T1R angle through a
+fabric-switched TX, including fabric mode on real RF (K6). Part H stays deferred.
+Part J blocks nothing and can run in parallel.
 
 ---
 
@@ -56,35 +69,68 @@ deferred. Part J blocks nothing and can run in parallel.
 
 ---
 
-## Part K - Phase 6: tracking, patch antennas, 2R1T angle (active)
+## Part K - Phase 6: tracking, RF bench, patch antennas, 2T1R angle (active)
 
-Spec: `docs/AntSDR_Phase6_Tracking_Antennas_2R_Guide.md` ("G" = its sections).
-Two lanes in parallel (software K1-K3, antennas K0/K4/K5); each lane starts with
-the reading in G12. Fabric FFT/CFAR is not planned - decision gate in G10.
+Spec: `docs/AntSDR_Phase6_Tracking_Antennas_Angle_Guide.md` ("G" = its sections).
+Rewritten 2026-09-28: angle from two switched TX antennas (2T1R TDM), not two
+receivers - 2R2T caps the E200 at 30.72 MSPS = ~6 m bins (G1.2). The phase is for
+learning RF: VNA, soldering, an RF component, antennas. Software lane first; order
+the RF kit (K4, K5) while it runs. Each lane starts with its reading in G13.
+Fabric FFT/CFAR is not planned - decision gate in G11.
 
-- [ ] K0 - 2R2T boot check (G2): passed 2026-09-28 except **RX2 on a real signal**
-      (TX1 -> >= 30 dB pad -> RX2, chirp in the spectrogram). 2R2T caps FS at
-      30.72 MSPS (CMOS interface); details in `CLAUDE.md` "2R2T mode". Gates the RX
-      pair layout.
-- [ ] K1 - profile the host (G3): ms per `process_cpi` stage vs detection count,
+- [x] K0 - 2R2T boot check (2026-09-28): boots, fabric transparent, FS capped at
+      30.72 MSPS, which moved the angle plan to 2T1R. Fallback in G App. B,
+      details in `CLAUDE.md` "2R2T mode".
+- [X] K1 - profile the host (G2): ms per `process_cpi` stage vs detection count,
       plus the GUI slot; fix what grows with detections.
-- [ ] K2 - recorder + replay (G4): raw blocks + index + config + live detections
-      per session; replay reproduces the detections exactly.
-- [ ] K3 - tracker in (r, v) (G5): CV Kalman, GNN, M-of-N; tests (a)-(e), live
+      `offline/profile_cpi.py` (2026-09-28), fabric /8, sawtooth, median ms:
+
+      | K fake targets     |    0 |    5 |   20 |    50 |
+      |--------------------|------|------|------|-------|
+      | prep + FFTs        |  5.3 |  2.5 |  2.5 |   2.5 |
+      | close-in mask + dB |  1.5 |  1.1 |  1.4 |   1.4 |
+      | CFAR               | 19.0 | 18.8 | 18.8 |  18.8 |
+      | NMS                |  1.6 |  1.7 |  1.7 |   1.7 |
+      | sub-bin + dicts    |  0.2 |  0.2 |  0.2 |   0.2 |
+      | `process_cpi`      | 26.6 | 24.0 | 24.4 |  24.4 |
+      | `apply_if`         |  7.0 | 18.5 | 56.1 | 131.1 |
+      | CPI/s bound        | 29.8 | 23.5 | 12.4 |   6.4 |
+
+      Triangle + MTI doubles it: `process_cpi` ~50 ms, `apply_if` 269 ms at K=50.
+      Nothing in `process_cpi` grows with K; `apply_if` (fake targets, ~2.5 ms each,
+      one full-block `np.exp` per target) does. Left (optional speed-up):
+      - [ ] `apply_if`: per-chirp slow phasor x fast phasor, or one matmul for all targets.
+      - [ ] CFAR: 19x19 `convolve` -> two `uniform_filter` box sums (outer - guard).
+      - [ ] Time the GUI slot (`det_table` builds 4 `QTableWidgetItem`s per detection).
+- [X] K2 - recorder + replay (G3): raw blocks + index + config + live detections
+      per session; replay reproduces the detections exactly. Code done 2026-09-29
+      (`online/recorder.py`, `offline/replay.py`, Record checkbox; 12/12
+      `test_recorder.py`, and the worker loop headless against a fake radio in both
+      modes). Visual playback: `python -m offline.playback [dir]`. Left: on the
+      board, a 60 s loopback session with `SDR_LOOPBACK_NOISE_SNR_DB = 0` passes
+      `python -m offline.replay <dir> --check`.
+- [ ] K3 - tracker in (r, v) (G4): CV Kalman, GNN, M-of-N; tests (a)-(e), live
       fake targets tracked.
-- [ ] K4 - single patch on FR4 (G6.3): simulate, fab, S11, back out eps_r.
-- [ ] K5 - columns + bench (G6.4-6.5): TX 1x8, RX 2x(1x8) at lambda/2; S11,
-      coupling, isolation vs spacing, gain +-1 dB, pattern (+ phase vs angle).
-- [ ] K6 - field day 1 (G7, needs K2, weather): COTS first, delay sweep (expect
-      61 +-1), software vs fabric /8, then patches; record everything; flip the
+- [ ] K4 - RF bench kit + VNA basics (G5): order a >= 6 GHz VNA + the soldering
+      kit now; predict, measure and explain owned gear (VNA floor, cables, pads,
+      BPFs, terminations, COTS antenna S11) in `hardware/bench_measurements.md`.
+- [ ] K5 - soldering + J30 header (G6): practice joints, fit the 10-pin header,
+      map GPIO_00-07 from Linux (sysfs gpio 995-1002).
+- [ ] K6 - field day 1 (G7, needs K2, weather): COTS only; delay sweep (expect
+      61 +-1), software vs fabric /8; record everything; flip the
       `FABRIC_DECHIRP_EN` default.
-- [ ] K7 - second RX channel in fabric (G8): second mixer + /8, equal latency,
-      MAGIC FMC5; VUnit + ramp on both channels + splitter sweep. All 2R work runs
-      at FS <= 30.72 MSPS (~25 MHz chirp, ~6 m bins); bringup scripts need an FS/BW
-      option first (they use `RadarConfig()` defaults).
-- [ ] K8 - angle on the host (G9.1): 4-lane capture, phase-difference angle,
-      calibration, x-y view.
-- [ ] K9 - tracker in (x, y) + field day 2 (G9.2): EKF on (r, theta, v_r).
+- [ ] K7 - TX switch (G8): HMC8038 module on the VNA (IL, isolation, S11);
+      `tdm_en` + chirp-pair period + `tx_sel` on J30, MAGIC FMC5, VUnit; bench
+      test with port A -> pad -> RX, port B terminated.
+- [ ] K8 - single patch on FR4 (G9.3): openEMS, fab, solder SMAs, S11, back out
+      eps_r. Order the PCB early; do K7 while it ships.
+- [ ] K9 - columns + bench (G9.4-9.5): TX 2x(1x8) at lambda/2, RX 1x8; S11,
+      coupling, isolation vs spacing, gain +-1 dB, pattern + A-B phase vs angle.
+- [ ] K10 - angle on the host (G10.1): TDM split, Doppler correction,
+      calibration, x-y view; fake targets at +-30 deg within 1 deg at 0 and
+      +-20 m/s.
+- [ ] K11 - tracker in (x, y) + field day 2 (G10.2): EKF on (r, theta, v_r);
+      patches on air, one change at a time.
 
 ---
 
@@ -228,6 +274,7 @@ Part J's job, NF and link budget Part H's, EIRP the law's.
   its motion smear.
 - **FFT + CFAR in fabric**: microsecond detection latency, and detections-only over
   the link (kB/s) makes the E200 a standalone mast sensor.
-- **Second RX channel** for angle: 2R2T doubles the raw rate, hopeless over GbE at
-  full rate, easy after dechirp + decimation. Now Part K (K0, K7-K9): 2R2T is a
-  one-property dtb switch, not a firmware rebuild, and caps FS at 30.72 MSPS.
+- **Second RX channel** for angle: 2R2T is a one-property dtb switch, but caps FS
+  at 30.72 MSPS on the E200 (~6 m bins). Part K takes angle from a fabric-switched
+  TX (2T1R TDM) instead; 2R2T, and 2T2R through TX2, stay the fallback (Phase 6
+  guide, Appendix B).
