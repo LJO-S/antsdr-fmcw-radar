@@ -56,7 +56,7 @@ src/python/                 # import root
                  #   align_down_doppler, apply_doppler_shift, apply_noise, inst_freq,
                  #   spectrogram, CPIContext, build_cpi_context, process_cpi,
                  #   iq_from_raw (int16 block -> complex64; live and replay both use it)
-    gui.py       # RadarDisplay (PySide6 + pyqtgraph), 3 tabs; set_playback_mode() +
+    gui.py       # RadarDisplay (PySide6 + pyqtgraph), 4 tabs; set_playback_mode() +
                  #   PlayerBar (the playback toolbar)
   offline/
     soft_model.py        # SoftFMCWModel — target/noise/impairment sim, __main__ entry
@@ -101,8 +101,9 @@ vhdl_ls.toml       # rust_hdl LSP config, points at firmware/.../projects/e200
 pypkgs.txt         # numpy, matplotlib, pylibiio, scipy, PySide6, pyqtgraph, vunit_hdl
 ```
 
-`src/python/README.md` is **stale** (describes CaptureThread/ProcessingThread classes that
-no longer exist) — trust this file and the code, not that README.
+`src/python/README.md` is a short map of the package (rewritten 2026-09-30); this file stays
+the authority on conventions. `src/python/run_tests.py` runs every `*/test_*.py` suite as
+`python -m`, one process each, failing on a non-zero exit.
 
 ## Running
 
@@ -116,6 +117,7 @@ python -m online.app                # live SDR app (needs AntSDR at SDR_IP)
 python -m online.sdr                # standalone loopback test with matplotlib debug plots
 python -m offline.playback [dir]    # recorded session in the GUI (no board); Open... picks one
 python -m offline.replay <dir> [--check]  # headless replay; --check vs the live detections
+python run_tests.py [-v] [name]     # all board-free test suites (name = substring filter)
 ```
 
 ## Key classes / functions
@@ -153,9 +155,16 @@ python -m offline.replay <dir> [--check]  # headless replay; --check vs the live
   every target in the block; the worker passes the capture timestamp, replay the recorded one.
   `snapshot()` / `restore()` carry the targets incl. `t_spawn` through `session.json`.
 - **`RadarDisplay`** (`common/gui.py`) — Tab 0 "Radar" (up/down RD maps + detections scatter +
-  MTI checkbox), Tab 1 "Signals" (RX/IF spectrograms), Tab 2 "Configuration" (auto-generated
-  config form, TX instantaneous-frequency plot, derived-characteristics table, fake-target
-  editor, RE-CONFIGURE). `QApplication` is owned by the caller, not the widget.
+  MTI checkbox), Tab 1 "History" (last 10-120 s: range vs time and velocity vs time of the
+  up-chirp map, detections as dots), Tab 2 "Signals" (RX/IF spectrograms), Tab 3
+  "Configuration" (auto-generated config form, TX instantaneous-frequency plot,
+  derived-characteristics table, fake-target editor, RE-CONFIGURE). `QApplication` is owned
+  by the caller, not the widget.
+  History: `update(..., a_t=None)` takes the CPI time (None = now, the live app; playback
+  passes the recorded one). Image columns are fixed 0.1 s bins (max-hold), so a varying
+  CPI rate cannot stretch the time axis; images redraw at <= 5 Hz. It restarts on
+  `set_config` and when time runs backwards (a playback seek). The window sets the x range
+  explicitly: pyqtgraph auto-range does not follow the image.
   Two pyqtgraph/Qt gotchas that cost real time: `setClipToView` + auto-downsampling silently
   hides curves whose data is set **before** the first show; and `QDoubleValidator` does *not*
   hard-reject out-of-range input, so `read_cfg_reg` is the actual gate on config values.
@@ -300,8 +309,9 @@ gain ≈ +59 dB at 128 reps on ±1-normalized RX).
   fields dropped, new ones defaulted, both printed). Exact equality holds on the recording
   machine; another CPU can differ in the last bit (numpy SIMD dispatch).
 - **Playback** (`offline/playback.py`) mirrors this: `PlaybackWorker` owns a `replay.Player`
-  and emits the same `results` / `signals`, plus `recorded` (the live detections, drawn as
-  magenta rings, toggleable), `position` and `playing`. GUI -> worker goes through a
+  and emits the same `results` (plus the recorded CPI time, for the History tab) and
+  `signals`, plus `recorded` (the live detections, drawn as magenta rings, toggleable),
+  `position` and `playing`. GUI -> worker goes through a
   `queue.SimpleQueue` (open / play / step / seek / MTI), so no seek is lost or reordered;
   the speed is a plain float. Pacing follows the recorded CPI times (0.25x-4x, or max) and
   never skips a block to catch up (~24 CPIs/s at /8 is the processing bound). Seeking
@@ -654,10 +664,12 @@ inside BOTH license-free regimes.** Two routes, per PTSFS 2025:1 (PTS exemption 
 | SRD, non-specific (§204) | 5.725–5.875 GHz | **25 mW e.i.r.p.** (14 dBm) | nothing |
 | Amateur (§203) | 5.65–5.85 GHz | **200 W p.e.p. fed to the antenna** (antenna gain not counted) | HAREC certificate + call sign |
 
-- SRD route, with the planned 19 dBi TX sector: TX port must be **≤ −5 dBm**. The clamp is now
-  0.0 dB (full power, ~+6.5 dBm) and therefore enforces nothing - for radiated Part G work set
-  `SDR_TX_GAIN_DB` ≈ **−12 dB** by hand, which puts the port at ≈ −5.5 dBm, right at the legal
-  EIRP ceiling. If an unattended/long radiated run is ever left running, put the ceiling back
+- SRD route, with the **16 dBi TX sector** (Ubiquiti AM-5G16-120, the one used in Part G):
+  EIRP = port - losses + 16 dBi <= 14 dBm. Ignoring losses, the port must be **<= -2 dBm**:
+  `SDR_TX_GAIN_DB` ~ **-9 dB** (full power is ~+6.5 dBm). Counting the Part G TX chain (2 m
+  HF240 1.4 dB + VBFZ filter ~1.4 dB), the port may reach +0.8 dBm: **-5.7 dB**, the Part G
+  plan (start at -15 dB and walk up). The clamp is 0.0 dB and enforces nothing, so set the
+  gain by hand. If an unattended/long radiated run is ever left running, put the ceiling
   into `SDR_TX_GAIN_MAX_DB` for that session rather than trusting the field.
 - Amateur route (Swedish HAREC via SSA exam) unlocks the Part H PA legally: a 2 W FPV PA is
   33 dBm, far under the 200 W ceiling. Amateur use is defined as non-commercial "tekniska
@@ -668,16 +680,17 @@ inside BOTH license-free regimes.** Two routes, per PTSFS 2025:1 (PTS exemption 
 - **Part J ceiling is legal, not technical**: synthetic bandwidth is capped at 150 MHz by the SRD
   band (5.725–5.875) or 200 MHz by the amateur band (5.65–5.85, centre ≈ 5.75 GHz) → ~1.0 m or
   ~0.75 m fine resolution. The 330 MHz plan in `TODO.md` is loopback-only.
-- **EMF (SSMFS 2008:18, 10 W/m² public reference level above 2 GHz)**: a 2 W PA into 19 dBi
-  = 158 W EIRP → keep people ~1.1 m out of the main beam; into the 30 dBi dish = 2 kW EIRP → ~4 m.
-  At 200 W into 19 dBi it is ~11 m. Dummy-load discipline until the antennas point away from people.
+- **EMF (SSMFS 2008:18, 10 W/m² public reference level above 2 GHz)**: a 2 W PA into the
+  16 dBi sector = 79 W EIRP -> keep people ~0.8 m out of the main beam; into the 30 dBi dish =
+  2 kW EIRP -> ~4 m. At 200 W into 16 dBi it is ~8 m. Dummy-load discipline until the antennas
+  point away from people.
 - 880–960 MHz (the old 900 MHz carrier) is cellular uplink/downlink — never radiate there.
 
 ## Physical range note
 
-Part G's link budget (0 dBm TX, 19 dBi sector + 30 dBi grid, 1 m² target) gives ~−90 dBm at
-100 m and ~−118 dBm at 500 m against a ~−91.5 dBm noise floor, which coherent processing gain
-turns into ~60 dB / ~35 dB post-processing SNR. **Antennas before PA**: TX power buys range^(1/4),
+Part G's link budget (0 dBm TX, 16 dBi sector + 30 dBi dish (mANT30), 1 m² target) gives
+~-93 dBm at 100 m and ~-121 dBm at 500 m against a ~-91.5 dBm noise floor, which coherent
+processing gain turns into ~57 dB / ~32 dB post-processing SNR. **Antennas before PA**: TX power buys range^(1/4),
 NF buys SNR linearly. The real ceiling on a monostatic 100%-duty FMCW system is TX/RX isolation,
 not the PA and not the law.
 

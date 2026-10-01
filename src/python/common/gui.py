@@ -1,7 +1,8 @@
 import sys
+import time
 import numpy as np
 import dataclasses
-from collections import defaultdict
+from collections import defaultdict, deque
 from pathlib import Path
 from PySide6.QtCore import QRectF, Qt, QLocale, Signal
 from PySide6.QtWidgets import (
@@ -48,14 +49,21 @@ class RadarDisplay(QMainWindow):
     │                         │ [] Up-down detections   │
     └─────────────────────────┴─────────────────────────┘
 
-    Tab 1 - Signals:
+    Tab 1 - History (last N s, detections as dots):
+    ┌─────────────────────────────────────────┐
+    │  Range vs time (RTI)                    │
+    ├─────────────────────────────────────────┤
+    │  Velocity vs time                       │
+    └─────────────────────────────────────────┘
+
+    Tab 2 - Signals:
     ┌─────────────────────────────────────────┐
     │  RX spectrogram                         │
     ├─────────────────────────────────────────┤
     │  IF spectrogram                         │
     └─────────────────────────────────────────┘
 
-    Tab 2 - Config:
+    Tab 3 - Config:
     ┌─────────────────────────┬─────────────┐
     │  Tx Spectrogram         │ Cfg Params  │
     ├─────────────────────────├─────────────┤
@@ -76,6 +84,14 @@ class RadarDisplay(QMainWindow):
         ("duration", "Duration [s]", 10.0),
         ("amp", "Amp", 0.1),
     ]
+
+    # History tab: image columns are fixed time bins (the strongest CPI in each wins),
+    # so a varying CPI rate cannot stretch the time axis. Images redraw at most 5 Hz;
+    # the data is taken every CPI.
+    HISTORY_WINDOWS_S = [10, 30, 60, 120]
+    HISTORY_BIN_S = 0.1
+    HISTORY_REDRAW_S = 0.2
+    HISTORY_FLOOR_DB = -80.0  # the RD maps' display floor
 
     def __init__(self, a_config):
         super().__init__()
@@ -186,7 +202,10 @@ class RadarDisplay(QMainWindow):
         self.det_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         radar_layout.addWidget(self.det_table, stretch=1)
 
-        # --------- Tab 1: Signals ---------
+        # --------- Tab 1: History ---------
+        self._build_history_tab(tabs)
+
+        # --------- Tab 2: Signals ---------
         signals_tab = QWidget()
         tabs.addTab(signals_tab, "Signals")
         signals_layout = QVBoxLayout(signals_tab)
@@ -202,7 +221,7 @@ class RadarDisplay(QMainWindow):
             setattr(self, f"{attr}_spec_image", image)
             signals_layout.addWidget(plot)
 
-        # --------- Tab 2: Config ---------
+        # --------- Tab 3: Config ---------
         config_tab = QWidget()
         tabs.addTab(config_tab, "Configuration")
         config_layout = QHBoxLayout(config_tab)
@@ -492,7 +511,11 @@ class RadarDisplay(QMainWindow):
             maxYRange=r_max - r_min,
         )
 
-    def update(self, a_rd_up_db, a_rd_down_db, a_ranges, a_velocities, a_targets):
+    def update(
+        self, a_rd_up_db, a_rd_down_db, a_ranges, a_velocities, a_targets, a_t=None
+    ):
+        """a_t: the CPI's time in seconds (playback passes the recorded one); None =
+        now, which is what the live app uses."""
         # -------------------------
         # Update RD Maps
         # -------------------------
@@ -559,6 +582,142 @@ class RadarDisplay(QMainWindow):
                     table_item.setBackground(QBrush(QColor("#5c2a2a")))
                 self.det_table.setItem(i, col, table_item)
 
+        self._update_history(
+            time.monotonic() if a_t is None else a_t,
+            a_rd_up_db,
+            a_ranges,
+            a_velocities,
+            a_targets,
+        )
+
+    # ---------------------------------
+    # History tab
+    # ---------------------------------
+    def _build_history_tab(self, a_tabs):
+        tab = QWidget()
+        a_tabs.addTab(tab, "History")
+        layout = QVBoxLayout(tab)
+
+        row = QHBoxLayout()
+        row.addWidget(QLabel("Window"))
+        self.history_window_box = QComboBox()
+        self.history_window_box.addItems([f"{s} s" for s in self.HISTORY_WINDOWS_S])
+        self.history_window_box.setCurrentIndex(1)  # 30 s
+        self.history_window_box.currentIndexChanged.connect(
+            lambda _: self._reset_history()
+        )
+        row.addWidget(self.history_window_box)
+        row.addWidget(
+            QLabel("Strongest up-chirp cell per range bin (top), per velocity bin")
+        )
+        row.addStretch(1)
+        layout.addLayout(row)
+
+        def _plot(a_title, a_label, a_units):
+            plot = pg.PlotWidget(title=a_title)
+            plot.setLabel("left", a_label, units=a_units)
+            plot.setLabel("bottom", "Time relative to the newest CPI", units="s")
+            image = pg.ImageItem()
+            image.setColorMap(pg.colormap.get("CET-L9"))
+            plot.addItem(image)
+            dets = pg.ScatterPlotItem(
+                size=5, pen=pg.mkPen(None), brush=pg.mkBrush(255, 255, 0, 220)
+            )
+            plot.addItem(dets)
+            return plot, image, dets
+
+        self.rti_plot, self.rti_image, self.rti_dets = _plot(
+            "Range vs time", "Range", "m"
+        )
+        self.vti_plot, self.vti_image, self.vti_dets = _plot(
+            "Velocity vs time", "Velocity", "m/s"
+        )
+        self.vti_plot.setXLink(self.rti_plot)
+        layout.addWidget(self.rti_plot, stretch=3)
+        layout.addWidget(self.vti_plot, stretch=2)
+        self._reset_history()
+
+    def _reset_history(self):
+        """Empty the history. The next CPI sizes the buffers (the bin counts change
+        with the config)."""
+        self._hist_window_s = self.HISTORY_WINDOWS_S[
+            self.history_window_box.currentIndex()
+        ]
+        self._hist_rti = None  # (n_cols, n_range) dB, oldest column first
+        self._hist_vti = None  # (n_cols, n_velocity)
+        self._hist_bin = None  # time bin of the newest column
+        self._hist_t = None  # time of the newest CPI
+        self._hist_axes = None  # the range/velocity axes the buffers were built for
+        self._hist_dets = deque()  # (t, r, v)
+        self._hist_last_draw = 0.0
+        self.rti_image.clear()
+        self.vti_image.clear()
+        self.rti_dets.setData(pos=[])
+        self.vti_dets.setData(pos=[])
+        # The window is the time axis; auto-range would not follow the image anyway
+        self.rti_plot.enableAutoRange(x=False)
+        self.rti_plot.setXRange(-self._hist_window_s, self.HISTORY_BIN_S, padding=0)
+
+    def _update_history(self, a_t, a_rd_db, a_ranges, a_velocities, a_targets):
+        axes = (
+            len(a_ranges),
+            float(a_ranges[0]),
+            float(a_ranges[-1]),
+            len(a_velocities),
+            float(a_velocities[0]),
+            float(a_velocities[-1]),
+        )
+        # Time going backwards = a playback seek; new axes = a new config
+        if self._hist_t is not None and (a_t < self._hist_t or axes != self._hist_axes):
+            self._reset_history()
+        n_cols = int(round(self._hist_window_s / self.HISTORY_BIN_S))
+        new_bin = int(a_t // self.HISTORY_BIN_S)
+        if self._hist_rti is None:
+            self._hist_rti = np.full(
+                (n_cols, len(a_ranges)), self.HISTORY_FLOOR_DB, np.float32
+            )
+            self._hist_vti = np.full(
+                (n_cols, len(a_velocities)), self.HISTORY_FLOOR_DB, np.float32
+            )
+            self._hist_bin = new_bin
+            self._hist_axes = axes
+        shift = min(new_bin - self._hist_bin, n_cols)
+        if shift > 0:
+            for buf in (self._hist_rti, self._hist_vti):
+                buf[:-shift] = buf[shift:].copy()
+                buf[-shift:] = self.HISTORY_FLOOR_DB
+            self._hist_bin = new_bin
+        # RD maps are (velocity, range): strongest cell per range bin and per velocity
+        # bin, max-held within the newest time bin
+        np.maximum(self._hist_rti[-1], a_rd_db.max(axis=0), out=self._hist_rti[-1])
+        np.maximum(self._hist_vti[-1], a_rd_db.max(axis=1), out=self._hist_vti[-1])
+        self._hist_t = a_t
+
+        for target in a_targets:
+            self._hist_dets.append((a_t, target["r"], target["v"]))
+        while self._hist_dets and self._hist_dets[0][0] < a_t - self._hist_window_s:
+            self._hist_dets.popleft()
+
+        now = time.monotonic()
+        if now - self._hist_last_draw >= self.HISTORY_REDRAW_S:
+            self._draw_history()
+            self._hist_last_draw = now
+
+    def _draw_history(self):
+        # x = seconds relative to the newest CPI; the newest column ends where its
+        # time bin ends, just right of 0
+        x_right = (self._hist_bin + 1) * self.HISTORY_BIN_S - self._hist_t
+        x_left = x_right - self._hist_window_s
+        n_r, r0, r1, n_v, v0, v1 = self._hist_axes
+        self.rti_image.setImage(self._hist_rti, levels=(self.HISTORY_FLOOR_DB, 0))
+        self.rti_image.setRect(QRectF(x_left, r0, self._hist_window_s, r1 - r0))
+        self.vti_image.setImage(self._hist_vti, levels=(self.HISTORY_FLOOR_DB, 0))
+        self.vti_image.setRect(QRectF(x_left, v0, self._hist_window_s, v1 - v0))
+        dets = np.array(self._hist_dets, dtype=float).reshape(-1, 3)
+        dt = dets[:, 0] - self._hist_t
+        self.rti_dets.setData(x=dt, y=dets[:, 1])
+        self.vti_dets.setData(x=dt, y=dets[:, 2])
+
     def update_signals(self, a_rx_spec, a_if_spec, a_t, a_f):
         rect = QRectF(
             float(a_t[0]),
@@ -624,6 +783,8 @@ class RadarDisplay(QMainWindow):
         # Sawtooth never writes the down map: do not leave a stale triangle one up
         if not a_config.TRIANGLE_EN:
             self.rd_down_image.clear()
+        # A new config (or a new playback session) starts a new history
+        self._reset_history()
 
         # Fabric IF mode: captured array is IF so hide IF spectrogram
         self.if_spec_plot.setVisible(not a_config.FABRIC_DECHIRP_EN)

@@ -29,7 +29,8 @@ class PlaybackWorker(QThread):
     # --------------------------------
     # Class Attributes
     # --------------------------------
-    results = Signal(object, object, object, object, object)  # as RadarWorker
+    # As RadarWorker, plus the recorded CPI time (the History tab's time axis)
+    results = Signal(object, object, object, object, object, float)
     signals = Signal(object, object, object, object)  # rx, if, t, f
     recorded = Signal(object)  # the CPI's recorded targets, or None
     error = Signal(str)
@@ -136,7 +137,7 @@ class PlaybackWorker(QThread):
                 continue
             up, down, targets, ranges, velocities, if_signal = frame.outputs
             recorded = frame.recorded["targets"] if frame.recorded else None
-            self.results.emit(up, down, targets, ranges, velocities)
+            self.results.emit(up, down, targets, ranges, velocities, frame.t)
             self.recorded.emit(recorded)
             self.position.emit(
                 {
@@ -258,8 +259,8 @@ def build_app():
 
     # Worker -> GUI: slots run on the GUI thread (Qt queues cross-thread emits)
     worker.results.connect(
-        lambda rd_map_db_up, rd_map_db_down, detections, ranges, velocities: display.update(
-            rd_map_db_up, rd_map_db_down, ranges, velocities, detections
+        lambda up, down, detections, ranges, velocities, t: display.update(
+            up, down, ranges, velocities, detections, a_t=t
         )
     )
     worker.signals.connect(

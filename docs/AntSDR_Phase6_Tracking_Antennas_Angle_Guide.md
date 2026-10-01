@@ -90,7 +90,7 @@ stays documented as the fallback.
 
 Under the 25 mW SRD EIRP cap, **TX antenna gain and TX-side loss are free**: a
 lower-gain TX antenna or the switch's insertion loss just takes more TX port power,
-and the E200 has headroom (~+6.5 dBm vs the -5 dBm used with the 19 dBi sector).
+and the E200 has headroom (~+6.5 dBm vs the ~-2 dBm allowed with the 16 dBi sector).
 Only one TX antenna radiates at a time, so the cap applies per antenna. **RX gain is
 the cost**: range goes as `G_rx^(1/4)`.
 

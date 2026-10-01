@@ -117,7 +117,10 @@ Sourcing (2026-07: Amazon prices for these are not competitive - skip it):
 - All are N-female or RP-SMA - check the connector before ordering pigtails.
 
 ### Tx antenna: sector, ~19 dBi 120 deg (~600-1000 SEK)
-- Ubiquiti AM-5G19-120: used ~$100 / EUR 89 on eBay, new $129-139
+- **BOUGHT: Ubiquiti AM-5G16-120** (not the 19 dBi): 16 dBi, 5.10-5.85 GHz, azimuth
+  120 deg (V) / 137 deg (H), elevation 8 deg, 4 deg electrical downtilt. SRD port limit
+  with it: see `CLAUDE.md` "Regulatory constraints".
+- Planned: Ubiquiti AM-5G19-120: used ~$100 / EUR 89 on eBay, new $129-139
   ([eBay listings](https://www.ebay.com/itm/284762727987),
   [UI store](https://store.ui.com/us/en/products/am-5g2)). Plentiful used WISP
   stock on eBay.de/Blocket - haggle.
@@ -134,7 +137,7 @@ Sourcing (2026-07: Amazon prices for these are not competitive - skip it):
   SMA" listings are usually RG316/RG174 (our Wuerth jumper: ~3.9 dB/m).
 - RX loss is the expensive side (sits ahead of the RX, adds ~dB-for-dB to the
   NF ~5 dB assumed in Part G's budget). TX loss is free - TX port power is
-  clamped to <= -5 dBm by the SRD EIRP budget anyway. Phase H moots RX cable loss
+  capped at ~-2 dBm by the SRD EIRP budget with the 16 dBi sector anyway. Phase H moots RX cable loss
   once the LNA sits at the antenna.
 - Length 1-2 m: antennas >= 1-2 m apart on separate tripods, E200 between them -
   check the geometry, 1.25 m per side needs the radio centered and low.

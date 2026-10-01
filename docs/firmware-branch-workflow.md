@@ -14,12 +14,13 @@ antsdr-fmcw-radar                      (this repo)
      -> plutosdr-fw/   = LJO-S/adi-plutosdr-fw      branch e200-custom
          -> hdl/       = LJO-S/adi-libiio-hdl       branch e200-custom
          -> linux/     = LJO-S/adi-linux            branch e200-custom
-         -> linux/     = LJO-S/adi-u-boot-xlnx      branch e200-custom
+         -> u-boot-xlnx/ = LJO-S/adi-u-boot-xlnx    branch e200-custom
          -> buildroot/                              (upstream, pinned, no fork)
 ```
 
-Almost all custom work lands in `hdl` (`projects/e200/`: rx_tap.vhd,
-system_bd.tcl, Makefile, system_constr.xdc). Occasionally `linux`
+Almost all custom work lands in `hdl` (`projects/e200/`: `src/` with
+`fmcw_core.vhd` and its blocks, `test/` with the VUnit testbenches,
+system_bd.tcl, system_top.v, Makefile, system_constr.xdc). Occasionally `linux`
 (zynq-e200.dtsi for device-tree nodes) and `plutosdr-fw` (top Makefile).
 
 ## The mental model (the one thing to internalize)
@@ -49,7 +50,7 @@ fact: "the submodule should be at commit SHA X" (a gitlink). Consequences:
   always the thing a fresh clone should get (`.gitmodules` `branch =` entries
   point at it).
 - Feature work happens on short-lived branches in `hdl` only:
-  `feature/rx-tap`, `feature/axi-regs`, `feature/chirp-nco`, `feature/deramp`, ...
+  `feature/rx-tap`, `feature/chirp-nco`, `feature/fabric-dechirp`, `feature/decimate`, ...
   Branch from `e200-custom`, commit at every working milestone, merge back
   when the feature is proven on hardware.
 - `plutosdr-fw` and `firmware` do NOT get per-feature branches. They stay on

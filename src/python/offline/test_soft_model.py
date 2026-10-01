@@ -168,3 +168,6 @@ if __name__ == "__main__":
 
     print(f"\nFrame sync (sawtooth): {'PASS' if result_sync_saw else 'FAIL'}")
     print(f"Frame sync (triangle): {'PASS' if result_sync_tri else 'FAIL'}")
+    # Non-zero exit on any FAIL, so run_tests.py sees it
+    if not all((result_saw, result_tri, result_sync_saw, result_sync_tri)):
+        raise SystemExit(1)
