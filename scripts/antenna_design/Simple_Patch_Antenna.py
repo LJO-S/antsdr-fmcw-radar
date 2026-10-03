@@ -1,0 +1,342 @@
+# -*- coding: utf-8 -*-
+"""
+Inset-fed patch antenna, 5.8 GHz on FR4 (Part K8, guide 9.3)
+
+Based on the openEMS "Simple Patch Antenna" tutorial, with the probe feed replaced by a
+50 Ohm microstrip line from the board edge into an inset notch: the board as it will be
+fabricated, with the edge SMA at the port.
+
+Tested with
+ - python 3.14
+ - openEMS v0.37
+
+(c) 2015-2023 Thorsten Liebig <thorsten.liebig@gmx.de>
+    04-Jan-2026: modified to use matplotlib.pyplot instead of pylab
+
+"""
+
+### Import Libraries
+import os, tempfile
+import numpy as np
+import matplotlib.pyplot as plt  # pip install matplotlib
+
+from CSXCAD import ContinuousStructure
+from openEMS import openEMS
+from openEMS.physical_constants import *
+
+### General parameter setup
+Sim_Path = os.path.join(tempfile.gettempdir(), "Patch_Inset")
+
+post_proc_only = False  # set to True to skip the simulation and only do post-processing
+
+
+f0 = 5.8e9  # center frequency
+unit = 1e-3  # all dimensions in mm
+
+# substrate setup
+substrate_epsR = 4.4
+# substrate_kappa = 1e-3 * 2 * np.pi * 2.45e9 * EPS0 * substrate_epsR
+substrate_kappa = 0.02 * 2 * np.pi * f0 * EPS0 * substrate_epsR  # tan(delta) = 0.02
+substrate_thickness = 1.6  # h
+substrate_cells = 4
+
+
+# --------------------
+# Patch dimensions (Balanis transmission-line model, all lengths in mm)
+# --------------------
+# 1. Width W (non-resonant dimension)
+#  W = c / (2 * f0) * sqrt(2 / (epsR + 1))
+W = C0 / (2 * f0) * np.sqrt(2 / (substrate_epsR + 1)) / unit
+
+# 2. Effective dielectric constant (valid for W / h > 1)
+#  eps_eff = (epsR + 1) / 2 + (epsR - 1) / 2 * (1 + 12 * h / W) ** (-0.5)
+eps_eff = (substrate_epsR + 1) / 2 + (substrate_epsR - 1) / 2 * (
+    1 + 12 * substrate_thickness / W
+) ** (-0.5)
+
+# 3. Fringing length extension
+#  delta_L = 0.412 * h * (eps_eff + 0.3) * (W / h + 0.264) / ((eps_eff - 0.258) * (W / h + 0.8))
+delta_L = (
+    0.412
+    * substrate_thickness
+    * (eps_eff + 0.3)
+    * (W / substrate_thickness + 0.264)
+    / ((eps_eff - 0.258) * (W / substrate_thickness + 0.8))
+)
+
+# 4. Physical length L (resonant dimension)
+#  L = c / (2 * f0 * sqrt(eps_eff)) - 2 * delta_L
+L = C0 / (2 * f0 * np.sqrt(eps_eff)) / unit - 2 * delta_L
+
+# In this script x is the resonant direction (the feed runs along x),
+# so Balanis' L goes in x and W goes in y.
+# patch width (resonant length) in x-direction
+patch_width = L
+patch_width = 11.858
+# patch length in y-direction
+patch_length = W
+
+# substrate / ground plane with a margin around the patch
+# (rule of thumb minimum is ~3*h per side; more makes the result less ground-size dependent)
+gnd_margin = 20
+substrate_width = patch_width + 2 * gnd_margin
+substrate_length = patch_length + 2 * gnd_margin
+
+
+# --------------------
+# Feed: 50 Ohm microstrip from the board edge (-x) into an inset notch
+# --------------------
+feed_R = 50  # port and reference impedance
+
+
+def msl_width(z0, eps_r, h):
+    """Microstrip width for impedance z0 (Pozar 3.197, Hammerstad synthesis)."""
+    A = z0 / 60 * np.sqrt((eps_r + 1) / 2) + (eps_r - 1) / (eps_r + 1) * (
+        0.23 + 0.11 / eps_r
+    )
+    w_h = 8 * np.exp(A) / (np.exp(2 * A) - 2)
+    if w_h > 2:
+        B = 377 * np.pi / (2 * z0 * np.sqrt(eps_r))
+        w_h = (
+            2
+            / np.pi
+            * (
+                B
+                - 1
+                - np.log(2 * B - 1)
+                + (eps_r - 1) / (2 * eps_r) * (np.log(B - 1) + 0.39 - 0.61 / eps_r)
+            )
+        )
+    return w_h * h
+
+
+feed_width = msl_width(feed_R, substrate_epsR, substrate_thickness)
+# Inset depth from the patch edge. Inset feeds follow Rin(y0) ~ R_edge * cos^4(pi * y0 / L)
+# (Basilio et al. 2001), not the probe's cos^2. Tune with the hint printed at the end.
+inset_depth = 3.41
+inset_gap = 1.0  # notch clearance each side of the line
+
+x_board = -substrate_width / 2  # board edge: SMA, port and feed resistor
+x_patch = -patch_width / 2  # radiating edge on the feed side
+x_inset = x_patch + inset_depth  # feed point
+
+print(
+    "W = {:.3f} mm, eps_eff = {:.4f}, delta_L = {:.4f} mm, L = {:.3f} mm, "
+    "50 Ohm line = {:.3f} mm".format(W, eps_eff, delta_L, L, feed_width)
+)
+
+# size of the simulation box
+SimBox = np.array([110, 110, 90])
+
+# setup FDTD parameter & excitation function
+fc = 2e9  # 20 dB corner frequency
+
+### FDTD setup
+## * Limit the simulation to 30k timesteps
+## * Define a reduced end criteria of -40dB
+FDTD = openEMS(NrTS=30000, EndCriteria=1e-4)
+FDTD.SetGaussExcite(f0, fc)
+FDTD.SetBoundaryCond(["MUR", "MUR", "MUR", "MUR", "MUR", "MUR"])
+
+
+CSX = ContinuousStructure()
+FDTD.SetCSX(CSX)
+mesh = CSX.GetGrid()
+mesh.SetDeltaUnit(unit)
+# lambda/20 inside the substrate at the highest simulated frequency
+mesh_res = C0 / (f0 + fc) / unit / np.sqrt(substrate_epsR) / 30
+edge_res = mesh_res / 2
+
+
+def add_metal_edge(direction, pos, metal_side):
+    """Thirds rule: one mesh line 1/3 inside the metal edge, one 2/3 outside (metal_side +-1)."""
+    mesh.AddLine(
+        direction,
+        [pos + metal_side * edge_res / 3, pos - metal_side * 2 * edge_res / 3],
+    )
+
+
+### Generate properties, primitives and mesh-grid
+# Manual mesh: the MSL port needs the grid to exist before it is created.
+mesh.AddLine("x", [-SimBox[0] / 2, SimBox[0] / 2, x_board, substrate_width / 2])
+mesh.AddLine(
+    "y", [-SimBox[1] / 2, SimBox[1] / 2, -substrate_length / 2, substrate_length / 2]
+)
+mesh.AddLine("z", [-SimBox[2] / 3, SimBox[2] * 2 / 3])
+add_metal_edge("x", x_patch, +1)
+add_metal_edge("x", x_inset, +1)
+add_metal_edge("x", patch_width / 2, -1)
+for s in (+1, -1):
+    add_metal_edge("y", s * feed_width / 2, -s)
+    add_metal_edge("y", s * (feed_width / 2 + inset_gap), +s)
+    add_metal_edge("y", s * patch_length / 2, -s)
+# add extra cells to discretize the substrate thickness
+mesh.AddLine("z", np.linspace(0, substrate_thickness, substrate_cells + 1))
+mesh.SmoothMeshLines("all", mesh_res, 1.4)
+
+# create patch: body beyond the feed point plus two fingers either side of the notch
+patch = CSX.AddMetal("patch")  # create a perfect electric conductor (PEC)
+z = substrate_thickness
+patch.AddBox(
+    priority=10,
+    start=[x_inset, -patch_length / 2, z],
+    stop=[patch_width / 2, patch_length / 2, z],
+)
+for s in (+1, -1):
+    patch.AddBox(
+        priority=10,
+        start=[x_patch, s * (feed_width / 2 + inset_gap), z],
+        stop=[x_inset, s * patch_length / 2, z],
+    )
+# feed line inside the notch (the port below draws the rest, out to the board edge)
+patch.AddBox(
+    priority=10, start=[x_patch, -feed_width / 2, z], stop=[x_inset, feed_width / 2, z]
+)
+
+# create substrate
+substrate = CSX.AddMaterial("substrate", epsilon=substrate_epsR, kappa=substrate_kappa)
+start = [-substrate_width / 2, -substrate_length / 2, 0]
+stop = [substrate_width / 2, substrate_length / 2, substrate_thickness]
+substrate.AddBox(priority=0, start=start, stop=stop)
+
+# create ground (same size as substrate)
+gnd = CSX.AddMetal("gnd")  # create a perfect electric conductor (PEC)
+start[2] = 0
+stop[2] = 0
+gnd.AddBox(start, stop, priority=10)
+
+# MSL port on the uniform line from the board edge to the patch: excitation and a 50 Ohm
+# feed resistor at the board edge (the SMA), voltage/current probes halfway along the line.
+port = FDTD.AddMSLPort(
+    1,
+    patch,
+    [x_board, -feed_width / 2, substrate_thickness],
+    [x_patch, feed_width / 2, 0],
+    "x",
+    "z",
+    excite=-1,
+    Feed_R=feed_R,
+    priority=10,
+)
+
+# Add the nf2ff recording box
+nf2ff = FDTD.CreateNF2FFBox()
+
+### Run the simulation
+if 1:  # debugging only
+    CSX_file = os.path.join(Sim_Path, "patch_inset.xml")
+    if not os.path.exists(Sim_Path):
+        os.mkdir(Sim_Path)
+    CSX.Write2XML(CSX_file)
+    from CSXCAD import AppCSXCAD_BIN
+
+    os.system(AppCSXCAD_BIN + ' "{}"'.format(CSX_file))
+
+if not post_proc_only:
+    FDTD.Run(Sim_Path, cleanup=True)
+
+
+### Post-processing and plotting
+f = np.linspace(max(1e9, f0 - fc), f0 + fc, 401)
+# Move the reference plane from the board edge to the feed point, along the extracted line.
+# S11 at the board edge (what the VNA sees) differs only by the line loss, twice.
+port.CalcPort(Sim_Path, f, ref_plane_shift=x_inset - x_board)
+Z_line = port.Z_ref[np.argmin(np.abs(f - f0))]
+Zin = port.uf_tot / port.if_tot
+s11 = (Zin - feed_R) / (Zin + feed_R)
+s11_dB = 20.0 * np.log10(np.abs(s11))
+print(
+    "Line impedance at {:.2f} GHz: {:.1f} {:+.1f}j Ohm".format(
+        f0 / 1e9, Z_line.real, Z_line.imag
+    )
+)
+
+
+fig, axis = plt.subplots(num="S11", tight_layout=True)
+axis.plot(f / 1e9, s11_dB, "k-", linewidth=2, label="S11")
+axis.axvspan(5.75, 5.85, color="g", alpha=0.15, label="5.75-5.85 GHz")
+axis.grid()
+axis.set_xmargin(0)
+axis.set_xlabel("Frequency (GHz)")
+# axis.set_ylim([-30, 10])
+axis.set_ylabel("S-Parameter (dB)")
+axis.set_title("Input matching")
+axis.legend()
+
+
+idx = np.where((s11_dB < -10) & (s11_dB == np.min(s11_dB)))[0]
+if not len(idx) == 1:
+    print("No resonance frequency found for far-field calulation")
+else:
+    f_res = f[idx[0]]
+    theta = np.arange(-180.0, 180.0, 2.0)
+    phi = [0.0, 90.0]
+    nf2ff_res = nf2ff.CalcNF2FF(Sim_Path, f_res, theta, phi, center=[0, 0, 1e-3])
+
+    E_norm = 20.0 * np.log10(
+        nf2ff_res.E_norm[0] / np.max(nf2ff_res.E_norm[0])
+    ) + 10.0 * np.log10(nf2ff_res.Dmax[0])
+    fig, axis = plt.subplots(num="Pattern", tight_layout=True)
+    axis.plot(theta, np.squeeze(E_norm[:, 0]), "k-", linewidth=2, label="xz-plane")
+    axis.plot(theta, np.squeeze(E_norm[:, 1]), "r--", linewidth=2, label="yz-plane")
+    axis.grid()
+    axis.set_xmargin(0)
+    axis.set_xlabel("Theta (deg))")
+    axis.set_ylabel("Directivity (dBi))")
+    axis.set_title("Frequency: {} GHz".format(f_res / 1e9))
+    axis.legend()
+
+    # -10 dB bandwidth around the match
+    lo, hi = idx[0], idx[0]
+    while lo > 0 and s11_dB[lo - 1] < -10:
+        lo -= 1
+    while hi < len(f) - 1 and s11_dB[hi + 1] < -10:
+        hi += 1
+    print(
+        "S11 < -10 dB from {:.3f} to {:.3f} GHz ({:.0f} MHz), Dmax = {:.1f} dBi".format(
+            f[lo] / 1e9,
+            f[hi] / 1e9,
+            (f[hi] - f[lo]) / 1e6,
+            10 * np.log10(nf2ff_res.Dmax[0]),
+        )
+    )
+
+
+# Tuning hints for the next run:
+# - length: scale the effective length L + 2*delta_L by f_match / f0, where f_match is the
+#   S11 minimum
+# - inset: fit R_edge in Rin(y0) = R_edge * cos^4(pi * y0 / L) to the simulated resistance
+#   at resonance. Any series reactance X there is cancelled just above resonance, where the
+#   resistance is lower, so aim for R_peak = (feed_R^2 + X^2) / feed_R.
+i_peak = np.argmax(np.real(Zin))
+f_peak, R_peak, X_peak = f[i_peak], np.real(Zin[i_peak]), np.imag(Zin[i_peak])
+f_match = f[np.argmin(s11_dB)]
+L_new = (patch_width + 2 * delta_L) * f_match / f0 - 2 * delta_L
+R_edge = R_peak / np.cos(np.pi * inset_depth / patch_width) ** 4
+R_target = (feed_R**2 + X_peak**2) / feed_R
+inset_new = L_new / np.pi * np.arccos(min(1.0, R_target / R_edge) ** 0.25)
+print(
+    "Resonance (max Re{{Zin}}): f = {:.3f} GHz, Zin = {:.1f} {:+.1f}j Ohm; "
+    "min S11 = {:.1f} dB at {:.3f} GHz".format(
+        f_peak / 1e9, R_peak, X_peak, np.min(s11_dB), f_match / 1e9
+    )
+)
+print(
+    "-> next: patch L = {:.3f} mm (now {:.3f}), inset_depth = {:.2f} mm (now {:.2f}) "
+    "(fitted R_edge = {:.0f} Ohm, target R_peak = {:.0f} Ohm)".format(
+        L_new, patch_width, inset_new, inset_depth, R_edge, R_target
+    )
+)
+
+fig, axis = plt.subplots(num="Zin", tight_layout=True)
+axis.plot(f / 1e9, np.real(Zin), "k-", linewidth=2, label="$\\Re\\{Z_{in}\\}$")
+axis.plot(f / 1e9, np.imag(Zin), "r--", linewidth=2, label="$\\Im\\{Z_{in}\\}$")
+axis.grid()
+axis.set_xmargin(0)
+axis.set_xlabel("Frequency (GHz)")
+axis.set_ylabel("Zin at the feed point (Ohm)")
+axis.set_title("Input Impedance")
+axis.legend()
+
+# show all plots
+plt.show()
