@@ -81,7 +81,7 @@ Fabric FFT/CFAR is not planned - decision gate in G11.
 - [x] K0 - 2R2T boot check (2026-09-28): boots, fabric transparent, FS capped at
       30.72 MSPS, which moved the angle plan to 2T1R. Fallback in G App. B,
       details in `CLAUDE.md` "2R2T mode".
-- [X] K1 - profile the host (G2): ms per `process_cpi` stage vs detection count,
+- [x] K1 - profile the host (G2): ms per `process_cpi` stage vs detection count,
       plus the GUI slot; fix what grows with detections.
       `offline/profile_cpi.py` (2026-09-28), fabric /8, sawtooth, median ms:
 
@@ -98,11 +98,11 @@ Fabric FFT/CFAR is not planned - decision gate in G11.
 
       Triangle + MTI doubles it: `process_cpi` ~50 ms, `apply_if` 269 ms at K=50.
       Nothing in `process_cpi` grows with K; `apply_if` (fake targets, ~2.5 ms each,
-      one full-block `np.exp` per target) does. Left (optional speed-up):
+      one full-block `np.exp` per target) does. Since fake targets are optional, these are all optional:
       - [ ] `apply_if`: per-chirp slow phasor x fast phasor, or one matmul for all targets.
       - [ ] CFAR: 19x19 `convolve` -> two `uniform_filter` box sums (outer - guard).
       - [ ] Time the GUI slot (`det_table` builds 4 `QTableWidgetItem`s per detection).
-- [X] K2 - recorder + replay (G3): raw blocks + index + config + live detections
+- [x] K2 - recorder + replay (G3): raw blocks + index + config + live detections
       per session; replay reproduces the detections exactly. Code done 2026-09-29
       (`online/recorder.py`, `offline/replay.py`, Record checkbox; 12/12
       `test_recorder.py`, and the worker loop headless against a fake radio in both
