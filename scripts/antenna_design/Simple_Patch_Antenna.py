@@ -28,14 +28,13 @@ from openEMS.physical_constants import *
 Sim_Path = os.path.join(tempfile.gettempdir(), "Patch_Inset")
 
 post_proc_only = False  # set to True to skip the simulation and only do post-processing
-
+GUI = False  # set to True to show the CSXCAD GUI for debugging
 
 f0 = 5.8e9  # center frequency
 unit = 1e-3  # all dimensions in mm
 
 # substrate setup
-substrate_epsR = 4.4
-# substrate_kappa = 1e-3 * 2 * np.pi * 2.45e9 * EPS0 * substrate_epsR
+substrate_epsR = 4.6  # 4.2, 4.4, 4.6 for FR4, 2.2 for Rogers 5880
 substrate_kappa = 0.02 * 2 * np.pi * f0 * EPS0 * substrate_epsR  # tan(delta) = 0.02
 substrate_thickness = 1.6  # h
 substrate_cells = 4
@@ -64,15 +63,15 @@ delta_L = (
     / ((eps_eff - 0.258) * (W / substrate_thickness + 0.8))
 )
 
-# 4. Physical length L (resonant dimension)
+# 4. Physical length L (resonant dimension) reference
 #  L = c / (2 * f0 * sqrt(eps_eff)) - 2 * delta_L
 L = C0 / (2 * f0 * np.sqrt(eps_eff)) / unit - 2 * delta_L
 
 # In this script x is the resonant direction (the feed runs along x),
 # so Balanis' L goes in x and W goes in y.
 # patch width (resonant length) in x-direction
-patch_width = L
-patch_width = 11.858
+patch_width = 11.528
+print("Theoretical L = {:.3f} mm vs actual L = {:.3f} mm".format(L, patch_width))
 # patch length in y-direction
 patch_length = W
 
@@ -81,7 +80,6 @@ patch_length = W
 gnd_margin = 20
 substrate_width = patch_width + 2 * gnd_margin
 substrate_length = patch_length + 2 * gnd_margin
-
 
 # --------------------
 # Feed: 50 Ohm microstrip from the board edge (-x) into an inset notch
@@ -113,7 +111,7 @@ def msl_width(z0, eps_r, h):
 feed_width = msl_width(feed_R, substrate_epsR, substrate_thickness)
 # Inset depth from the patch edge. Inset feeds follow Rin(y0) ~ R_edge * cos^4(pi * y0 / L)
 # (Basilio et al. 2001), not the probe's cos^2. Tune with the hint printed at the end.
-inset_depth = 3.41
+inset_depth = 3.67
 inset_gap = 1.0  # notch clearance each side of the line
 
 x_board = -substrate_width / 2  # board edge: SMA, port and feed resistor
@@ -121,8 +119,10 @@ x_patch = -patch_width / 2  # radiating edge on the feed side
 x_inset = x_patch + inset_depth  # feed point
 
 print(
-    "W = {:.3f} mm, eps_eff = {:.4f}, delta_L = {:.4f} mm, L = {:.3f} mm, "
-    "50 Ohm line = {:.3f} mm".format(W, eps_eff, delta_L, L, feed_width)
+    "W = {:.3f} mm, eps_R = {:.4f}, eps_eff = {:.4f}, delta_L = {:.4f} mm, L = {:.3f} mm, "
+    "50 Ohm line = {:.3f} mm".format(
+        patch_length, substrate_epsR, eps_eff, delta_L, patch_width, feed_width
+    )
 )
 
 # size of the simulation box
@@ -144,7 +144,7 @@ FDTD.SetCSX(CSX)
 mesh = CSX.GetGrid()
 mesh.SetDeltaUnit(unit)
 # lambda/20 inside the substrate at the highest simulated frequency
-mesh_res = C0 / (f0 + fc) / unit / np.sqrt(substrate_epsR) / 30
+mesh_res = C0 / (f0 + fc) / unit / np.sqrt(substrate_epsR) / 20
 edge_res = mesh_res / 2
 
 
@@ -223,7 +223,7 @@ port = FDTD.AddMSLPort(
 nf2ff = FDTD.CreateNF2FFBox()
 
 ### Run the simulation
-if 1:  # debugging only
+if GUI:  # debugging only
     CSX_file = os.path.join(Sim_Path, "patch_inset.xml")
     if not os.path.exists(Sim_Path):
         os.mkdir(Sim_Path)
@@ -264,6 +264,14 @@ axis.set_title("Input matching")
 axis.legend()
 
 
+# -10 dB bandwidth around the match
+lo = hi = int(np.argmin(s11_dB))
+while lo > 0 and s11_dB[lo - 1] < -10:
+    lo -= 1
+while hi < len(f) - 1 and s11_dB[hi + 1] < -10:
+    hi += 1
+Dmax_dBi = None
+
 idx = np.where((s11_dB < -10) & (s11_dB == np.min(s11_dB)))[0]
 if not len(idx) == 1:
     print("No resonance frequency found for far-field calulation")
@@ -286,18 +294,10 @@ else:
     axis.set_title("Frequency: {} GHz".format(f_res / 1e9))
     axis.legend()
 
-    # -10 dB bandwidth around the match
-    lo, hi = idx[0], idx[0]
-    while lo > 0 and s11_dB[lo - 1] < -10:
-        lo -= 1
-    while hi < len(f) - 1 and s11_dB[hi + 1] < -10:
-        hi += 1
+    Dmax_dBi = 10 * np.log10(nf2ff_res.Dmax[0])
     print(
         "S11 < -10 dB from {:.3f} to {:.3f} GHz ({:.0f} MHz), Dmax = {:.1f} dBi".format(
-            f[lo] / 1e9,
-            f[hi] / 1e9,
-            (f[hi] - f[lo]) / 1e6,
-            10 * np.log10(nf2ff_res.Dmax[0]),
+            f[lo] / 1e9, f[hi] / 1e9, (f[hi] - f[lo]) / 1e6, Dmax_dBi
         )
     )
 
@@ -328,6 +328,7 @@ print(
     )
 )
 
+
 fig, axis = plt.subplots(num="Zin", tight_layout=True)
 axis.plot(f / 1e9, np.real(Zin), "k-", linewidth=2, label="$\\Re\\{Z_{in}\\}$")
 axis.plot(f / 1e9, np.imag(Zin), "r--", linewidth=2, label="$\\Im\\{Z_{in}\\}$")
@@ -337,6 +338,70 @@ axis.set_xlabel("Frequency (GHz)")
 axis.set_ylabel("Zin at the feed point (Ohm)")
 axis.set_title("Input Impedance")
 axis.legend()
+
+
+### KiCad summary
+# Origin at the board edge on the line's centre, x into the board. The layout is symmetric
+# in y, so KiCad's downward y axis changes nothing.
+a, w, g, d = gnd_margin, feed_width, inset_gap, inset_depth
+# F.Cu outline of the patch, notch and feed line as one shape, walking round it
+copper = [
+    (0, -w / 2),
+    (a + d, -w / 2),
+    (a + d, -(w / 2 + g)),
+    (a, -(w / 2 + g)),
+    (a, -patch_length / 2),
+    (a + patch_width, -patch_length / 2),
+    (a + patch_width, patch_length / 2),
+    (a, patch_length / 2),
+    (a, w / 2 + g),
+    (a + d, w / 2 + g),
+    (a + d, w / 2),
+    (0, w / 2),
+]
+tan_d = substrate_kappa / (2 * np.pi * f0 * EPS0 * substrate_epsR)
+in_band = (f >= 5.75e9) & (f <= 5.85e9)
+band = (
+    "{:.3f}-{:.3f} GHz".format(f[lo] / 1e9, f[hi] / 1e9) if s11_dB[lo] < -10 else "none"
+)
+
+print("\n==== KiCad summary, eps_r {:.2f} ====".format(substrate_epsR))
+print(
+    "Stackup   FR4, eps_r {:.2f}, tan d {:.3f}, dielectric h {:.3f} mm. Sim copper has zero "
+    "thickness and no solder mask: open the mask over all F.Cu.".format(
+        substrate_epsR, tan_d, substrate_thickness
+    )
+)
+print(
+    "Edge.Cuts {:.3f} mm (x, along the feed) x {:.3f} mm (y). "
+    "B.Cu: solid ground over the whole board.".format(substrate_width, substrate_length)
+)
+print("Origin    board edge at the feed, line centre; x into the board")
+print(
+    "F.Cu      feed line   width {:.3f} mm, x = 0 to {:.3f} mm (feed point)".format(
+        w, a + d
+    )
+)
+print(
+    "          patch       L {:.3f} mm (x, resonant) x W {:.3f} mm (y), "
+    "x = {:.3f} to {:.3f} mm".format(patch_width, patch_length, a, a + patch_width)
+)
+print(
+    "          notch       depth {:.3f} mm, gap {:.3f} mm each side "
+    "(cut-out {:.3f} mm wide)".format(d, g, w + 2 * g)
+)
+print("F.Cu polygon (patch + notch + line), mm:")
+for n, (x, y) in enumerate(copper, 1):
+    print("  {:2d}  ({:7.3f}, {:7.3f})".format(n, x, y))
+print(
+    "Simulated S11 min {:.1f} dB at {:.3f} GHz; -10 dB band {}; worst over 5.75-5.85 GHz "
+    "{:.1f} dB".format(np.min(s11_dB), f_match / 1e9, band, np.max(s11_dB[in_band]))
+)
+print(
+    "          line {:.1f} Ohm; Dmax {}".format(
+        Z_line.real, "{:.1f} dBi".format(Dmax_dBi) if Dmax_dBi is not None else "n/a"
+    )
+)
 
 # show all plots
 plt.show()
