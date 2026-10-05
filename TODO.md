@@ -13,7 +13,8 @@ K1 -> K2 -> K6 -> K3
 - VNA, ≥ 6 GHz (K4)
 - Soldering kit, a 10-pin 2.54 mm header, Dupont leads (K5)
 - Two HMC8038 switch modules (K7). They're cheap and slow to ship, so they might as well arrive with the rest.
-- Optional: about 10 edge-mount SMA connectors for 1.6 mm boards, rated ≥ 6 GHz (K8)
+- 5-6 Molex 73251-1150 edge SMAs, CPC/Farnell (K8: patch 1, line pair 4, a spare)
+- JLCPCB: K8 patch + line-pair boards (settings in `scripts/antenna_design/README.md`)
 
 
 # Roadmap
@@ -124,6 +125,12 @@ Fabric FFT/CFAR is not planned - decision gate in G11.
       test with port A -> pad -> RX, port B terminated.
 - [ ] K8 - single patch on FR4 (G9.3): openEMS, fab, solder SMAs, S11, back out
       eps_r. Order the PCB early; do K7 while it ships.
+      Simulation done 2026-10-05 (`scripts/antenna_design/`): eps_r 4.4 geometry at
+      h 1.5 mm, mesh converged; at the board edge the S11 null is at 5.801 GHz, worst
+      in band -16.3 dB; 59 % efficiency, 5.7 dBi. In band for eps_r ~4.3-4.5, -60 MHz
+      per +0.1 (`eps_r_sweep.md`; `--measured` turns a VNA reading into eps_r).
+      KiCad done 2026-10-05: patch board + line-pair board, Gerbers checked
+      (`scripts/antenna_design/README.md`, "Boards"). Left: order, solder, measure.
 - [ ] K9 - columns + bench (G9.4-9.5): TX 2x(1x8) at lambda/2, RX 1x8; S11,
       coupling, isolation vs spacing, gain +-1 dB, pattern + A-B phase vs angle.
 - [ ] K10 - angle on the host (G10.1): TDM split, Doppler correction,

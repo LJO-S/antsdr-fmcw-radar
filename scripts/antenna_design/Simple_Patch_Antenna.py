@@ -45,6 +45,12 @@ parser.add_argument(
     "--design to see what another board does to a fixed geometry",
 )
 parser.add_argument("--out", help="save plots and S11 data here instead of showing them")
+parser.add_argument(
+    "--refine",
+    type=float,
+    default=1.0,
+    help="mesh refinement factor, xy and substrate cells together (convergence check)",
+)
 args = parser.parse_args()
 if args.out:
     args.out = os.path.abspath(args.out)  # FDTD.Run chdirs into Sim_Path
@@ -53,9 +59,9 @@ if args.out:
 design_epsR = args.design  # sets the geometry
 substrate_epsR = args.design if args.eps_r is None else args.eps_r  # the material simulated
 
-Sim_Path = os.path.join(
-    tempfile.gettempdir(), "Patch_Inset_d{:.2f}_e{:.2f}".format(design_epsR, substrate_epsR)
-)
+# One tag per (geometry, substrate, mesh): names the sim directory and the saved results
+tag = "d{:.2f}_e{:.2f}_r{:g}".format(design_epsR, substrate_epsR, args.refine)
+Sim_Path = os.path.join(tempfile.gettempdir(), "Patch_Inset_" + tag)
 
 post_proc_only = False  # set to True to skip the simulation and only do post-processing
 GUI = False  # set to True to show the CSXCAD GUI for debugging
@@ -66,7 +72,7 @@ unit = 1e-3  # all dimensions in mm
 # substrate setup (FR4 is 4.2-4.6 in practice, Rogers 5880 2.2)
 substrate_kappa = 0.02 * 2 * np.pi * f0 * EPS0 * substrate_epsR  # tan(delta) = 0.02
 substrate_thickness = 1.5  # h: dielectric only. JLCPCB 2-layer "1.6 mm" = 1.5 mm core + copper
-substrate_cells = 4
+substrate_cells = round(4 * args.refine)
 
 
 # --------------------
@@ -180,7 +186,7 @@ mesh = CSX.GetGrid()
 mesh.SetDeltaUnit(unit)
 # lambda/20 inside the substrate at the highest simulated frequency. From the design eps_r,
 # so every run of an eps_r sweep shares one mesh and only the material changes.
-mesh_res = C0 / (f0 + fc) / unit / np.sqrt(design_epsR) / 20
+mesh_res = C0 / (f0 + fc) / unit / np.sqrt(design_epsR) / 20 / args.refine
 edge_res = mesh_res / 2
 
 
@@ -275,12 +281,15 @@ if not post_proc_only:
 ### Post-processing and plotting
 # 1 MHz steps: the resonance is read off this grid, and an eps_r sweep reads it to the MHz
 f = np.linspace(max(1e9, f0 - fc), f0 + fc, 4001)
-# Move the reference plane from the board edge to the feed point, along the extracted line.
-# S11 at the board edge (what the VNA sees) differs only by the line loss, twice.
+# Zin at the feed point (reference plane moved along the extracted line) for inset tuning.
 port.CalcPort(Sim_Path, f, ref_plane_shift=x_inset - x_board)
-Z_line = port.Z_ref[np.argmin(np.abs(f - f0))]
 Zin = port.uf_tot / port.if_tot
-s11 = (Zin - feed_R) / (Zin + feed_R)
+# S11 at the board edge vs 50 Ohm, as the VNA sees it: the line is not exactly 50 Ohm, so
+# it transforms the feed-point match.
+port.CalcPort(Sim_Path, f, ref_plane_shift=0)
+Z_line = port.Z_ref[np.argmin(np.abs(f - f0))]
+Z_edge = port.uf_tot / port.if_tot
+s11 = (Z_edge - feed_R) / (Z_edge + feed_R)
 s11_dB = 20.0 * np.log10(np.abs(s11))
 print(
     "Line impedance at {:.2f} GHz: {:.1f} {:+.1f}j Ohm".format(
@@ -307,7 +316,7 @@ while lo > 0 and s11_dB[lo - 1] < -10:
     lo -= 1
 while hi < len(f) - 1 and s11_dB[hi + 1] < -10:
     hi += 1
-Dmax_dBi = None
+Dmax_dBi = eta = G_dBi = None
 
 idx = np.where((s11_dB < -10) & (s11_dB == np.min(s11_dB)))[0]
 if not len(idx) == 1:
@@ -332,9 +341,15 @@ else:
     axis.legend()
 
     Dmax_dBi = 10 * np.log10(nf2ff_res.Dmax[0])
+    # Radiation efficiency = radiated / accepted power. The plane shift is lossless, so P_acc
+    # sits at the port's probes: the line from there to the feed point counts against the
+    # patch. Copper is PEC here, so conductor loss is missing.
+    eta = nf2ff_res.Prad[0] / port.P_acc[idx[0]]
+    G_dBi = Dmax_dBi + 10 * np.log10(eta)
     print(
-        "S11 < -10 dB from {:.3f} to {:.3f} GHz ({:.0f} MHz), Dmax = {:.1f} dBi".format(
-            f[lo] / 1e9, f[hi] / 1e9, (f[hi] - f[lo]) / 1e6, Dmax_dBi
+        "S11 < -10 dB from {:.3f} to {:.3f} GHz ({:.0f} MHz), Dmax = {:.1f} dBi, "
+        "efficiency {:.0f} %, gain {:.1f} dBi".format(
+            f[lo] / 1e9, f[hi] / 1e9, (f[hi] - f[lo]) / 1e6, Dmax_dBi, 100 * eta, G_dBi
         )
     )
 
@@ -439,15 +454,19 @@ print(
     "{:.1f} dB".format(np.min(s11_dB), f_match / 1e9, band, np.max(s11_dB[in_band]))
 )
 print(
-    "          line {:.1f} Ohm; Dmax {}".format(
-        Z_line.real, "{:.1f} dBi".format(Dmax_dBi) if Dmax_dBi is not None else "n/a"
+    "          line {:.1f} Ohm; {}".format(
+        Z_line.real,
+        "Dmax {:.1f} dBi, efficiency {:.0f} %, gain {:.1f} dBi".format(
+            Dmax_dBi, 100 * eta, G_dBi
+        )
+        if Dmax_dBi is not None
+        else "no resonance, no far field",
     )
 )
 
 # show all plots, or save them with the data (sweep_eps_r.py reads the .npz)
 if args.out:
     os.makedirs(args.out, exist_ok=True)
-    tag = "d{:.2f}_e{:.2f}".format(design_epsR, substrate_epsR)
     for num in plt.get_figlabels():
         plt.figure(num).savefig(os.path.join(args.out, "{}_{}.png".format(tag, num)))
     np.savez(
@@ -456,6 +475,8 @@ if args.out:
         s11_dB=s11_dB,
         Zin=Zin,
         Dmax_dBi=np.nan if Dmax_dBi is None else Dmax_dBi,
+        eta=np.nan if eta is None else eta,
+        G_dBi=np.nan if G_dBi is None else G_dBi,
         geometry=[patch_width, patch_length, inset_depth, feed_width],
         h=substrate_thickness,
         tan_d=tan_d,

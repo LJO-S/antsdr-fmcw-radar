@@ -114,5 +114,18 @@ F.Cu polygon (patch + notch + line), mm:
   10  ( 23.700,   2.434)
   11  ( 23.700,   1.434)
   12  (  0.000,   1.434)
-Simulated S11 min -58.1 dB at 5.801 GHz; -10 dB band 5.693-5.911 GHz; worst over 5.75-5.85 GHz -16.3 dB
-          line 52.9 Ohm; Dmax 8.0 dBi
+Simulated S11 min -33.4 dB at 5.801 GHz; -10 dB band 5.692-5.914 GHz; worst over 5.75-5.85 GHz -16.3 dB
+          line 52.9 Ohm; Dmax 8.0 dBi, efficiency 59 %, gain 5.7 dBi
+
+Same geometry, re-run 2026-10-05 (`--refine 1.5`, the sweep's mesh). No new tuning:
+
+- S11 is now at the board edge, where the VNA sees it, instead of at the feed point.
+  The 52.9 Ohm line transforms the match: on the original mesh the null went from -58 dB
+  at 5.801 GHz to -34 dB at 5.789 GHz.
+- Mesh convergence: the null sits at 5.789 / 5.801 / 5.804 GHz at refine 1 / 1.5 / 2, so
+  the original mesh was ~15 MHz low, and it happened to cancel the edge shift. The 53 Ohm
+  line does not move with the mesh: it is real (dispersion at 5.8 GHz; the quasi-static
+  formula gives 50.2 Ohm), not a mesh artifact.
+- Efficiency (radiated / accepted) and gain are printed. 59 % matches a Q estimate from
+  the bandwidth: Q_t ~ 1/(0.038 sqrt 2) = 18.6, Q_d = 1/tan d = 50, so Q_rad ~ 30 and
+  eta = Q_t/Q_rad ~ 62 %. FR4 costs ~2.3 dB of gain per patch.

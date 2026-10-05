@@ -86,16 +86,21 @@ src/python/                 # import root
     fabric_ctl.py  # FabricCtl (enable/disable/set_calib_delay sequencing) + SshDevmem transport
     test_fabric_ctl.py, test_target_sim.py, test_recorder.py  # board-free, run as __main__
 docs/              # AntSDR_Phase6_Tracking_Antennas_Angle_Guide.md (Part K spec, active),
-                   #   firmware-branch-workflow.md, rf-power-and-spectrum-sweden.pdf,
-                   #   fmcw_fabric_architecture.svg, datasheets/, archive/ (Phase 1-5 guides;
-                   #   Phase 5 Section 4.2 = the deferred FIR reclaim recipe)
-hardware/          # materials.md (phased buy list), fmcw_58ghz_block_diagram.svg
+                   #   tracking_algorithms.md (K3/K11 research + reading),
+                   #   vna_soldering_buy_list.md (K4/K5), firmware-branch-workflow.md,
+                   #   rf-power-and-spectrum-sweden.pdf, fmcw_fabric_architecture.svg,
+                   #   datasheets/ (incl. HMC8038, HMC849A, VBFZ-5500), archive/ (Phase 1-5
+                   #   guides; Phase 5 Section 4.2 = the deferred FIR reclaim recipe)
+hardware/          # materials.md (phased buy list), bench_measurements.md (K4 predict /
+                   #   measure / explain tables), fmcw_58ghz_block_diagram.svg
 firmware/          # submodule stack (see below), branch e200-custom
 scripts/bringup/   # hardware bringup references (reference.py, trx_loopback.py, pluto_sdr_ref.py)
                    #   + dechirp_verify.py (sw vs fabric RD map at --decimate 1|8; --ab fabric
                    #   /1 vs /8 with fake targets; --rate S headless CPIs/s; --sweep delay)
                    #   + decim_ramp_check.py (ramp through the decimator, bit-exact vs
                    #   decimate_golden; --sync measures the frame trim)
+scripts/antenna_design/  # K8 openEMS patch sim + eps_r sweep + KiCad (patch, line-pair); own README
+                   #   (runs in the openEMS venv, not .venv)
 data/info.txt      # iio_info dump of the board
 vhdl_ls.toml       # rust_hdl LSP config, points at firmware/.../projects/e200
 pypkgs.txt         # numpy, matplotlib, pylibiio, scipy, PySide6, pyqtgraph, vunit_hdl
@@ -119,6 +124,9 @@ python -m offline.playback [dir]    # recorded session in the GUI (no board); Op
 python -m offline.replay <dir> [--check]  # headless replay; --check vs the live detections
 python run_tests.py [-v] [name]     # all board-free test suites (name = substring filter)
 ```
+
+Antenna simulations run in openEMS's own venv (`~/opt/openEMS/venv`, built from source),
+not `.venv`: see `scripts/antenna_design/README.md`.
 
 ## Key classes / functions
 
@@ -394,6 +402,17 @@ antsdr-fmcw-radar -> firmware/ -> plutosdr-fw/ -> hdl/ (+ linux/, u-boot, buildr
   notice an edit. AXI-Lite slave at **0x43C10000**; MAGIC bumps on every register-map change
   (`RXT1` → `FMC1` → `FMC3` → `FMC4`), mirrored in `common/fabric_regs.py` and must match
   `C_MAGIC` in the VHDL. **FMC4 `0x464D4334` is what is on hardware** (I5, 2026-09-26).
+- **The Vivado IP cache can ship a stale `fmcw_core`.** The ADI scripts enable a shared cache
+  at `hdl/ipcache` (OOC synthesis is on by default), which `make clean` / `clean-all` never
+  touch. `fmcw_core` is a BD module reference, and its cache key follows its generics and
+  `fmcw_core.vhd` only, not the files below it. The 2026-09-28 build rebuilt the project but
+  reused the 2026-09-23 netlist, which predated the halfband DSP fix. Since 2026-10-04,
+  `system_bd.tcl` md5s every `src/**/*.vhd` and `*.txt` into the unused generic `G_SRC_HASH`
+  (logged as `fmcw_core G_SRC_HASH = ...`), so any edit gets a new key. After a build, check
+  that `e200.runs/system_fmcw_core_0_0_synth_1/system_fmcw_core_0_0.vds` does *not* say
+  `Using cached IP synthesis design`. Fallbacks: delete the `fmcw_core` entries
+  (`grep -l fmcw_core ipcache/*/*/*/*.xci`, root-owned after `sudo -E make`) or build with
+  `ADI_USE_OOC_SYNTHESIS=n`.
 - **Do not run `resetGit.sh`** — it strips the MicroPhase patches and the fork checkpoints.
 - Target architecture: chirp NCO **and** dechirp in fabric, Ethernet carries IF samples, frame
   sync deleted. `dsp.py` becomes the golden model verifying fabric output sample-for-sample.

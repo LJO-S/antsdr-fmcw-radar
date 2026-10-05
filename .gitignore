@@ -3,3 +3,10 @@
 **.jou
 **.log
 data/sessions/
+scripts/antenna_design/sweep/*.png
+# KiCad
+**/.history/
+**/~*.lck
+**/*.kicad_prl
+**/*-backups/
+**/fp-info-cache

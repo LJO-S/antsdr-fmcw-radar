@@ -264,7 +264,8 @@ Start on gear you already own, where datasheets give you something to check agai
 
 ### 5.2 Measurements on owned gear
 
-Calibrate at the ends of the test cables over 5.0-6.5 GHz. For every item, **write
+Calibrate at the ends of the test cables over 4.5-6.3 GHz (a LiteVNA-64 stops at
+6.3 GHz; the VBFZ passband starts at 4.9 GHz). For every item, **write
 your prediction down first** (datasheet or hand calculation), then measure, then
 explain the difference. The prediction is where the learning is.
 
@@ -444,9 +445,11 @@ across it. This is the standard automotive FMCW layout.
 - Substrate: FR4, 1.6 mm, 2 layers. Nominal eps_r 4.4, but 4.2-4.6 in practice
   at 5.8 GHz, tan d ~0.02. That spread moves resonance by 100-250 MHz, more than
   the patch bandwidth, which is why a calibration spin comes first.
-- Starting dimensions (transmission-line model, eps_r 4.4, h 1.6 mm): W ~ 15.7 mm,
-  L ~ 11.8 mm, inset feed from a 50 ohm line (~3.0 mm wide). Final numbers come
-  from openEMS.
+- Starting dimensions (transmission-line model, eps_r 4.4): W ~ 15.7 mm,
+  L ~ 11.8 mm, inset feed from a 50 ohm line. A "1.6 mm" 2-layer board is ~1.5 mm
+  of dielectric plus copper, so simulate h = 1.5 mm (line ~2.9 mm wide). Final
+  numbers come from openEMS (`scripts/antenna_design/`): ~60 % radiation efficiency
+  on FR4, ~5.7 dBi per patch.
 - On the same panel: a plain 50 ohm through line (loss and eps_eff) next to the
   patch.
 - Edge-mount SMAs rated well past 6 GHz, soldered with the K5 skills.
