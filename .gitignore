@@ -10,3 +10,4 @@ scripts/antenna_design/sweep/*.png
 **/*.kicad_prl
 **/*-backups/
 **/fp-info-cache
+**/gerbers/
