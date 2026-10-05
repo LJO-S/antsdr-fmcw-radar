@@ -1,6 +1,17 @@
 # openEMS simulations
 
 ## Phase 6 K8
+
+Note (2026-10-04): each run below is re-designed for its own eps_r (L, W, inset and line
+width all change), so all three resonate near 5.8 GHz. They are not the calibration
+curve; they are ready-made redesigns for once the board's real eps_r is known. The
+calibration curve is the eps_r 4.4 geometry, fixed, simulated on eps_r 4.2-4.6:
+`eps_r_sweep.md` (from `sweep_eps_r.py`). The 4.4 design is the one to fabricate.
+
+Update (2026-10-05): the three runs below use h 1.6 mm, the finished board thickness.
+JLCPCB's 2-layer "1.6 mm" is a 1.5 mm core plus copper, so the 4.4 design was re-tuned at
+h 1.5 mm (last section). That one is the board to fabricate, and the sweep uses it.
+
 Single patch iterations:
 
 #### eps_R = 4.2
@@ -77,3 +88,31 @@ F.Cu polygon (patch + notch + line), mm:
   12  (  0.000,   1.479)
 Simulated S11 min -44.7 dB at 5.800 GHz; -10 dB band 5.690-5.910 GHz; worst over 5.75-5.85 GHz -16.9 dB
           line 53.2 Ohm; Dmax 8.0 dBi
+
+#### eps_R = 4.4, h = 1.5 mm - the board to fabricate (2026-10-05)
+
+Re-tuned from the h 1.6 mm design (L 11.808 -> 11.842 mm, inset 3.69 -> 3.70 mm; the
+thinner board alone moved it +15 MHz). Two iterations, next hint +0.002 mm.
+
+==== KiCad summary, eps_r 4.40 (geometry for eps_r 4.40) ====
+Stackup   FR4, eps_r 4.40, tan d 0.020, dielectric h 1.500 mm. Sim copper has zero thickness and no solder mask: open the mask over all F.Cu.
+Edge.Cuts 51.842 mm (x, along the feed) x 55.728 mm (y). B.Cu: solid ground over the whole board.
+Origin    board edge at the feed, line centre; x into the board
+F.Cu      feed line   width 2.868 mm, x = 0 to 23.700 mm (feed point)
+          patch       L 11.842 mm (x, resonant) x W 15.728 mm (y), x = 20.000 to 31.842 mm
+          notch       depth 3.700 mm, gap 1.000 mm each side (cut-out 4.868 mm wide)
+F.Cu polygon (patch + notch + line), mm:
+   1  (  0.000,  -1.434)
+   2  ( 23.700,  -1.434)
+   3  ( 23.700,  -2.434)
+   4  ( 20.000,  -2.434)
+   5  ( 20.000,  -7.864)
+   6  ( 31.842,  -7.864)
+   7  ( 31.842,   7.864)
+   8  ( 20.000,   7.864)
+   9  ( 20.000,   2.434)
+  10  ( 23.700,   2.434)
+  11  ( 23.700,   1.434)
+  12  (  0.000,   1.434)
+Simulated S11 min -58.1 dB at 5.801 GHz; -10 dB band 5.693-5.911 GHz; worst over 5.75-5.85 GHz -16.3 dB
+          line 52.9 Ohm; Dmax 8.0 dBi

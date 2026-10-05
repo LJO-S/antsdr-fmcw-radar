@@ -16,7 +16,7 @@ Tested with
 """
 
 ### Import Libraries
-import os, tempfile
+import argparse, os, tempfile
 import numpy as np
 import matplotlib.pyplot as plt  # pip install matplotlib
 
@@ -25,7 +25,37 @@ from openEMS import openEMS
 from openEMS.physical_constants import *
 
 ### General parameter setup
-Sim_Path = os.path.join(tempfile.gettempdir(), "Patch_Inset")
+# Hand-tuned per design eps_r (results.md): resonant length L and inset depth, mm.
+# W and the 50 Ohm line width follow from the formulas below. Tuned for one h only:
+# 4.4 at h 1.5 mm (the board to fabricate); 4.2 and 4.6 at h 1.6 mm, now starting points.
+TUNED = {4.2: (12.133, 3.73), 4.4: (11.842, 3.70), 4.6: (11.528, 3.67)}
+
+parser = argparse.ArgumentParser(description="Inset-fed 5.8 GHz patch on FR4 (openEMS)")
+parser.add_argument(
+    "--design",
+    type=float,
+    default=4.4,
+    choices=sorted(TUNED),
+    help="eps_r the geometry is designed for (default 4.4)",
+)
+parser.add_argument(
+    "--eps-r",
+    type=float,
+    help="eps_r of the simulated substrate (default: --design). Set it apart from "
+    "--design to see what another board does to a fixed geometry",
+)
+parser.add_argument("--out", help="save plots and S11 data here instead of showing them")
+args = parser.parse_args()
+if args.out:
+    args.out = os.path.abspath(args.out)  # FDTD.Run chdirs into Sim_Path
+    plt.switch_backend("Agg")
+
+design_epsR = args.design  # sets the geometry
+substrate_epsR = args.design if args.eps_r is None else args.eps_r  # the material simulated
+
+Sim_Path = os.path.join(
+    tempfile.gettempdir(), "Patch_Inset_d{:.2f}_e{:.2f}".format(design_epsR, substrate_epsR)
+)
 
 post_proc_only = False  # set to True to skip the simulation and only do post-processing
 GUI = False  # set to True to show the CSXCAD GUI for debugging
@@ -33,10 +63,9 @@ GUI = False  # set to True to show the CSXCAD GUI for debugging
 f0 = 5.8e9  # center frequency
 unit = 1e-3  # all dimensions in mm
 
-# substrate setup
-substrate_epsR = 4.6  # 4.2, 4.4, 4.6 for FR4, 2.2 for Rogers 5880
+# substrate setup (FR4 is 4.2-4.6 in practice, Rogers 5880 2.2)
 substrate_kappa = 0.02 * 2 * np.pi * f0 * EPS0 * substrate_epsR  # tan(delta) = 0.02
-substrate_thickness = 1.6  # h
+substrate_thickness = 1.5  # h: dielectric only. JLCPCB 2-layer "1.6 mm" = 1.5 mm core + copper
 substrate_cells = 4
 
 
@@ -45,7 +74,7 @@ substrate_cells = 4
 # --------------------
 # 1. Width W (non-resonant dimension)
 #  W = c / (2 * f0) * sqrt(2 / (epsR + 1))
-W = C0 / (2 * f0) * np.sqrt(2 / (substrate_epsR + 1)) / unit
+W = C0 / (2 * f0) * np.sqrt(2 / (design_epsR + 1)) / unit
 
 # 2. Effective dielectric constant (valid for W / h > 1)
 #  eps_eff = (epsR + 1) / 2 + (epsR - 1) / 2 * (1 + 12 * h / W) ** (-0.5)
@@ -70,7 +99,7 @@ L = C0 / (2 * f0 * np.sqrt(eps_eff)) / unit - 2 * delta_L
 # In this script x is the resonant direction (the feed runs along x),
 # so Balanis' L goes in x and W goes in y.
 # patch width (resonant length) in x-direction
-patch_width = 11.528
+patch_width = TUNED[design_epsR][0]
 print("Theoretical L = {:.3f} mm vs actual L = {:.3f} mm".format(L, patch_width))
 # patch length in y-direction
 patch_length = W
@@ -108,10 +137,10 @@ def msl_width(z0, eps_r, h):
     return w_h * h
 
 
-feed_width = msl_width(feed_R, substrate_epsR, substrate_thickness)
+feed_width = msl_width(feed_R, design_epsR, substrate_thickness)
 # Inset depth from the patch edge. Inset feeds follow Rin(y0) ~ R_edge * cos^4(pi * y0 / L)
 # (Basilio et al. 2001), not the probe's cos^2. Tune with the hint printed at the end.
-inset_depth = 3.67
+inset_depth = TUNED[design_epsR][1]
 inset_gap = 1.0  # notch clearance each side of the line
 
 x_board = -substrate_width / 2  # board edge: SMA, port and feed resistor
@@ -119,9 +148,15 @@ x_patch = -patch_width / 2  # radiating edge on the feed side
 x_inset = x_patch + inset_depth  # feed point
 
 print(
-    "W = {:.3f} mm, eps_R = {:.4f}, eps_eff = {:.4f}, delta_L = {:.4f} mm, L = {:.3f} mm, "
-    "50 Ohm line = {:.3f} mm".format(
-        patch_length, substrate_epsR, eps_eff, delta_L, patch_width, feed_width
+    "W = {:.3f} mm, eps_R = {:.4f} (design {:.2f}), eps_eff = {:.4f}, delta_L = {:.4f} mm, "
+    "L = {:.3f} mm, 50 Ohm line = {:.3f} mm".format(
+        patch_length,
+        substrate_epsR,
+        design_epsR,
+        eps_eff,
+        delta_L,
+        patch_width,
+        feed_width,
     )
 )
 
@@ -143,8 +178,9 @@ CSX = ContinuousStructure()
 FDTD.SetCSX(CSX)
 mesh = CSX.GetGrid()
 mesh.SetDeltaUnit(unit)
-# lambda/20 inside the substrate at the highest simulated frequency
-mesh_res = C0 / (f0 + fc) / unit / np.sqrt(substrate_epsR) / 20
+# lambda/20 inside the substrate at the highest simulated frequency. From the design eps_r,
+# so every run of an eps_r sweep shares one mesh and only the material changes.
+mesh_res = C0 / (f0 + fc) / unit / np.sqrt(design_epsR) / 20
 edge_res = mesh_res / 2
 
 
@@ -237,7 +273,8 @@ if not post_proc_only:
 
 
 ### Post-processing and plotting
-f = np.linspace(max(1e9, f0 - fc), f0 + fc, 401)
+# 1 MHz steps: the resonance is read off this grid, and an eps_r sweep reads it to the MHz
+f = np.linspace(max(1e9, f0 - fc), f0 + fc, 4001)
 # Move the reference plane from the board edge to the feed point, along the extracted line.
 # S11 at the board edge (what the VNA sees) differs only by the line loss, twice.
 port.CalcPort(Sim_Path, f, ref_plane_shift=x_inset - x_board)
@@ -365,7 +402,11 @@ band = (
     "{:.3f}-{:.3f} GHz".format(f[lo] / 1e9, f[hi] / 1e9) if s11_dB[lo] < -10 else "none"
 )
 
-print("\n==== KiCad summary, eps_r {:.2f} ====".format(substrate_epsR))
+print(
+    "\n==== KiCad summary, eps_r {:.2f} (geometry for eps_r {:.2f}) ====".format(
+        substrate_epsR, design_epsR
+    )
+)
 print(
     "Stackup   FR4, eps_r {:.2f}, tan d {:.3f}, dielectric h {:.3f} mm. Sim copper has zero "
     "thickness and no solder mask: open the mask over all F.Cu.".format(
@@ -403,5 +444,21 @@ print(
     )
 )
 
-# show all plots
-plt.show()
+# show all plots, or save them with the data (sweep_eps_r.py reads the .npz)
+if args.out:
+    os.makedirs(args.out, exist_ok=True)
+    tag = "d{:.2f}_e{:.2f}".format(design_epsR, substrate_epsR)
+    for num in plt.get_figlabels():
+        plt.figure(num).savefig(os.path.join(args.out, "{}_{}.png".format(tag, num)))
+    np.savez(
+        os.path.join(args.out, tag + ".npz"),
+        f=f,
+        s11_dB=s11_dB,
+        Zin=Zin,
+        Dmax_dBi=np.nan if Dmax_dBi is None else Dmax_dBi,
+        geometry=[patch_width, patch_length, inset_depth, feed_width],
+        h=substrate_thickness,
+        tan_d=tan_d,
+    )
+else:
+    plt.show()
