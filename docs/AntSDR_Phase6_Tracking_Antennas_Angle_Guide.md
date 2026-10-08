@@ -78,7 +78,7 @@ board change. Sources in Appendix B.
 | | 2R2T | 2T1R, switched TX |
 |---|---|---|
 | Range bins | ~6 m | 3 m |
-| FPGA work | second mixer + decimator, equal latency, +~52 DSPs | one output pin, sync per chirp pair |
+| FPGA work | second mixer + decimator, equal latency, +~27 DSPs | one output pin, sync per chirp pair |
 | Hardware | 2 IPEX pigtails (RX2/TX2 are IPEX, not SMA) | switch module, soldered J30 header |
 | Host | simultaneous channels, no motion term | Doppler correction, v_max halves |
 | RF content | little: mostly FPGA | an RF component end to end |
@@ -584,7 +584,7 @@ Design notes for when it comes:
 - `N_IF` = 707 is not a power of two. The Xilinx FFT wants 512 or 1024: zero-pad
   to 1024, or pick `SWEEP_LEN` = 8 x 512 = 4096 (72 us) or 8 x 1024 = 8192 (145 us)
   so a leg is a power of two.
-- Budget: 123/220 DSPs used (TDM adds none); a range + Doppler FFT is ~10-35 DSPs,
+- Budget: 99/220 DSPs used since the folded FIR (TDM adds none); a range + Doppler FFT is ~10-35 DSPs,
   and the corner turn is BRAM-bound (archived Phase 5 guide, Section 4.2).
 
 ---
@@ -790,7 +790,7 @@ In short:
 - **What 2R would still need** (the old K7): a second `mixer_dechirp` on channels
   2/3 with the same DECHIRP_DELAY, a second decimator pair, identical latency (a
   channel skew is a phase error that grows with range, which boresight calibration
-  cannot remove), +~52 DSPs; verified by identical-stimulus VUnit and a splitter
+  cannot remove), +~27 DSPs; verified by identical-stimulus VUnit and a splitter
   sweep.
 - **Later option**: in 2R2T, TX2 is live too, and the fabric could put the NCO on
   TX1 or TX2 per chirp: 2T2R TDM, four virtual elements, no external switch - the

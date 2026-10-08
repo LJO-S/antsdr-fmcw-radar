@@ -16,7 +16,7 @@ design conclusions live *here* instead. When a part closes, summarize it there a
 anything worth keeping into this file — don't let narrative grow back in `TODO.md`.
 Short version (2026-09): Parts A–G done (offline model, online app, GUI, target sim, DSP
 hardening, cable loopback, antenna field test), with a handful of small open items still listed.
-**Part I (HDL offload) is done** in digital loopback, only I5b (DSP reclaim) deferred:
+**Part I (HDL offload) is done** in digital loopback, only I5b (the ADI FIR reclaim) deferred:
 fabric NCO + fabric dechirp (I4, 2026-09-10), the app drives the fabric through
 `online/fabric_ctl.py` (I4b), fake targets work on the IF stream (I4c), and **I5, decimation
 to IF rate, closed 2026-09-26** (MAGIC FMC4; spec
@@ -24,7 +24,7 @@ to IF rate, closed 2026-09-26** (MAGIC FMC4; spec
 needs no frame sync). I5 design: operational range 800 m at the steepest chirp
 (56 MHz / 100 us); one fixed divide-by-8 as own HDL inside
 `fmcw_core` - **three cascaded decimate-by-2 halfband stages** (7 / 11 / 27 taps, 2 / 3 / 7
-multiplies per channel; 48 DSPs for I+Q as built), each restarting its decimation phase on the
+multiplies per channel; 24 DSPs for I+Q since the folded FIR, 2026-10), each restarting its decimation phase on the
 chirp-leg tag, so every chirp parameter stays free and each leg yields `SWEEP_LEN // 8` IF
 samples; 0.03 dB droop, -51.4 dB worst alias. `OP_RANGE_FACTOR` is replaced by `MAX_RANGE_M`
 plus a derived effective range. Two routes were rejected and should not be re-proposed: the
@@ -202,7 +202,7 @@ GUI spectrogram needs it).
 | SDR_IP | 192.168.5.10 |
 | SDR_TX_GAIN_DB / SDR_TX_GAIN_MAX_DB | −60.0 / **0.0** (AD9361 hardwaregain = attenuation) |
 | SDR_RX_GAIN_MODE / SDR_RX_GAIN_DB | manual / 40.0 |
-| SDR_RX_MARGIN_PERIODS | 1 |
+| SDR_RX_MARGIN_PERIODS | 1 (software frame sync needs >= 1; `start()` refuses 0 there) |
 | SDR_LOOPBACK_EN / SDR_LOOPBACK_NOISE_SNR_DB | True / 1.0 |
 | FABRIC_DECHIRP_EN / FABRIC_DECHIRP_DELAY | False / **61** (pure path delay, non-loopback). **34** is the digital-loopback constant (measured 2026-09-10), kept commented out in `config.py` - swap when `SDR_LOOPBACK_EN` flips. Both are at 56.6 MSPS: the delay is in samples and scales with FS (loopback **20** at 30.72 MSPS) |
 | FABRIC_DECIM_EN / FABRIC_FRAME_TRIM | True / 0 (only active with `FABRIC_DECHIRP_EN`; ratio fixed at `FABRIC_DECIMATE_RATIO` = 8 → FS_IF 7.075 MSPS, SWEEP_LEN 5656, N_IF 707) |
@@ -366,6 +366,15 @@ Verified against the v0.x binding source (vendored copy reviewed 2026-07; the pi
   `/(2**11 - 1)` (12-bit ADC in an int16 word); TX scales by `2**15 - 1`. The RX
   conversion is `dsp.iq_from_raw`.
 - `buf.write()` silently truncates to the buffer size — assert the returned byte count.
+- **Every DMA buffer needs an even sample count.** The kernel silently rounds each transfer
+  down to the DMA bus width (`industrialio-buffer-dmaengine.c`, `round_down(bytes_used,
+  align)`); both DMAs are 64-bit, so 8 bytes = 2 I/Q samples with two channels enabled.
+  RX: an odd count costs two DMA transfers per `refill()` and the last sample comes from the
+  second (the default /8 sawtooth hits it: 129 x 707 = 91203, seen as 1 mismatch per block in
+  the ramp check). TX, cyclic: an odd chirp loses its last sample every loop, so TX repeats
+  every P-1 (software sawtooth with an odd `SWEEP_LEN`, e.g. T = 99.99 us). `sdr.start()`
+  rounds RX up to even and writes two copies of an odd chirp. Both verified on hardware
+  2026-10.
 - No explicit buffer destroy; the kernel DMA buffer is freed on GC (`__del__`). To
   recreate (restart), `cancel()` + drop references first, else EBUSY (one buffer/device).
 - `find_device()` / `find_channel()` return `None` silently on a bad name — guard.
@@ -396,7 +405,7 @@ antsdr-fmcw-radar -> firmware/ -> plutosdr-fw/ -> hdl/ (+ linux/, u-boot, buildr
   three checked-in `HBF_16_*.txt` tap files, vendored from `~/work/projects/fpga/fpga-filters`
   per its `README.md`); plus `system_bd.tcl`, `Makefile`, `system_constr.xdc`. Golden models
   in `scripts/` (`nco_reference.py`, `mixer_reference.py`, `decimate_reference.py`), VUnit
-  testbenches under `test/` (`run.py`, `fmcw_core/`, `mixer_dechirp/`). **`test/run.py`
+  testbenches under `test/` (`run.py`, `fmcw_core/`, `mixer_dechirp/`, `decimate/`). **`test/run.py`
   rglobs** `src/**/*.vhd` and `test/**/tb_*`, so new HDL needs no source-list edit - but
   `Makefile` `M_DEPS` is manual and must list every source *and* init file, or `make` will not
   notice an edit. AXI-Lite slave at **0x43C10000**; MAGIC bumps on every register-map change
@@ -412,7 +421,8 @@ antsdr-fmcw-radar -> firmware/ -> plutosdr-fw/ -> hdl/ (+ linux/, u-boot, buildr
   that `e200.runs/system_fmcw_core_0_0_synth_1/system_fmcw_core_0_0.vds` does *not* say
   `Using cached IP synthesis design`. Fallbacks: delete the `fmcw_core` entries
   (`grep -l fmcw_core ipcache/*/*/*/*.xci`, root-owned after `sudo -E make`) or build with
-  `ADI_USE_OOC_SYNTHESIS=n`.
+  `ADI_USE_OOC_SYNTHESIS=n`. On the board, MAGIC cannot tell the builds apart: the folded FIR
+  kept the register map and FMC4. The DSP count in the utilization report can (99 vs 123).
 - **Do not run `resetGit.sh`** — it strips the MicroPhase patches and the fork checkpoints.
 - Target architecture: chirp NCO **and** dechirp in fabric, Ethernet carries IF samples, frame
   sync deleted. `dsp.py` becomes the golden model verifying fabric output sample-for-sample.
@@ -467,9 +477,11 @@ Rules learned on hardware (all of them cost a hang or a wrong map once):
   DECIM_SEL, so sync rises in the same cycle as the sample it marks in both modes (tapped one
   register later it opened a whole IF sample late at /8). That is only safe because
   `mixer_dechirp` gates its tag with its valid - ungated, the tag rides `delay_line`'s held
-  valid level and rises a cycle early. Measured (I5 step 8): capture begins 0 or 1 sample
-  early depending on pack phase, per `start()`. `FABRIC_FRAME_TRIM` stays 0; the A/B maps
-  match either way. Dechirp alignment is unaffected (DECHIRP_DELAY is pre-DMA).
+  valid level and rises a cycle early. Measured: with an even RX buffer the capture starts on
+  the tagged sample, trim 0 on every `start()` (2R2T 2026-09-28, folded FIR 2026-10). The
+  0-or-1 trim seen in I5 step 8 came with the odd RX buffer (see the libiio notes) and went
+  away with it. `FABRIC_FRAME_TRIM` stays 0. Dechirp alignment is unaffected (DECHIRP_DELAY
+  is pre-DMA).
 - One sync per `refill()`: the DMA holds off until the first sync-tagged beat, then free-runs
   for the programmed length.
 - `mixer_dechirp` computes **IF = delayed_TX * conj(RX)**, the same convention as
@@ -526,18 +538,20 @@ Spec: `docs/archive/AntSDR_Phase5_IF_Decimation_Guide.md`. What outlives the par
   cascade: stage k+1 restarts on stage k's *tagged output*, not on the leg tag directly - a tag
   lane one stage late is exactly the "samples per leg drifting" symptom. Any leg of N inputs
   yields `N // 8` outputs.
-- **The decimator costs 48 DSPs, not the 24 designed** (build of 2026-09-23; totals 123/220
-  DSPs = 51 core + 28 `axi_ad9361` + 44 ADI FIRs, 4/140 BRAM36, 26% LUTs). Cause:
-  `halfband_decimate_stage` is a transposed FIR that folds *after* the multiplier - each of the
-  U/2 products feeds two chain adders (`tap`, `high - tap`). A DSP48E1 has no M output and one
-  post-adder, so Vivado maps every chain add+register onto its own slice (P = PCIN + M cascade)
-  and duplicates the multiplier: U slices per channel. A DSP48 shares only on the *input* side
-  (pre-adder, `(x_a + x_b) * h`). Fixes, only if the FFT work runs short of DSPs:
-  **(A)** register the product and put `use_dsp "no"` on the partial-sum chain - 24 DSPs,
-  ~+1.7k LUT/FF, +1 clock per stage, same arithmetic; **(B)** direct form with the pre-adder and
-  a fabric adder tree - 24 DSPs, less fabric than today, but rewrites the stage core and the
-  centre-tap alignment; **(C)** time-share one slice per stage (>= 2 / 4 / 8 clocks per output)
-  - ~6 DSPs, most control logic. All three stay bit-exact against `decimate_golden`.
+- **The decimator costs 24 DSPs since the folded FIR** (`hdl` `feature/folded-fir`, on
+  hardware 2026-10; totals 99/220 DSPs = 27 core + 28 `axi_ad9361` + 44 ADI FIRs). The first
+  build (2026-09-23) cost 48, twice the design: `halfband_decimate_stage` is a transposed FIR
+  that folds *after* the multiplier - each of the U/2 products feeds two chain adders (`tap`,
+  `high - tap`). A DSP48E1 has no M output and one post-adder, so Vivado mapped every chain
+  add+register onto its own slice (P = PCIN + M cascade) and duplicated the multiplier: U
+  slices per channel. A DSP48 shares only on the *input* side (pre-adder, `(x_a + x_b) * h`).
+  The fix (option A): register the product (`r_prod`) and put `use_dsp "no"` on the
+  partial-sum chain (`r_delay_line_upper`) - one slice per product, same arithmetic, +1 clock
+  per stage. Drop either and the count doubles again. The 3 extra clocks move the DMA sync
+  across one more DAC strobe at one `period-framing` phase (adc 9), which `run.py` expects.
+  Not taken: **(B)** direct form with the pre-adder and a fabric adder tree (also 24, rewrites
+  the stage core and the centre-tap alignment); **(C)** time-share one slice per stage (>= 2 /
+  4 / 8 clocks per output) - ~6 DSPs, most control logic, the lever if DSPs run short again.
 
 - **The ramp is a bit-exact test vector only if it is built like one.** With `nco_en` the
   counter advances on NCO valids (the strobe the ramp mux emits on; `i_adc_valid` only when
@@ -554,10 +568,14 @@ Spec: `docs/archive/AntSDR_Phase5_IF_Decimation_Guide.md`. What outlives the par
 
 Verification: 45/45 VUnit (`tb_fmcw_core`, incl. `decimate-legs` at `chirp_len`
 256/257/262/263, `period-framing` x `decimate_sel=1`, `ramp-reset`), 7/7 offline in
-`decimate_reference.py`. The optional standalone `tb_halfband_decimate` was never built - the
-chain is graded bit-exact inside `tb_fmcw_core` - and the STATUS bit1 mirror was skipped
-(DECIM_SEL reads back). Hardware, digital loopback: ramp through /8 bit-exact vs
-`decimate_golden` (`decim_ramp_check.py`); frame trim 0 or 1 per `start()`, left at 0;
+`decimate_reference.py`. The standalone `tb_halfband_decimate` came with the folded FIR: 5
+configs (random, square, dc, restart-random, restart-short) at one valid per clock, the
+tightest spacing (`tb_fmcw_core` drives 1 in 16), data and tags bit-exact vs `decimate_golden`
+(`halfband_decimate_checker`). The STATUS bit1 mirror was skipped (DECIM_SEL reads back).
+Hardware, digital loopback: ramp through /8 bit-exact vs `decimate_golden`
+(`decim_ramp_check.py`, needs the even RX buffer, see the libiio notes; re-run on the folded
+FIR, 0 mismatches with and without `--sync`); frame trim 0 on every `start()` (the 0 or 1
+seen in I5 came with the odd buffer), left at 0;
 `dechirp_verify.py --ab` /1 vs /8 matched; RE-CONFIGURE to T = 50 us, B = 25 MHz and
 triangle without a hang; up to ~30 CPIs/s in the GUI, dropping as detections increase.
 
@@ -566,7 +584,8 @@ triangle without a hang; up to ~30 CPIs/s in the GUI, dropping as detections inc
 - `capture.prepare_block` takes the block with no frame sync (`sync_src=1` makes every
   DMA transfer start on a chirp boundary), slices `rx[TRIM : TRIM + rows * N_IF]`
   (`FABRIC_FRAME_TRIM`) and runs `TargetSim.apply_if` on it; `process_rx_data` skips
-  `mix_signal`. `sdr.start()` sizes the RX buffer from `N_IF` and warns if the phy's
+  `mix_signal`. `sdr.start()` sizes the RX buffer from `N_IF` (rounded up to an even sample
+  count, see the libiio notes) and warns if the phy's
   `sampling_frequency` reads back different from FS.
 - `register_image(cfg)` is the **only encoder** (RadarConfig -> register values): adds
   DECHIRP_DELAY, IF_SEL and DECIM_SEL and sets `tx_src|sync_src` in CTRL when the flag is on;
