@@ -63,6 +63,7 @@ def if_blocks(a_cfg, a_n, a_ranges=()):
     """a_n int16 blocks sized like the fabric DMA delivers them (CPI + margin):
     noise plus a stationary beat tone per range in a_ranges."""
     n = (a_cfg.CHIRP_REPS + a_cfg.SDR_RX_MARGIN_PERIODS) * a_cfg.N_IF
+    n += n % 2  # sdr.start() rounds the RX buffer up to even (DMA alignment)
     t_fast = (np.arange(n) % a_cfg.N_IF) / a_cfg.FS_IF  # resets every chirp
     S = a_cfg.CHIRP_BW_HZ / a_cfg.T_EFF
     rng = np.random.default_rng(SEED)

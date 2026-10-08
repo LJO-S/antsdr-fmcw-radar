@@ -39,6 +39,13 @@ class AntSDR:
             raise ValueError(
                 f"FABRIC_FRAME_TRIM {trim} outside [0, {margin}] (RX margin)"
             )
+        # Software frame sync cuts CHIRP_REPS periods starting anywhere in the first
+        # period (dsp.frame_sync_linear), so it needs one period of tail.
+        if not self.config.FABRIC_DECHIRP_EN and self.config.SDR_RX_MARGIN_PERIODS < 1:
+            raise ValueError(
+                f"SDR_RX_MARGIN_PERIODS {self.config.SDR_RX_MARGIN_PERIODS} < 1: "
+                "software frame sync needs one period of RX margin"
+            )
 
         # --------------------
         # Configure TX
@@ -107,10 +114,14 @@ class AntSDR:
         # Enable TX and RX channels
         # --------------------
         chirp = dsp.generate_chirp(a_config=self.config)
+        # Same DMA rounding as the RX buffer below, but a cyclic buffer cannot take a
+        # pad sample: an odd chirp would lose its last sample and replay every P-1
+        # samples. Two copies are even and keep the period at P.
+        tx_wave = np.tile(chirp, 2) if len(chirp) % 2 else chirp
 
         # Prepare TX int16 payload: scale then interleave I/Q
-        scaled = chirp * self.full_scale
-        interleaved = np.empty(2 * len(chirp), dtype=np.int16)
+        scaled = tx_wave * self.full_scale
+        interleaved = np.empty(2 * len(tx_wave), dtype=np.int16)
         interleaved[0::2] = np.real(scaled).astype(np.int16)
         interleaved[1::2] = np.imag(scaled).astype(np.int16)
 
@@ -132,6 +143,11 @@ class AntSDR:
             * legs_per_period
             * self.config.N_IF
         )
+        # Round up to even: the kernel rounds every DMA transfer down to the 64-bit
+        # bus width (8 bytes = 2 I/Q samples), so an odd count (129 * 707 at /8)
+        # costs two DMA transfers per refill() and the last sample comes from the
+        # second one. The extra sample is margin.
+        rx_buf_samples += rx_buf_samples % 2
         self.rx_buff = iio.Buffer(self.rx, samples_count=rx_buf_samples, cyclic=False)
 
         # --------------------
@@ -139,7 +155,7 @@ class AntSDR:
         # --------------------
         self.tx.find_channel("voltage0", is_output=True).enabled = True
         self.tx.find_channel("voltage1", is_output=True).enabled = True
-        self.tx_buff = iio.Buffer(self.tx, samples_count=len(chirp), cyclic=True)
+        self.tx_buff = iio.Buffer(self.tx, samples_count=len(tx_wave), cyclic=True)
         written = self.tx_buff.write(bytearray(interleaved))
         print(f"TX write: {written} bytes")
         self.tx_buff.push()
