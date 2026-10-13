@@ -129,3 +129,68 @@ Same geometry, re-run 2026-10-05 (`--refine 1.5`, the sweep's mesh). No new tuni
 - Efficiency (radiated / accepted) and gain are printed. 59 % matches a Q estimate from
   the bandwidth: Q_t ~ 1/(0.038 sqrt 2) = 18.6, Q_d = 1/tan d = 50, so Q_rad ~ 30 and
   eta = Q_t/Q_rad ~ 62 %. FR4 costs ~2.3 dB of gain per patch.
+
+#### Line pair, predicted (2026-10-09)
+
+`line_pair_sim.py` (refine 1.5, PEC, launches not modelled). At 5.8 GHz, dL 70 mm:
+
+| eps_r | dphi (deg) | eps_eff | lambda_g (mm) | loss (dB/mm) |
+|---|---|---|---|---|
+| 4.2 | 891.0 | 3.340 | 28.28 | 0.0185 |
+| 4.4 | 910.7 | 3.489 | 27.67 | 0.0189 |
+| 4.6 | 930.1 | 3.639 | 27.09 | 0.0193 |
+
+- eps_r = 4.4 + (eps_eff - 3.489) / 0.749. `k8_analyze.py` does this lookup.
+- Loss above is dielectric only. Smooth copper adds 0.6 dB/m (sim); real 1 oz HASL is
+  estimated at 1.1-2.0 dB/m, so expect ~0.020-0.021 dB/mm measured.
+- Copper thickness: unresolved. A 35 um strip moves eps_eff +0.001 in the sim, -0.012 by
+  the Bahl-Garg formula. Either way <= ~0.02 in eps_r.
+- End to end on the simulated eps_r 4.4 pair: `k8_analyze.py` returns eps_r 4.400 (table),
+  4.420 (Kirschning-Jansen cross-check), tan d 0.019 (true 0.020).
+
+#### SMA launch (2026-10-09, `sma_launch_sim.py`)
+
+A model of the Molex edge SMA, against the ideal edge port of every table above:
+
+- Patch: the S11 minimum reads ~25 MHz high (+18..+31, mesh-limited), the same over eps_r
+  4.2-4.6, so the patch reads ~0.04 eps_r low. `k8_analyze.py` prints the corrected value
+  (f_min - 25 MHz, +-10 MHz) next to the raw one; the tables are unchanged.
+- Line pair: the launches cancel (eps_r 4.402 vs 4.400). The lines are the better eps_r.
+- Launch S11 ~-33 dB in band, ~0.14 dB loss each.
+
+## Phase 6 K9
+
+All at eps_r 4.4, h 1.5 mm, tan d 0.02, PEC copper. Re-tune once K8 gives the real eps_r.
+Far-field numbers corrected for a phase-centre units bug (fixed in `column_sim.py`).
+
+#### 1x8 column baseline (2026-10-09, refine 1.5)
+
+End-fed, in-line series-fed, uniform. 50 Ohm feed 2.868 x 20 mm, transformer 4.618 x
+6.72 mm (37.8 Ohm), 8 patches L 11.80 x W 15.728 mm, connectors 0.6 x 12.80 mm, pitch
+24.6 mm. Board 230.7 x 45.7 mm.
+
+- Worst S11 over 5.75-5.85 GHz -16.9 dB.
+- Dmax 15.0 dBi, efficiency 40 %, gain 11.0 dBi (FR4 costs ~4 dB).
+- HPBW 13.0 deg elevation x ~78 deg azimuth. First sidelobes -13.0 / -13.1 dB.
+- Tilt -1.4 / -0.7 / -0.1 deg at 5.775 / 5.800 / 5.825 GHz.
+- eps_r 4.3 / 4.5 (not re-tuned): tilt -2.0 / +1.4 deg, S11 -17.1 / -15.0 dB, gain 11.2 / 10.3 dBi.
+
+#### Two columns at lambda/2 (TX board, or RX with one column terminated)
+
+Columns at y = +-12.95 mm (25.9 mm apart), translated copies, A driven, B 50 Ohm.
+
+- Coupling S21 -24.4 dB worst in band. S11 of A -16.7 dB.
+- Gain of A 10.5 dBi (0.5 dB below a lone column), embedded azimuth HPBW 90 deg.
+- A-B phase vs azimuth over +-60 deg: 4.6 deg rms off pi sin(az) (96 vs 90 deg at +-30 deg),
+  about 2 deg of angle error at 30 deg. The turntable calibration (9.5) removes it.
+
+#### Taylor -20 dB taper (learning variant, not for the first board)
+
+Needs per-patch W and L and per-section connector lengths, set from the per-patch
+probes (`--probes`): one shared connector length gave an 11 deg phase step at the centre
+and -13 dB sidelobes. Trimmed (`b5_p6`, refine 1.5): -19.4 / -22.4 dB, gain 10.4 dBi,
+worst S11 -11.4 dB (no transformer yet). The edge port and feed line radiate at
+-22..-28 dB re the beam, which costs 1-3 dB at -20 dB sidelobes; whether a real SMA does
+too is open. Geometry: `--W-list 7.09,8.22,11.56,14.72,15.73,14.17,11.32,9.49
+--L-list 12.319,12.215,11.987,11.838,11.800,11.861,12.001,12.116
+--lc-list 13.913,13.600,13.214,12.941,12.992,13.372,13.527 --tl 0`.

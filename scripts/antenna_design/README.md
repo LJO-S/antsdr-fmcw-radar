@@ -11,6 +11,14 @@ openEMS FDTD simulations of the 5.8 GHz inset-fed patch on FR4.
 | `sweep/` | Per-run `.npz` the sweep reads, plus plots; delete an `.npz` to re-simulate it |
 | `antenna-bringup/` | KiCad: the patch board (= the simulated board) |
 | `line-pair/` | KiCad: two 50 Ohm lines, 95 and 25 mm, for eps_eff and loss |
+| `line_pair_sim.py` | The line pair in openEMS: predicted phase, eps_eff, lambda_g, loss vs eps_r |
+| `line_pair_sim/` | Its per-run `.npz` / `.s2p` (local, git-ignored; `--all` regenerates) |
+| `k8_analyze.py` | VNA Touchstone files -> patch eps_r; line pair eps_eff, lambda_g, dB/mm, tan d, eps_r |
+| `test_k8_analyze.py` | Its board-free tests (`python test_k8_analyze.py`) |
+| `column_sim.py` | K9: series-fed 1xN column(s), one port per column, S11/S21, pattern cuts, A-B phase, KiCad summary |
+| `column/` | Its per-run data (local, git-ignored) |
+| `sma_launch_sim.py`, `sma_launch/` | The Molex edge SMA in openEMS: its bias on the K8 readings (data local) |
+| `make_footprints.py` | Simulated copper -> KiCad 10 footprints in `antenna.pretty/` (K9 column, K8 witness patch); `test_make_footprints.py` |
 
 ## Run
 
@@ -18,7 +26,15 @@ openEMS FDTD simulations of the 5.8 GHz inset-fed patch on FR4.
 source ~/opt/openEMS/venv/bin/activate     # deactivate the radar .venv first
 python Simple_Patch_Antenna.py [--design 4.4] [--eps-r E] [--out DIR] [--refine R]
 python sweep_eps_r.py [--measured GHz]
+python line_pair_sim.py --all              # simulate what is missing (the table k8_analyze reads)
+python k8_analyze.py --patch p.s1p --short s.s2p --long l.s2p [--out DIR]   # any subset
 ```
+
+- `k8_analyze.py` reads both tables (`sweep/`, `line_pair_sim/`) and runs the simulated
+  lines through the same code as the measurement. Line loss and eps_eff come from the
+  eigenvalues of `T_long inv(T_short)`, which cancels identical launches exactly; the
+  plain S21 difference is printed as a cross-check. The LiteVNA measures no S22: it
+  assumes S22 = S11.
 
 - Runs are tagged `d<design eps_r>_e<substrate eps_r>_r<refine>`: field data in
   `/tmp/Patch_Inset_<tag>`, saved results in `<out>/<tag>.*`.
@@ -33,7 +49,7 @@ python sweep_eps_r.py [--measured GHz]
 Two designs, one JLCPCB order: FR-4 TG135-140, 1.6 mm, 1 oz, HASL, order number at the
 `JLCJLCJLCJLC` text (bottom). Gerbers in `*/gerbers/`, read back and checked against `results.md`.
 
-- **SMA**: Molex 73251-1150 (18 GHz, 1.60 mm board), stock footprint
+- **SMA**: Molex 73251-1153 (18 GHz, 1.60 mm board), stock footprint
   `SMA_Molex_73251-1153_EdgeMount_Horizontal`. Checked against `docs/datasheets/SD-73251-115.PDF`:
   widths and pitch match; pads 5.08 mm vs 5.84 drawn, holes 0.75 mm nearer the edge. Kept (the
   4.75 mm legs still land). Board edge = pad start = footprint x -4.26.
@@ -71,3 +87,50 @@ echo 'export PATH="$HOME/opt/openEMS/bin:$PATH"' >> ~/.bashrc
   harmless with `--python`, the venv has its own copies.
 - Check: `openEMS` prints a banner, `AppCSXCAD` opens an empty viewer,
   `python3 -c "import CSXCAD, openEMS"` works inside the venv.
+
+## K9 layout (`make_footprints.py`)
+
+- `python make_footprints.py [column_sim options]` writes `antenna.pretty/`: the column and
+  the witness patch, each one custom pad "1" (F.Cu + F.Mask). Same options as
+  `column_sim.py`, so a re-tune or a taper is one command. Origin = board edge on the line
+  centre. The first 5 mm of line is left to the SMA centre pad, as on K8 (`--launch-gap`).
+- TX board: two columns at y = +-12.95 mm, Edge.Cuts 230.72 x 71.63 mm (y +-35.81). RX
+  board: one column, 230.72 x 45.73 mm (y +-22.86). Solid GND on B.Cu, as simulated.
+- Give each pad the net of its SMA centre pin. Not yet opened in KiCad: check the pad
+  loads and fills before ordering.
+- Witness patch: the K8 table assumes the K8 board. Keep its ground margins (about
+  20 mm on every side) and compare it with the K8 measurement, not the table alone.
+
+## K8 measurement (LiteVNA 64)
+
+Predictions first (`results.md`): patch S11 minimum near 5.8 GHz for eps_r 4.4 (about 60 MHz
+per 0.1 eps_r, launch shifts it 20-35 MHz); line pair eps_eff 3.49, lambda_g 27.7 mm, dphi
+~911 deg over dL 70 mm, ~0.020-0.021 dB/mm (all at eps_r 4.4; 4.2-4.6 spans eps_eff 3.34-3.64).
+
+1. **Settings**: 5.0-6.5 GHz, 401 points or more (3.75 MHz steps is plenty for both
+   boards), highest averaging / lowest IF bandwidth the menu offers, default output power.
+2. **Calibrate** SOLT at the SS405 cable ends (short, open, load on port 1, again on port 2,
+   barrel thru), with the same span and points as the measurement. Changing span or points
+   means recalibrating. Save it to a memory slot.
+3. **Check**: re-measure the cal load and the barrel thru. Both should look near perfect
+   (they were the standards); if not, recalibrate. Fix the cables for the whole session.
+4. **Save**: use NanoVNA-Saver 0.7.0 or newer (first LiteVNA support) with the USB link, then
+   File -> save .s1p / .s2p (Touchstone v1, as `k8_analyze.py` expects). On-device saving
+   to microSD: format unconfirmed, check it is .s1p/.s2p with S11/S21 in the file.
+5. **Patch**: screw the board straight onto the cable end, board held in free air by the
+   cable or a stand (cable taped in place), face pointing away from you, hand and metal
+   objects more than 20 cm away, nothing behind it. Same pose as the calibration cable
+   layout. Save `patch.s1p`.
+6. **Line pair**: same calibration, same cables, do not move or re-flex them between boards
+   (only unscrew the DUT). Port 1 -> port 2 across each line, laid flat on foam or
+   cardboard, not on a metal bench. Save `short.s2p` (25 mm) and `long.s2p` (95 mm), S11 and S21.
+   Optional: flip each line (ports swapped), save `short_flip.s2p` / `long_flip.s2p`; flipped
+   S11 should match the S22 the analysis assumes (equal to S11).
+7. **Analyse**: `python k8_analyze.py --patch patch.s1p --short short.s2p --long long.s2p --out k8/`
+   (`--dl`, `--width`, `--h` default to the design 70, 2.868, 1.5). Copy from `k8/k8_summary.md`
+   into `results.md`: eps_r from the patch (raw and SMA-corrected) and from the lines (table and cross-check),
+   eps_eff, lambda_g, dB/mm, tan d range. Done (guide 9.3): the two eps_r agree within ~0.1.
+
+Sources: [NanoVNA-Saver v0.7.0 release](https://github.com/NanoVNA-Saver/nanovna-saver/releases)
+(LiteVNA support), [Selteq LiteVNA 64 specs](https://selteq.com.ua/en/litevna-64/) (points),
+[Oscar Liang](https://oscarliang.com/?p=45815) (calibration flow, recalibrate on span change).

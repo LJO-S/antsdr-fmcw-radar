@@ -87,10 +87,10 @@ src/python/                 # import root
     test_fabric_ctl.py, test_target_sim.py, test_recorder.py  # board-free, run as __main__
 docs/              # AntSDR_Phase6_Tracking_Antennas_Angle_Guide.md (Part K spec, active),
                    #   tracking_algorithms.md (K3/K11 research + reading),
-                   #   vna_soldering_buy_list.md (K4/K5), firmware-branch-workflow.md,
+                   #   firmware-branch-workflow.md,
                    #   rf-power-and-spectrum-sweden.pdf, fmcw_fabric_architecture.svg,
-                   #   datasheets/ (incl. HMC8038, HMC849A, VBFZ-5500), archive/ (Phase 1-5
-                   #   guides; Phase 5 Section 4.2 = the deferred FIR reclaim recipe)
+                   #   datasheets/, archive/ (Phase 1-5
+                   #   guides;
 hardware/          # materials.md (phased buy list), bench_measurements.md (K4 predict /
                    #   measure / explain tables), fmcw_58ghz_block_diagram.svg
 firmware/          # submodule stack (see below), branch e200-custom
@@ -647,9 +647,9 @@ triangle without a hang; up to ~30 CPIs/s in the GUI, dropping as detections inc
   a real signal is still open (not needed for the 2T1R plan).
 - **RX2 and TX2 are IPEX (U.FL) connectors**, not SMA (MicroPhase docs: "SMA:1T1R IPEX:1T1R").
 
-### E200 GPIO header J30 (verified 2026-09-28, schematic `ANT-E200_Public.pdf` p.10)
+### E200 GPIO header J30 (verified 2026-09-28, schematic `docs/datasheets/ANT-E200_Public.pdf` p.10)
 
-10-pin 2.54 mm footprint, **not fitted** on this board: pin 1 VCC_3V3, pin 2 GND, pins 3-10
+10-pin **2.0 mm pitch** footprint, **not fitted** on this board: pin 1 VCC_3V3, pin 2 GND, pins 3-10
 GPIO_00-07 (ESD diodes). HDL `GPIOB[7:0]` (bank 13, LVCMOS33, XDC order V5, U7, V7, T9, U10,
 Y7, Y6, Y9), routed to the PS through `ad_iobuf` as EMIO 35-42 = Linux sysfs gpio 995-1002.
 Upstream MicroPhase constraints reuse Y9/Y6 as a UART; this project maps all eight to `GPIOB`.
@@ -690,6 +690,11 @@ Typical values, Table 1 of the AD9361 datasheet (nearest characterized band is 5
   `quadrature_tracking_en`. Defaults are right. **Quadrature error shows up as a mirrored ghost
   target in the RD map** — recognize it before chasing it as a DSP bug.
 
+### Measured on the bench (K4 VNA, 2026-10-10)
+
+Full table: `hardware/bench_measurements.md`. LiteVNA-64, SOL on port 1, thru = port-2 test
+cable, 5.0-6.3 GHz, 201 points.
+
 ## Regulatory constraints (Sweden, PTS) — researched 2026-08
 
 Applies the moment anything is radiated. Cable/attenuator work (Part F) is unregulated.
@@ -705,8 +710,9 @@ inside BOTH license-free regimes.** Two routes, per PTSFS 2025:1 (PTS exemption 
 - SRD route, with the **16 dBi TX sector** (Ubiquiti AM-5G16-120, the one used in Part G):
   EIRP = port - losses + 16 dBi <= 14 dBm. Ignoring losses, the port must be **<= -2 dBm**:
   `SDR_TX_GAIN_DB` ~ **-9 dB** (full power is ~+6.5 dBm). Counting the Part G TX chain (2 m
-  HF240 1.4 dB + VBFZ filter ~1.4 dB), the port may reach +0.8 dBm: **-5.7 dB**, the Part G
-  plan (start at -15 dB and walk up). The clamp is 0.0 dB and enforces nothing, so set the
+  HF240 1.9 dB measured in K4 + VBFZ filter ~1.4 dB; one unit measured 1.8, so 1.4 errs
+  safe), the port may reach +1.3 dBm: **-5.2 dB**
+  (Part G planned -5.7 from the 1.4 dB datasheet cable figure; start at -15 dB and walk up). The clamp is 0.0 dB and enforces nothing, so set the
   gain by hand. If an unattended/long radiated run is ever left running, put the ceiling
   into `SDR_TX_GAIN_MAX_DB` for that session rather than trusting the field.
 - Amateur route (Swedish HAREC via SSA exam) unlocks the Part H PA legally: a 2 W FPV PA is
@@ -715,6 +721,9 @@ inside BOTH license-free regimes.** Two routes, per PTSFS 2025:1 (PTS exemption 
   transmitter and must periodically send its call sign. Amateur is **secondary** at 5.65–5.85 GHz
   (radiolocation and military are primary) — no protection, no interference. Homebrew amateur gear
   is exempt from CE/RED; SRD gear is not.
+- **Legal fc window** for a 50 MHz chirp: 5.750-5.850 GHz (SRD) or 5.675-5.825 GHz
+  (amateur). That is the room for trimming fc to a PCB batch's eps_r (Phase 6 guide 9.4).
+  Never 5.6 GHz: outside both, and it is C-band weather radar.
 - **Part J ceiling is legal, not technical**: synthetic bandwidth is capped at 150 MHz by the SRD
   band (5.725–5.875) or 200 MHz by the amateur band (5.65–5.85, centre ≈ 5.75 GHz) → ~1.0 m or
   ~0.75 m fine resolution. The 330 MHz plan in `TODO.md` is loopback-only.

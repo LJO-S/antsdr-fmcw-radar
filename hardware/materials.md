@@ -128,7 +128,7 @@ Sourcing (2026-07: Amazon prices for these are not competitive - skip it):
 ### Cables and adapters (~400-600 SEK)
 - **BOUGHT (2026-08): Rangeful HF240 PVC** (LMR-240 class), datasheet
   `docs/datasheets/hf240.png`. **0.676 dB/m at 5800 MHz** (bare cable, 20 C; add
-  ~0.1-0.2 dB per connector). As built: ~2 m TX = 1.4 dB, ~1.5 m RX = 1.0 dB.
+  ~0.1-0.2 dB per connector).
   Foam PE, min bend radius 30 mm single / 61 mm repeated - do not crush it on a
   tripod leg. Supersedes the RG-223 plan and roughly halves its dB tax.
 - Reasoning kept: spec the coax, not the connector - the connector is a 30 SEK

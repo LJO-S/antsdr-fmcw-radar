@@ -4,6 +4,13 @@
 **.log
 data/sessions/
 scripts/antenna_design/sweep/*.png
+# simulation output stays on the sim PC (regenerate with the scripts)
+scripts/antenna_design/line_pair_sim/
+scripts/antenna_design/column/
+scripts/antenna_design/sma_launch/
+scripts/antenna_design/line_pair_sim.md
+scripts/antenna_design/local/
+scripts/antenna_design/antenna.pretty/*.png
 # KiCad
 **/.history/
 **/~*.lck
@@ -11,3 +18,5 @@ scripts/antenna_design/sweep/*.png
 **/*-backups/
 **/fp-info-cache
 **/gerbers/
+local/
+docs/datasheets

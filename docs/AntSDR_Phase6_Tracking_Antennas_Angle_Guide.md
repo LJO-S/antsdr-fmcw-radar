@@ -88,21 +88,23 @@ stays documented as the fallback.
 
 ### 1.3 The link-budget consequence of patches
 
-Under the 25 mW SRD EIRP cap, **TX antenna gain and TX-side loss are free**: a
-lower-gain TX antenna or the switch's insertion loss just takes more TX port power,
-and the E200 has headroom (~+6.5 dBm vs the ~-2 dBm allowed with the 16 dBi sector).
-Only one TX antenna radiates at a time, so the cap applies per antenna. **RX gain is
-the cost**: range goes as `G_rx^(1/4)`.
+Under the 25 mW SRD EIRP cap, **TX antenna gain and TX-side loss are nearly free**:
+a lower-gain TX antenna or the switch's insertion loss just takes more TX port power.
+The limit: with ~+5 dBm at the port, 1.3 dB of switch and 1.9 dB of cable (2 m HF240,
+measured in K4), the TX antenna needs ~12 dBi to reach the cap. Only one TX antenna radiates at a time, so
+the cap applies per antenna. **RX gain is the cost**: range goes as `G_rx^(1/4)`.
 
 | RX antenna | vs the 30 dBi grid | Range factor |
 |---|---|---|
-| 1x8 column, 15 dBi (Rogers) | -15 dB | 0.42 |
-| 1x8 column, 13 dBi (FR4) | -17 dB | 0.38 |
+| COTS sector, 16 dBi | -14 dB | 0.45 |
+| 1x8 column, RO4350B 1.52 mm, ~14.5 dBi (model) | -15.5 dB | 0.41 |
+| 1x8 column, FR4, 11.0 dBi (sim) | -19 dB | 0.34 |
 
-So roughly 40 % of the grid's range: a person at a few hundred metres, cars further,
-inside the 800 m decimation envelope. The beams get wide (~70-80 deg in azimuth, vs
-a few degrees for the grid), so more ground clutter enters and MTI will matter more
-than it did in Part G.
+So roughly a third of the grid's range: a person at a couple of hundred metres, cars
+further. `G_rx^(1/4)` only holds below the two-ray crossover (~350 m for a person at
+1.5 m antenna height); beyond it, antenna height helps more than RX gain. The beams
+get wide (~80 deg in azimuth, vs a few degrees for the grid), so more ground clutter
+enters and MTI will matter more than it did in Part G.
 
 ---
 
@@ -292,7 +294,7 @@ Done when every item has prediction, measurement and explanation in a table
 
 Read first: 13.1 (soldering).
 
-The E200's 3.3 V GPIO sits on **J30**, a 10-pin 2.54 mm header footprint that is not
+The E200's 3.3 V GPIO sits on **J30**, a 10-pin **2.0 mm** pitch header footprint that is not
 fitted (schematic `ANT-E200_Public.pdf`, p.10): pin 1 VCC_3V3, pin 2 GND, pins 3-10
 GPIO_00-07, ESD-protected. In the HDL these are `GPIOB[7:0]` (bank 13, LVCMOS33),
 today routed to the PS GPIO through `ad_iobuf` (EMIO 35-42, Linux sysfs gpio
@@ -388,8 +390,9 @@ by up to `asin(10^(-I/20))`: 1.8 deg at 30 dB, 0.6 deg at 40 dB.
   transient that already exists (~13 IF samples at /8). Add a `TX_SEL_DELAY`
   register only if 8.4 shows it matters.
 - Python: `TDM_EN` config field (requires `FABRIC_DECHIRP_EN`, excludes
-  `TRIANGLE_EN`); `register_image` sets bit6; the capture holds `2 x CHIRP_REPS`
-  rows, as in triangle mode.
+  `TRIANGLE_EN`); `register_image` sets bit6; `fabric_ctl.enable` must pass bit6 in
+  the pre-COMMIT CTRL word (today it masks to `triangle_en` only); the capture holds
+  `2 x CHIRP_REPS` rows, as in triangle mode.
 - VUnit (`tb_fmcw_core`): `o_tx_sel` toggles once per chirp; the period tag and DMA
   sync fire on A legs only; with `tdm_en` = 0 everything is bit-identical to FMC4;
   decimate-legs still yields `SWEEP_LEN // 8` per leg.
@@ -419,7 +422,7 @@ Read first: 13.2.
 ### 9.1 Targets
 
 - **Match**: S11 < -10 dB over 5.75-5.85 GHz (the chirp spans 5.775-5.825).
-- **Gain**: >= 13 dBi per column on FR4.
+- **Gain**: ~11 dBi per column on FR4 (sim 11.0; FR4 loss costs ~4 dB).
 - **Beam**: azimuth HPBW >= 60 deg, elevation ~12 deg.
 - **Polarization**: linear, the same on TX and RX. When mixing with the COTS
   antennas, match their polarization.
@@ -443,43 +446,67 @@ across it. This is the standard automotive FMCW layout.
 ### 9.3 K8 - single patch first
 
 - Substrate: FR4, 1.6 mm, 2 layers. Nominal eps_r 4.4, but 4.2-4.6 in practice
-  at 5.8 GHz, tan d ~0.02. That spread moves resonance by 100-250 MHz, more than
-  the patch bandwidth, which is why a calibration spin comes first.
+  at 5.8 GHz, tan d ~0.02. That spread moves resonance by ~60 MHz per 0.1 eps_r,
+  more than the patch bandwidth allows, which is why a calibration board comes first.
 - Starting dimensions (transmission-line model, eps_r 4.4): W ~ 15.7 mm,
   L ~ 11.8 mm, inset feed from a 50 ohm line. A "1.6 mm" 2-layer board is ~1.5 mm
   of dielectric plus copper, so simulate h = 1.5 mm (line ~2.9 mm wide). Final
   numbers come from openEMS (`scripts/antenna_design/`): ~60 % radiation efficiency
   on FR4, ~5.7 dBi per patch.
-- On the same panel: a plain 50 ohm through line (loss and eps_eff) next to the
-  patch.
-- Edge-mount SMAs rated well past 6 GHz, soldered with the K5 skills.
-- Measure S11 on the VNA. Back out eps_r from the resonance shift:
-  `eps_r_real ~ eps_r_sim * (f_sim / f_meas)^2`. Re-run the simulation with it
-  before K9.
-- Fallback: Rogers RO4003C, 0.508 mm (eps_r 3.38 +-0.05, tan d 0.0027), if FR4
-  batch spread or loss is too much.
+- One fixed geometry, the eps_r 4.4 design. Its simulated resonance vs eps_r is the
+  calibration table (`eps_r_sweep.md`).
+- Second board: a line pair, 95 and 25 mm. The S21 phase difference gives eps_eff
+  with the SMA launches cancelled; the loss difference gives dB/mm and tan d.
+- Edge-mount SMAs (Molex 73251-1150), soldered with the K5 skills.
+- Measure S11 and back out eps_r: `sweep_eps_r.py --measured <GHz>` (the formula
+  `eps_r_real ~ eps_r_sim * (f_sim / f_meas)^2` is a cross-check). The launch can
+  move the S11 minimum by 20-35 MHz, about 0.05 eps_r.
+- K9 uses the lines' eps_eff for element pitch and phase, and the patch's eps_r for
+  patch dimensions. FR4 is anisotropic, so the two can differ by a few %.
+- Fallback: Move LO carrier to resonance frequency. If too big deviation then RO4350B or JLCPCB's PTFE at 1.52 mm (JLCPCB has no RO4003C, and 0.5 mm is too thin for a patch). On RO4350B,
+  simulate with the design Dk 3.66.
 
-Done when the corrected simulation predicts the measured resonance within +-50 MHz.
+Done when eps_r from the patch and eps_r from the lines' eps_eff agree within ~0.1,
+and eps_eff, lambda_g and dB/mm are written into `results.md`.
 
 ### 9.4 K9 - columns
 
-- Series-fed 1x8. Element pitch ~ one guided wavelength of the connecting line,
-  ~28 mm on FR4 (0.55 lambda0 in free space, so no grating lobes). The column is
-  ~23 cm long.
-- Uniform amplitude first. A Dolph/Taylor taper through the patch widths comes
-  second: elevation sidelobes are where ground clutter gets in.
-- **TX board**: two columns, centre spacing lambda/2 = 25.9 mm (0.6 lambda if the
-  coupling is worse than -15 dB). Identical feeds with equal line lengths to the
-  SMAs, so the A-B phase offset is nearly constant; calibration takes the rest.
-- **RX board**: one column.
-- Expected: ~13 dBi on FR4, ~15 dBi on Rogers, azimuth HPBW ~70-80 deg, elevation
-  ~11-12 deg.
+Designed in `scripts/antenna_design/column_sim.py`; results in `results.md`.
+
+- Series-fed 1x8, end-fed, vertical polarization. The pitch is set by the in-phase
+  condition (patch + connector): 24.6 mm in the sim (0.48 lambda0, no grating
+  lobes). The column is ~23 cm long.
+- **Uniform, no taper.** The elevation sidelobes hit the ground within ~4 m, inside
+  the close-in mask; the clutter that matters is main-beam ground from ~15 m out,
+  which only MTI removes. A Taylor taper is a learning variant (sim: -19 / -22 dB,
+  with per-section connector lengths).
+- **TX board**: two columns, translated copies, centre spacing lambda/2 = 25.9 mm.
+  Identical straight feeds to the SMAs. Sim coupling -24 dB. Do not widen the
+  spacing: at 0.6 lambda, strong close targets alias at +-56 deg. A tab with
+  mounting holes for the switch module, behind the ground plane or past the feed end.
+- **RX board**: one column of the same design, so the two-antenna gain method holds.
+  For the first angle field day, the COTS sector (V port, tilted up ~4 deg) is a
+  better RX: 16 dBi and 120 deg.
+- A witness coupon (single patch or short line pair) on every board: the K9 FR4
+  batch may not be K8's.
+- Expected (sim, eps_r 4.4): 11.0 dBi, azimuth HPBW ~78 deg, elevation 13 deg,
+  1.7 deg beam tilt per 0.1 eps_r. Re-tune L and the connector length once K8 gives
+  eps_r.
+- **fc is the trim for batch drift.** Patch resonance and section phase both scale
+  with `f * sqrt(eps_eff)`, so a board with eps_r 0.1 high is the right board ~60 MHz
+  lower: moving `CHIRP_FC_HZ` fixes match and tilt together. Legal window for a
+  50 MHz chirp: fc 5.750-5.850 GHz (SRD), about +-0.08 eps_r. Untuned, the column
+  already holds at eps_r +-0.1 (S11 <= -15 dB, tilt <= 2 deg, gain -0.7 dB), so the
+  witness coupon picks fc; redesign only if the shift exceeds the window.
+- Order the TX and RX boards together: one batch, one fc. Run the 9.5 turntable
+  curve at the fc you will use.
 
 ### 9.5 K9 - bench measurements
 
 - **S-parameters** (VNA from K4):
   - S11 of every column.
-  - S21 between the two TX columns (coupling, target <= -15 dB).
+  - S21 between the two TX columns (coupling, target <= -20 dB, sim -24 dB; at
+    -15 dB the uncalibrated angle error reaches ~8 deg).
   - S21 between the TX and RX boards vs spacing (isolation - this replaces Part G's
     skipped isolation item). Reference: the leakage the E200 sees with the COTS
     antennas at 1.5 m, measured once with the same RX gain.
@@ -498,7 +525,8 @@ Done when the corrected simulation predicts the measured resonance within +-50 M
   - The pad keeps RX below its +2.5 dBm absolute maximum; keep the TX low.
 - **Pattern**: rotate the TX board on a marked turntable (5 deg steps), RX column
   fixed >= 2 m away, TDM on. Record the A and B levels (HPBW, sidelobes) and the
-  **A-B phase difference vs angle** - K10's calibration curve.
+  **A-B phase difference vs angle** - K10's calibration curve. It is mandatory: in
+  the sim, the curve is 4.6 deg rms off `pi sin(theta)`, ~2 deg of angle at 30 deg.
 - Measure outdoors, or with walls and floor far away, antennas >= 1.5 m high. A
   floor bounce ruins a pattern.
 
@@ -511,8 +539,8 @@ Done when both boards are characterized (S11, coupling, isolation vs spacing, ga
 SDR_TX_GAIN_DB ~ 14 - G_tx + L_txcable + L_switch - 6.5   # dB; 6.5 dBm = typ port at 0 dB
 ```
 
-`L_switch` is the IL measured in 8.2. Example: G_tx 13 dBi, 1.4 dB of cable, 1.3 dB
-of switch gives -2.8; use -4 for margin. Put the same value into
+`L_switch` is the IL measured in 8.2. Example: G_tx 11 dBi, 1.9 dB of cable, 1.3 dB
+of switch gives -0.3; use -2 for margin. Put the same value into
 `SDR_TX_GAIN_MAX_DB` for field sessions, so a typo cannot exceed the limit.
 
 ---
@@ -532,7 +560,8 @@ Read first: 13.4.
   frequency read off the Doppler FFT's own frequency axis (sample interval `2T`,
   sub-bin refined) - not derived from v, which sidesteps the velocity sign
   convention. Then `theta = asin(psi * lambda / (2*pi*d))`, or a lookup on the K9
-  turntable curve, which also absorbs mutual coupling.
+  turntable curve, which also absorbs mutual coupling. `lambda` comes from
+  `CHIRP_FC_HZ` (fc may move, 9.4); `d` is the physical 25.9 mm.
 - The residual from a half-bin error in `f_d` is <= 0.7 deg at 128 chirps per
   antenna, less after sub-bin refinement.
 - **Sign**: `IF = TX * conj(RX)` conjugates the echo phase, so the sign of psi vs
@@ -761,11 +790,12 @@ To buy, in the order the steps need it:
 - K4: VNA to >= 6 GHz (LiteVNA-64 class) with SMA calibration standards.
 - K5: temperature-controlled soldering iron with a fine conical and a small chisel
   tip, 0.5-0.8 mm leaded solder, flux, desoldering wick, a tip cleaner, ventilation;
-  a straight 10-pin 2.54 mm header; female-female Dupont leads; a practice board.
+  a straight 10-pin 2.0 mm pitch header (J30 is 2.0 mm, not 2.54); 2.0 mm female
+  leads or a 2.0 -> 2.54 mm adapter; a practice board.
 - K6: a trihedral corner reflector, ~30 cm edges (stiff cardboard and kitchen foil
   will do for the range check).
 - K7: the HMC8038 switch module (8.1), two of them.
-- K8/K9: PCBs, FR4 1.6 mm, 2 layers (RO4003C quote as fallback); edge-mount SMAs
+- K8/K9: PCBs, FR4 1.6 mm, 2 layers (RO4350B 1.52 mm quote as fallback); edge-mount SMAs
   rated well past 6 GHz.
 - K9: a turntable (lazy susan + printed protractor) and a tripod mount for the
   boards.
