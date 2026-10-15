@@ -653,6 +653,7 @@ triangle without a hang; up to ~30 CPIs/s in the GUI, dropping as detections inc
 GPIO_00-07 (ESD diodes). HDL `GPIOB[7:0]` (bank 13, LVCMOS33, XDC order V5, U7, V7, T9, U10,
 Y7, Y6, Y9), routed to the PS through `ad_iobuf` as EMIO 35-42 = Linux sysfs gpio 995-1002.
 Upstream MicroPhase constraints reuse Y9/Y6 as a UART; this project maps all eight to `GPIOB`.
+Pin map measured 2026-10-13 (multimeter, sysfs): all eight match the schematic.
 Part K7 takes one pin out of the iobuf to drive the TX switch from `fmcw_core`.
 
 ## RF reality (AD9361 numbers, verified against the datasheet)

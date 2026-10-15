@@ -111,10 +111,11 @@ Fabric FFT/CFAR is not planned - decision gate in G11.
 - [x] K4 - VNA basics (G5), LiteVNA-64: owned gear predicted, measured.
 - [ ] K5 - soldering + J30 header (G6): practice joints, fit the 10-pin header,
       map GPIO_00-07 from Linux (sysfs gpio 995-1002).
+      Map verified 2026-10-13: all 8 pins toggle from sysfs, match the schematic.
 - [ ] K6 - field day 1 (G7, needs K2, weather): COTS only; delay sweep (expect
       61 +-1), software vs fabric /8; record everything; flip the
       `FABRIC_DECHIRP_EN` default.
-- [ ] K7 - TX switch (G8): HMC8038 module on the VNA (IL, isolation, S11);
+- [ ] K7 - TX switch (G8): HMC849A module on the VNA (IL, isolation, S11);
       `tdm_en` + chirp-pair period + `tx_sel` on J30, MAGIC FMC5, VUnit; bench
       test with port A -> pad -> RX, port B terminated.
 - [ ] K8 - single patch on FR4 (G9.3): openEMS, fab, solder SMAs, S11, back out
@@ -124,7 +125,7 @@ Fabric FFT/CFAR is not planned - decision gate in G11.
       in band -16.3 dB; 59 % efficiency, 5.7 dBi. In band for eps_r ~4.3-4.5, -60 MHz
       per +0.1 (`eps_r_sweep.md`; `--measured` turns a VNA reading into eps_r).
       KiCad done 2026-10-05: patch board + line-pair board, Gerbers checked
-      (`scripts/antenna_design/README.md`, "Boards"). Left: order, solder, measure.
+      (`scripts/antenna_design/README.md`, "Boards"). Ordered (by 2026-10-13). Left: solder, measure.
 - [ ] K9 - columns + bench (G9.4-9.5): TX 2x(1x8) at lambda/2, RX 1x8; S11,
       coupling, isolation vs spacing, gain +-1 dB, pattern + A-B phase vs angle.
 - [ ] K10 - angle on the host (G10.1): TDM split, Doppler correction,

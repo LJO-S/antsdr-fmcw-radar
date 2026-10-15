@@ -90,8 +90,8 @@ stays documented as the fallback.
 
 Under the 25 mW SRD EIRP cap, **TX antenna gain and TX-side loss are nearly free**:
 a lower-gain TX antenna or the switch's insertion loss just takes more TX port power.
-The limit: with ~+5 dBm at the port, 1.3 dB of switch and 1.9 dB of cable (2 m HF240,
-measured in K4), the TX antenna needs ~12 dBi to reach the cap. Only one TX antenna radiates at a time, so
+The limit: with ~+5 dBm at the port, 2.0 dB of switch (HMC849A module, predicted) and 1.9 dB
+of cable (2 m HF240, measured in K4), the TX antenna needs ~13 dBi to reach the cap. Only one TX antenna radiates at a time, so
 the cap applies per antenna. **RX gain is the cost**: range goes as `G_rx^(1/4)`.
 
 | RX antenna | vs the 30 dBi grid | Range factor |
@@ -341,12 +341,12 @@ Read first: 13.1 (the datasheet exercise), 13.4.
 
 ### 8.1 The part
 
-- **AliExpress "RF switch module SPDT 6 GHz", HMC8038 variant.** Chip datasheet,
-  4-6 GHz: 0.9 dB IL typ (1.3 max), 51 dB isolation typ (40 min), 150 ns switching,
-  one control line (VIH 1.15 V at VDD 3.3 V), single 3-5 V supply. SMA ports and a
-  header are fitted, so it wires with Dupont leads. The same listing sells an HMC849
-  variant (more IL, VIH 2.0 V, workable) and an **HMC349 variant (4 GHz max: wrong
-  part)**. Buy two: clones vary.
+- **AliExpress "RF switch module SPDT 6 GHz", HMC849A variant** (bought). Chip
+  datasheet at 5.8 GHz: ~1.7 dB IL (2.5 max), ~40 dB isolation (35 min), 150 ns
+  switching (600 max), one control line (VIH 2.0 V), single 3-5 V supply, ESD class
+  1A (fragile). SMA ports and a header are fitted, so it wires with Dupont leads. The
+  same listing sells an HMC8038 variant (less IL, more isolation) and an **HMC349
+  variant (4 GHz max: wrong part)**. Buy two: clones vary.
 - Unverified on the module: the header pinout, whether EN is tied low (it must be
   low), the real IL at 5.8 GHz on its FR4, whether the chip is genuine. 8.2 answers
   all four.
@@ -383,16 +383,15 @@ by up to `asin(10^(-I/20))`: 1.8 deg at 30 dB, 0.6 deg at 40 dB.
   `system_bd.tcl`: a `create_bd_port` plus `ad_connect`. `system_top.v`: take the
   J30 pin chosen in K5 (say `GPIOB[0]`) out of the PS `ad_iobuf` and drive it from
   `tx_sel`. A 5 kHz square wave has no timing concern: false-path the port.
-- `tdm_en` together with `triangle_en` is undefined in v1 (four legs):
-  `register_image` raises.
+- `tdm_en` with `triangle_en`: four legs per period, A-up, A-down, B-up, B-down.
+  Down chirps stay on odd rows; `MAX_VELOCITY` drops to a quarter of sawtooth.
 - Timing: `tx_sel` flips at the NCO's leg boundary; the RF chirp leaves the AD9361
   a fraction of a microsecond later. The mismatch lands in the chirp-boundary
   transient that already exists (~13 IF samples at /8). Add a `TX_SEL_DELAY`
   register only if 8.4 shows it matters.
-- Python: `TDM_EN` config field (requires `FABRIC_DECHIRP_EN`, excludes
-  `TRIANGLE_EN`); `register_image` sets bit6; `fabric_ctl.enable` must pass bit6 in
-  the pre-COMMIT CTRL word (today it masks to `triangle_en` only); the capture holds
-  `2 x CHIRP_REPS` rows, as in triangle mode.
+- Python: `TDM_EN` config field (requires `FABRIC_DECHIRP_EN`); `register_image`
+  sets bit6; `fabric_ctl.enable` must pass bit6 in the pre-COMMIT CTRL word (today it
+  masks to `triangle_en` only); the capture holds `LEGS_PER_PERIOD x CHIRP_REPS` rows.
 - VUnit (`tb_fmcw_core`): `o_tx_sel` toggles once per chirp; the period tag and DMA
   sync fire on A legs only; with `tdm_en` = 0 everything is bit-identical to FMC4;
   decimate-legs still yields `SWEEP_LEN // 8` per leg.
@@ -539,8 +538,8 @@ Done when both boards are characterized (S11, coupling, isolation vs spacing, ga
 SDR_TX_GAIN_DB ~ 14 - G_tx + L_txcable + L_switch - 6.5   # dB; 6.5 dBm = typ port at 0 dB
 ```
 
-`L_switch` is the IL measured in 8.2. Example: G_tx 11 dBi, 1.9 dB of cable, 1.3 dB
-of switch gives -0.3; use -2 for margin. Put the same value into
+`L_switch` is the IL measured in 8.2. Example: G_tx 12 dBi, 1.9 dB of cable, 2.0 dB
+of switch gives -0.6; use -2 for margin. Put the same value into
 `SDR_TX_GAIN_MAX_DB` for field sessions, so a typo cannot exceed the limit.
 
 ---
@@ -676,7 +675,7 @@ Exercises:
   them.
 - On a paper Smith chart: an open-ended 50 ohm line, S11 vs electrical length. Then
   measure it.
-- Read the HMC8038 datasheet and write one line per spec: what it means, and what it
+- Read the HMC849A datasheet and write one line per spec: what it means, and what it
   does to the radar (IL -> TX power, isolation -> angle error, switching time ->
   boundary transient).
 
@@ -794,7 +793,7 @@ To buy, in the order the steps need it:
   leads or a 2.0 -> 2.54 mm adapter; a practice board.
 - K6: a trihedral corner reflector, ~30 cm edges (stiff cardboard and kitchen foil
   will do for the range check).
-- K7: the HMC8038 switch module (8.1), two of them.
+- K7: the HMC849A switch module (8.1), two of them.
 - K8/K9: PCBs, FR4 1.6 mm, 2 layers (RO4350B 1.52 mm quote as fallback); edge-mount SMAs
   rated well past 6 GHz.
 - K9: a turntable (lazy susan + printed protractor) and a tripod mount for the
