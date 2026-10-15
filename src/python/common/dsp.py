@@ -299,20 +299,19 @@ def process_cpi(a_if_signal: np.ndarray, a_config: RadarConfig, a_ctx: CPIContex
     # ---------------------------------------------
     # 1. Reshape IF into [N_reps x N_chirp_samples]
     # ---------------------------------------------
-    if a_config.LEGS_PER_PERIOD == 2:
-        full_matrix_iq = a_if_signal[: 2 * a_config.CHIRP_REPS * N].reshape(
-            2 * a_config.CHIRP_REPS, N
-        )
+    L = a_config.LEGS_PER_PERIOD
+    full_matrix_iq = a_if_signal[: L * a_config.CHIRP_REPS * N].reshape(
+        a_config.CHIRP_REPS, L, N
+    )
+    if a_config.TDM_EN:
+        # A chirps are the first half of each period; B rows unused for now
+        full_matrix_iq = full_matrix_iq[:, : L // 2]
+    full_matrix_iq = full_matrix_iq.reshape(-1, N)
+    if a_config.TRIANGLE_EN:
         up_matrix_iq = full_matrix_iq[0::2, :].copy()
-        if a_config.TRIANGLE_EN:
-            down_matrix_iq = full_matrix_iq[1::2, :].copy()
-        # TDM: odd (B) rows unused for now
+        down_matrix_iq = full_matrix_iq[1::2, :].copy()
     else:
-        up_matrix_iq = (
-            a_if_signal[: a_config.CHIRP_REPS * N]
-            .reshape(a_config.CHIRP_REPS, N)
-            .copy()
-        )
+        up_matrix_iq = full_matrix_iq.copy()
 
     # ---------------------------------------------
     # 2. DC offset removal

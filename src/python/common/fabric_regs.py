@@ -107,8 +107,6 @@ def register_image(cfg: RadarConfig) -> dict[int, int]:
     sweep_len = cfg.SWEEP_LEN
     ftw_start, ftw_slope = chirp_ftw(cfg.CHIRP_BW_HZ, sweep_len, cfg.FS)
 
-    if cfg.TDM_EN and cfg.TRIANGLE_EN:
-        raise ValueError("TDM_EN and TRIANGLE_EN together would be 4 legs")
     ctrl = 0
     if cfg.TRIANGLE_EN:
         ctrl |= CTRL_TRIANGLE_EN

@@ -60,7 +60,8 @@ class RadarConfig:
             "group": "fabric",
         },
     )
-    # 2T1R TDM: chirp pairs A, B, same slope (needs FABRIC_DECHIRP_EN)
+    # 2T1R TDM: chirps alternate TX A, B (needs FABRIC_DECHIRP_EN).
+    # With TRIANGLE_EN: A-up, A-down, B-up, B-down
     TDM_EN: bool = field(
         default=False,
         metadata={"label": "TDM (2T1R)", "unit": "", "scale": 1, "group": "fabric"},
@@ -260,7 +261,7 @@ class RadarConfig:
 
     @property
     def LEGS_PER_PERIOD(self) -> int:
-        return 2 if self.TRIANGLE_EN or self.TDM_EN else 1
+        return (2 if self.TRIANGLE_EN else 1) * (2 if self.TDM_EN else 1)
 
     @property
     def MAX_VELOCITY(self) -> float:
@@ -279,14 +280,12 @@ class RadarConfig:
         r = {}
         r["Range Resolution"] = (c / (2 * self.CHIRP_BW_HZ), "m")
         r["Velocity Resolution"] = (
-            (c / self.CHIRP_FC_HZ) / (2 * self.CHIRP_DUR_S * self.CHIRP_REPS),
+            (c / self.CHIRP_FC_HZ)
+            / (2 * self.LEGS_PER_PERIOD * self.CHIRP_DUR_S * self.CHIRP_REPS),
             "m/s",
         )
         r["Operational Max Range"] = (self.MAX_RANGE, "m")
-        r["Operational Max Velocity"] = (
-            (self.MAX_VELOCITY if not self.TRIANGLE_EN else self.MAX_VELOCITY / 2),
-            "m/s",
-        )
+        r["Operational Max Velocity"] = (self.MAX_VELOCITY, "m/s")
         r["Processing Gain"] = (
             10 * np.log10(self.CHIRP_DUR_S * self.FS * self.CHIRP_REPS),
             "dB",

@@ -174,13 +174,13 @@ def test_enable_tdm_bit():
     assert post_ctrl & fabric_regs.CTRL_TDM_EN, "tdm_en missing post-COMMIT"
 
 
-def test_tdm_triangle_rejected():
-    try:
-        fabric_regs.register_image(fabric_cfg(a_triangle_en=True, a_tdm_en=True))
-    except ValueError:
-        pass
-    else:
-        raise AssertionError("TDM_EN with TRIANGLE_EN must raise")
+def test_enable_tdm_triangle_bits():
+    transport, image = run_enable(fabric_cfg(a_triangle_en=True, a_tdm_en=True))
+    pre_ctrl, post_ctrl = check_enable_order(transport, image)
+
+    both = fabric_regs.CTRL_TRIANGLE_EN | fabric_regs.CTRL_TDM_EN
+    assert pre_ctrl == both, "pre-COMMIT CTRL must be triangle_en | tdm_en only"
+    assert post_ctrl & both == both, "triangle_en/tdm_en missing post-COMMIT"
 
 
 def test_disable_order():
@@ -285,7 +285,7 @@ if __name__ == "__main__":
         test_enable_order,
         test_enable_triangle_bit,
         test_enable_tdm_bit,
-        test_tdm_triangle_rejected,
+        test_enable_tdm_triangle_bits,
         test_disable_order,
         test_register_image_software_mode_no_fabric_regs,
         test_ramp_en_rejected,
