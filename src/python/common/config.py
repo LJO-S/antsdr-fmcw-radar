@@ -60,6 +60,11 @@ class RadarConfig:
             "group": "fabric",
         },
     )
+    # 2T1R TDM: chirp pairs A, B, same slope (needs FABRIC_DECHIRP_EN)
+    TDM_EN: bool = field(
+        default=False,
+        metadata={"label": "TDM (2T1R)", "unit": "", "scale": 1, "group": "fabric"},
+    )
     # TX->RX digital loopback latency in samples
     FABRIC_DECHIRP_DELAY: int = field(
         default=61,
@@ -254,8 +259,12 @@ class RadarConfig:
         return min(self.MAX_RANGE_M, self.EFFECTIVE_RANGE)
 
     @property
+    def LEGS_PER_PERIOD(self) -> int:
+        return 2 if self.TRIANGLE_EN or self.TDM_EN else 1
+
+    @property
     def MAX_VELOCITY(self) -> float:
-        t_rep = 2 * self.CHIRP_DUR_S if self.TRIANGLE_EN else self.CHIRP_DUR_S
+        t_rep = self.LEGS_PER_PERIOD * self.CHIRP_DUR_S
         return (c / self.CHIRP_FC_HZ) / (4 * t_rep)
 
     def describe(self):

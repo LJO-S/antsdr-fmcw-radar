@@ -65,7 +65,7 @@ def prepare_block(
     if a_config.FABRIC_DECHIRP_EN:
         # sync_src=1 starts the DMA on the period-tagged sample; trim and cut come
         # out of the SDR_RX_MARGIN_PERIODS tail.
-        rows = 2 * a_config.CHIRP_REPS if a_config.TRIANGLE_EN else a_config.CHIRP_REPS
+        rows = a_config.LEGS_PER_PERIOD * a_config.CHIRP_REPS
         n_cpi = rows * a_config.N_IF
         trim = a_config.FABRIC_FRAME_TRIM
         rx = rx[trim : trim + n_cpi]

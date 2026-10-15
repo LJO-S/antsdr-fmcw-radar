@@ -32,13 +32,15 @@ class AntSDR:
         Start TX and RX DMA for one CPI of data.
         """
         # Checked before any hardware write so RE-CONFIGURE reverts cleanly.
-        legs = 2 if self.config.TRIANGLE_EN else 1
+        legs = self.config.LEGS_PER_PERIOD
         margin = self.config.SDR_RX_MARGIN_PERIODS * legs * self.config.N_IF
         trim = self.config.FABRIC_FRAME_TRIM
         if self.config.FABRIC_DECHIRP_EN and not 0 <= trim <= margin:
             raise ValueError(
                 f"FABRIC_FRAME_TRIM {trim} outside [0, {margin}] (RX margin)"
             )
+        if self.config.TDM_EN and not self.config.FABRIC_DECHIRP_EN:
+            raise ValueError("TDM_EN needs FABRIC_DECHIRP_EN")
         # Software frame sync cuts CHIRP_REPS periods starting anywhere in the first
         # period (dsp.frame_sync_linear), so it needs one period of tail.
         if not self.config.FABRIC_DECHIRP_EN and self.config.SDR_RX_MARGIN_PERIODS < 1:
@@ -137,7 +139,7 @@ class AntSDR:
         # len(chirp). N_IF collapses to len(chirp) (per leg) in software and
         # fabric-passthrough mode, so this formula is exact in all three - see
         # RadarConfig.N_IF
-        legs_per_period = 2 if self.config.TRIANGLE_EN else 1
+        legs_per_period = self.config.LEGS_PER_PERIOD
         rx_buf_samples = (
             (self.config.CHIRP_REPS + self.config.SDR_RX_MARGIN_PERIODS)
             * legs_per_period

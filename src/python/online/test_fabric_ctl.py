@@ -35,7 +35,9 @@ class RecordingTransport:
         raise KeyError(f"RecordingTransport has no canned read for 0x{a_offset:02X}")
 
 
-def fabric_cfg(a_triangle_en: bool = False) -> config.RadarConfig:
+def fabric_cfg(
+    a_triangle_en: bool = False, a_tdm_en: bool = False
+) -> config.RadarConfig:
     # RadarConfig is immutable by convention (CLAUDE.md) - never mutate the
     # default instance, build a fresh one via dataclasses.replace.
     return dataclasses.replace(
@@ -43,6 +45,7 @@ def fabric_cfg(a_triangle_en: bool = False) -> config.RadarConfig:
         FABRIC_DECHIRP_EN=True,
         FABRIC_DECHIRP_DELAY=TEST_DECHIRP_DELAY,
         TRIANGLE_EN=a_triangle_en,
+        TDM_EN=a_tdm_en,
     )
 
 
@@ -117,8 +120,9 @@ def check_enable_order(transport, image):
     # stray tx_src/sync_src bit here would still pass a looser "no nco_en"
     # check but is still wrong (those only matter latched with nco_en).
     pre_ctrl = transport.writes[ctrl_idx[0]][1]
-    assert pre_ctrl & ~fabric_regs.CTRL_TRIANGLE_EN == 0, (
-        "pre-COMMIT CTRL must carry only triangle_en"
+    allowed = fabric_regs.CTRL_TRIANGLE_EN | fabric_regs.CTRL_TDM_EN
+    assert pre_ctrl & ~allowed == 0, (
+        "pre-COMMIT CTRL must carry only triangle_en / tdm_en"
     )
 
     # Post-COMMIT CTRL is exactly the image's CTRL word plus nco_en - not an
@@ -159,6 +163,24 @@ def test_enable_triangle_bit():
 
     assert pre_ctrl & fabric_regs.CTRL_TRIANGLE_EN, "triangle_en missing pre-COMMIT"
     assert post_ctrl & fabric_regs.CTRL_TRIANGLE_EN, "triangle_en missing post-COMMIT"
+
+
+def test_enable_tdm_bit():
+    # Like triangle_en, tdm_en only takes effect on a COMMIT.
+    transport, image = run_enable(fabric_cfg(a_tdm_en=True))
+    pre_ctrl, post_ctrl = check_enable_order(transport, image)
+
+    assert pre_ctrl == fabric_regs.CTRL_TDM_EN, "pre-COMMIT CTRL must be tdm_en only"
+    assert post_ctrl & fabric_regs.CTRL_TDM_EN, "tdm_en missing post-COMMIT"
+
+
+def test_tdm_triangle_rejected():
+    try:
+        fabric_regs.register_image(fabric_cfg(a_triangle_en=True, a_tdm_en=True))
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("TDM_EN with TRIANGLE_EN must raise")
 
 
 def test_disable_order():
@@ -262,6 +284,8 @@ if __name__ == "__main__":
     tests = [
         test_enable_order,
         test_enable_triangle_bit,
+        test_enable_tdm_bit,
+        test_tdm_triangle_rejected,
         test_disable_order,
         test_register_image_software_mode_no_fabric_regs,
         test_ramp_en_rejected,

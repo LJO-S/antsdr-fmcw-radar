@@ -30,7 +30,7 @@ REG_STATUS = 0x34  # read-only; 0x30 is unmapped (tb probe), reads 0xDEADC0DE
 
 # Must match C_MAGIC in fmcw_core.vhd. Bump both together on every map change;
 # a stale host reads garbage rather than failing loudly otherwise.
-MAGIC = 0x464D4334  # "FMC4"
+MAGIC = 0x464D4335  # "FMC5"
 
 
 # -------------------
@@ -42,6 +42,7 @@ CTRL_TX_SRC = 1 << 2
 CTRL_TRIANGLE_EN = 1 << 3
 CTRL_RX_DBG_MUX = 1 << 4
 CTRL_SYNC_SRC = 1 << 5
+CTRL_TDM_EN = 1 << 6
 
 # -------------------
 # IF SEL
@@ -106,9 +107,13 @@ def register_image(cfg: RadarConfig) -> dict[int, int]:
     sweep_len = cfg.SWEEP_LEN
     ftw_start, ftw_slope = chirp_ftw(cfg.CHIRP_BW_HZ, sweep_len, cfg.FS)
 
+    if cfg.TDM_EN and cfg.TRIANGLE_EN:
+        raise ValueError("TDM_EN and TRIANGLE_EN together would be 4 legs")
     ctrl = 0
     if cfg.TRIANGLE_EN:
         ctrl |= CTRL_TRIANGLE_EN
+    if cfg.TDM_EN:
+        ctrl |= CTRL_TDM_EN
     if cfg.FABRIC_DECHIRP_EN:
         # Fabric IF mode implies: transmit the NCO chirp (tx_src) so the dechirp
         # replica is phase-coherent with TX, and start every DMA transfer on a

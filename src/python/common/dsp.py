@@ -247,7 +247,7 @@ def build_cpi_context(a_config: RadarConfig) -> CPIContext:
     N_chirp_samples = int(round(a_config.CHIRP_DUR_S * a_config.FS))
     N_if_samples = a_config.N_IF
     fs_if = a_config.FS_IF
-    T_rep = 2 * a_config.CHIRP_DUR_S if a_config.TRIANGLE_EN else a_config.CHIRP_DUR_S
+    T_rep = a_config.LEGS_PER_PERIOD * a_config.CHIRP_DUR_S
 
     range_freqs = np.fft.fftfreq(N_if_samples, d=1 / fs_if)
     doppler_freqs = np.fft.fftshift(np.fft.fftfreq(a_config.CHIRP_REPS, d=T_rep))
@@ -299,12 +299,14 @@ def process_cpi(a_if_signal: np.ndarray, a_config: RadarConfig, a_ctx: CPIContex
     # ---------------------------------------------
     # 1. Reshape IF into [N_reps x N_chirp_samples]
     # ---------------------------------------------
-    if a_config.TRIANGLE_EN:
+    if a_config.LEGS_PER_PERIOD == 2:
         full_matrix_iq = a_if_signal[: 2 * a_config.CHIRP_REPS * N].reshape(
             2 * a_config.CHIRP_REPS, N
         )
         up_matrix_iq = full_matrix_iq[0::2, :].copy()
-        down_matrix_iq = full_matrix_iq[1::2, :].copy()
+        if a_config.TRIANGLE_EN:
+            down_matrix_iq = full_matrix_iq[1::2, :].copy()
+        # TDM: odd (B) rows unused for now
     else:
         up_matrix_iq = (
             a_if_signal[: a_config.CHIRP_REPS * N]

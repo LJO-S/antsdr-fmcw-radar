@@ -36,7 +36,7 @@ def spectrograms(
     if a_config.FABRIC_DECHIRP_EN:
         # rx is already the (possibly decimated) IF stream, at ctx.fs_if rather
         # than ctx tx-chirp/FS rate - slice and label the spectrogram accordingly.
-        legs = 2 if a_config.TRIANGLE_EN else 1
+        legs = a_config.LEGS_PER_PERIOD
         n2 = 2 * legs * a_ctx.N_if_samples  # 2 periods, IF domain
         rx_spec, t, f = dsp.spectrogram(
             a_signal=a_rx[:n2], a_config=a_config, a_fs=a_ctx.fs_if

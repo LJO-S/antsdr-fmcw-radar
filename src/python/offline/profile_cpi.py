@@ -53,7 +53,7 @@ def fake_targets(a_k, a_cfg):
 
 def if_block(a_cfg, a_ctx, a_sim):
     """Noise floor + fake targets, sized like capture_rx_data's fabric slice."""
-    rows = 2 * a_cfg.CHIRP_REPS if a_cfg.TRIANGLE_EN else a_cfg.CHIRP_REPS
+    rows = a_cfg.LEGS_PER_PERIOD * a_cfg.CHIRP_REPS
     n = rows * a_cfg.N_IF
     rng = np.random.default_rng(SEED)
     noise = 1e-3 * (rng.standard_normal(n) + 1j * rng.standard_normal(n))

@@ -126,7 +126,10 @@ class FabricCtl:
             if o in a_image
         ]
         seq += [
-            (fabric_regs.REG_CTRL, ctrl & fabric_regs.CTRL_TRIANGLE_EN),
+            (
+                fabric_regs.REG_CTRL,
+                ctrl & (fabric_regs.CTRL_TRIANGLE_EN | fabric_regs.CTRL_TDM_EN),
+            ),
             (fabric_regs.REG_COMMIT, 1),
             (fabric_regs.REG_CTRL, ctrl | fabric_regs.CTRL_NCO_EN),
         ]
@@ -134,9 +137,7 @@ class FabricCtl:
         # constraint against COMMIT - it goes between nco_en and IF_SEL only
         # because IF_SEL must stay last (below).
         if fabric_regs.REG_DECIM_SEL in a_image:
-            seq.append(
-                (fabric_regs.REG_DECIM_SEL, a_image[fabric_regs.REG_DECIM_SEL])
-            )
+            seq.append((fabric_regs.REG_DECIM_SEL, a_image[fabric_regs.REG_DECIM_SEL]))
         # IF_SEL LAST.
         seq.append((fabric_regs.REG_IF_SEL, a_image.get(fabric_regs.REG_IF_SEL, 0)))
 

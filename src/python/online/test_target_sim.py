@@ -28,7 +28,7 @@ SEED = 0
 
 def find_match(a_detections, a_r, a_v, a_cfg, a_kind=None):
     range_res = config.c / (2 * a_cfg.CHIRP_BW_HZ)
-    T_rep = 2 * a_cfg.CHIRP_DUR_S if a_cfg.TRIANGLE_EN else a_cfg.CHIRP_DUR_S
+    T_rep = a_cfg.LEGS_PER_PERIOD * a_cfg.CHIRP_DUR_S
     vel_res = (config.c / a_cfg.CHIRP_FC_HZ) / (2 * T_rep * a_cfg.CHIRP_REPS)
     for d in a_detections:
         if a_kind is not None and d["kind"] != a_kind:

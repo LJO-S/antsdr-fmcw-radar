@@ -134,7 +134,7 @@ def capture_sw(radio, cfg, ctx, n_captures):
 
 def fabric_if(rx, cfg):
     """Cut one CPI of fabric IF out of a DMA block, same slice as capture.py."""
-    rows = 2 * cfg.CHIRP_REPS if cfg.TRIANGLE_EN else cfg.CHIRP_REPS
+    rows = cfg.LEGS_PER_PERIOD * cfg.CHIRP_REPS
     trim = cfg.FABRIC_FRAME_TRIM
     return rx[trim : trim + rows * cfg.N_IF]
 
