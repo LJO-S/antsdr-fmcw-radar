@@ -109,13 +109,13 @@ Fabric FFT/CFAR is not planned - decision gate in G11.
 - [ ] K3 - tracker in (r, v) (G4): CV Kalman, GNN, M-of-N; tests (a)-(e), live
       fake targets tracked.
 - [x] K4 - VNA basics (G5), LiteVNA-64: owned gear predicted, measured.
-- [ ] K5 - soldering + J30 header (G6): practice joints, fit the 10-pin header,
+- [X] K5 - soldering + J30 header (G6): practice joints, fit the 10-pin header,
       map GPIO_00-07 from Linux (sysfs gpio 995-1002).
       Map verified 2026-10-13: all 8 pins toggle from sysfs, match the schematic.
 - [ ] K6 - field day 1 (G7, needs K2, weather): COTS only; delay sweep (expect
       61 +-1), software vs fabric /8; record everything; flip the
       `FABRIC_DECHIRP_EN` default.
-- [ ] K7 - TX switch (G8): HMC849A module on the VNA (IL, isolation, S11);
+- [X] K7 - TX switch (G8): HMC849A module on the VNA (IL, isolation, S11);
       `tdm_en` + chirp-pair period + `tx_sel` on J30, MAGIC FMC5, VUnit; bench
       test with port A -> pad -> RX, port B terminated.
 - [ ] K8 - single patch on FR4 (G9.3): openEMS, fab, solder SMAs, S11, back out

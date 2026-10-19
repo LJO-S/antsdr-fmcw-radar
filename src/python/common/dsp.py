@@ -38,7 +38,8 @@ def generate_chirp_sequence(a_config: RadarConfig):
     Generate a sequence of FMCW chirps
     """
     chirp = generate_chirp(a_config=a_config)
-    return np.tile(A=chirp, reps=a_config.CHIRP_REPS)
+    # TDM: B repeats A (every target at 0 deg)
+    return np.tile(A=chirp, reps=a_config.CHIRP_REPS * (2 if a_config.TDM_EN else 1))
 
 
 # ===================================================================================

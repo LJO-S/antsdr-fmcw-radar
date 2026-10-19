@@ -377,12 +377,14 @@ by up to `asin(10^(-I/20))`: 1.8 deg at 30 dB, 0.6 deg at 40 dB.
   `chirp_generator`: with `tdm_en`, a period has two legs (leg 0 = A, leg 1 = B)
   with the **same** slope. The leg tag still fires every chirp, so the decimator
   restart is unchanged. The period tag - and with it the DMA sync and CHIRP_COUNT
-  (5000/s) - fires once per pair. So every capture starts on an A chirp, and the
+  (5000/s, 2500/s with `triangle_en`) - fires once per period. So every capture starts on an A chirp, and the
   host relies on row 0 being A.
-- New output **`o_tx_sel`** = the current leg index, held 0 while `tdm_en` = 0.
+- New output **`o_tx_sel`** = the antenna of the current chirp (0 = A, 1 = B),
+  carried through the DDS pipeline with the sample; held 0 while `tdm_en` = 0.
   `system_bd.tcl`: a `create_bd_port` plus `ad_connect`. `system_top.v`: take the
   J30 pin chosen in K5 (say `GPIOB[0]`) out of the PS `ad_iobuf` and drive it from
-  `tx_sel`. A 5 kHz square wave has no timing concern: false-path the port.
+  `tx_sel`. A square wave at 1 / (2 x chirp) or slower has no timing concern:
+  false-path the port.
 - `tdm_en` with `triangle_en`: four legs per period, A-up, A-down, B-up, B-down.
   Down chirps stay on odd rows; `MAX_VELOCITY` drops to a quarter of sawtooth.
 - Timing: `tx_sel` flips at the NCO's leg boundary; the RF chirp leaves the AD9361
@@ -390,10 +392,10 @@ by up to `asin(10^(-I/20))`: 1.8 deg at 30 dB, 0.6 deg at 40 dB.
   transient that already exists (~13 IF samples at /8). Add a `TX_SEL_DELAY`
   register only if 8.4 shows it matters.
 - Python: `TDM_EN` config field (requires `FABRIC_DECHIRP_EN`); `register_image`
-  sets bit6; `fabric_ctl.enable` must pass bit6 in the pre-COMMIT CTRL word (today it
-  masks to `triangle_en` only); the capture holds `LEGS_PER_PERIOD x CHIRP_REPS` rows.
-- VUnit (`tb_fmcw_core`): `o_tx_sel` toggles once per chirp; the period tag and DMA
-  sync fire on A legs only; with `tdm_en` = 0 everything is bit-identical to FMC4;
+  sets bit6; `fabric_ctl.enable` passes bit6 in the pre-COMMIT CTRL word; the
+  capture holds `LEGS_PER_PERIOD x CHIRP_REPS` rows.
+- VUnit (`tb_fmcw_core`): `o_tx_sel` toggles every chirp (every 2 with
+  `triangle_en`); the period tag and DMA sync fire on the first A chirp only; with `tdm_en` = 0 everything is bit-identical to FMC4;
   decimate-legs still yields `SWEEP_LEN // 8` per leg.
 
 ### 8.4 Bench test in the radar (no antennas)
