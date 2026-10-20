@@ -400,9 +400,12 @@ by up to `asin(10^(-I/20))`: 1.8 deg at 30 dB, 0.6 deg at 40 dB.
 
 ### 8.4 Bench test in the radar (no antennas)
 
-`SDR_LOOPBACK_EN = False`, fabric /8, `TDM_EN`. TX1 -> switch common; port A ->
->= 30 dB pad -> RX1; port B -> a 50 ohm termination. Per row of
-`dechirp_verify.range_profile_db`:
+`SDR_LOOPBACK_EN = False`, fabric /8, `TDM_EN`. TX1 -> switch common; port A (RF2,
+`tx_sel` 0 -> V_CTL low) -> RX1 **without a pad**; port B -> a 50 ohm termination. TX
+-30 dB with `SDR_TX_GAIN_MAX_DB` -20 for the session (~-30 dBm at RX1). A 30 dB pad does
+not work here: the E200's own TX1 -> RX1 leak (~40-44 dB) sits only ~9 dB under the
+padded path and hides the switch. Module VDD from J30 pin 1 (it draws ~60 mA, too much
+for a GPIO pin). Per row, mean IF power:
 
 - even rows (A) show the cable path at full level; odd rows (B) show it lower by
   the in-system isolation. Compare with 8.2.

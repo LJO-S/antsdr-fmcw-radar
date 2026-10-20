@@ -409,8 +409,8 @@ antsdr-fmcw-radar -> firmware/ -> plutosdr-fw/ -> hdl/ (+ linux/, u-boot, buildr
   rglobs** `src/**/*.vhd` and `test/**/tb_*`, so new HDL needs no source-list edit - but
   `Makefile` `M_DEPS` is manual and must list every source *and* init file, or `make` will not
   notice an edit. AXI-Lite slave at **0x43C10000**; MAGIC bumps on every register-map change
-  (`RXT1` → `FMC1` → `FMC3` → `FMC4`), mirrored in `common/fabric_regs.py` and must match
-  `C_MAGIC` in the VHDL. **FMC4 `0x464D4334` is what is on hardware** (I5, 2026-09-26).
+  (`RXT1` -> `FMC1` -> `FMC3` -> `FMC4` -> `FMC5`), mirrored in `common/fabric_regs.py` and must
+  match `C_MAGIC` in the VHDL. **FMC5 `0x464D4335` is what is on hardware** (K7, 2026-10-19).
 - **The Vivado IP cache can ship a stale `fmcw_core`.** The ADI scripts enable a shared cache
   at `hdl/ipcache` (OOC synthesis is on by default), which `make clean` / `clean-all` never
   touch. `fmcw_core` is a BD module reference, and its cache key follows its generics and
@@ -430,16 +430,16 @@ antsdr-fmcw-radar -> firmware/ -> plutosdr-fw/ -> hdl/ (+ linux/, u-boot, buildr
 - Cutover to the fabric path waited for Parts F+G on real RF; both passed in software mode,
   so it is unblocked. The rule stands: never debug new RF and new HDL at the same time.
 
-### fmcw_core register map (FMC4) - hardware-proven (I4 2026-09-10, I5 2026-09-26)
+### fmcw_core register map (FMC5) - hardware-proven (I4 2026-09-10, I5 2026-09-26, K7 2026-10-19)
 
 | Offset | Name | Access | Function |
 |---|---|---|---|
-| 0x00 | MAGIC | R | `0x464D4334` "FMC4" |
-| 0x04 | CTRL | RW | bit0 `ramp_en`, bit1 `nco_en`, bit2 `tx_src` (0=DMA, 1=NCO), bit3 `triangle_en`, bit4 `rx_dbg_mux` (NCO onto RX ch0), bit5 `sync_src` (0=TDD, 1=chirp_start) |
+| 0x00 | MAGIC | R | `0x464D4335` "FMC5" |
+| 0x04 | CTRL | RW | bit0 `ramp_en`, bit1 `nco_en`, bit2 `tx_src` (0=DMA, 1=NCO), bit3 `triangle_en`, bit4 `rx_dbg_mux` (NCO onto RX ch0), bit5 `sync_src` (0=TDD, 1=chirp_start), bit6 `tdm_en` (pre-COMMIT word, like `triangle_en`) |
 | 0x08 | SCRATCH | RW | |
 | 0x0C | COUNT | R | `valid_in` counter |
 | 0x10 / 0x14 / 0x18 | FTW_START / FTW_SLOPE / SWEEP_LEN | RW | shadow, latched at the next chirp boundary after COMMIT |
-| 0x1C | CHIRP_COUNT | R | chirp periods, gray-crossed. Delta/s = 10000 sawtooth, **5000 triangle** (fires per period, not per leg) |
+| 0x1C | CHIRP_COUNT | R | chirp periods, gray-crossed. Delta/s = 10000 sawtooth, **5000 triangle or TDM, 2500 both** (fires per period, not per leg) |
 | 0x20 | COMMIT | W | any write arms shadow -> active |
 | 0x24 | DECHIRP_DELAY | RW | shadow, same COMMIT; replica delay in samples, **must be < 128** (`G_MAX_DELAY`, wraps silently above) |
 | 0x28 | DECIM_SEL | RW | `0` = passthrough, `1` = decimate by 8 (three halfband stages after the ADC output mux, so ramp and IF both go through them). Live, **not** commit-latched (2-flop sync). The guide calls it DECIMATE_SEL |
@@ -654,7 +654,8 @@ GPIO_00-07 (ESD diodes). HDL `GPIOB[7:0]` (bank 13, LVCMOS33, XDC order V5, U7, 
 Y7, Y6, Y9), routed to the PS through `ad_iobuf` as EMIO 35-42 = Linux sysfs gpio 995-1002.
 Upstream MicroPhase constraints reuse Y9/Y6 as a UART; this project maps all eight to `GPIOB`.
 Pin map measured 2026-10-13 (multimeter, sysfs): all eight match the schematic.
-Part K7 takes one pin out of the iobuf to drive the TX switch from `fmcw_core`.
+Since FMC5, pin 3 (`GPIOB[0]`) is `tx_sel` from `fmcw_core` (0 = A, 1 = B; gpio 995 reads it
+back). The switch module draws ~60 mA: power it from pin 1, not a GPIO pin.
 
 ## RF reality (AD9361 numbers, verified against the datasheet)
 

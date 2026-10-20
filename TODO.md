@@ -3,7 +3,9 @@
 
 ---------------------------------------------------------------
 Ludvig's DO-NOT-FORGET:
-- Fix the offline and online tests if they fail
+- Range IF filter
+- 0 Angle with splitter
+- Angle tracker with fake targets
 
 ---------------------------------------------------------------
 
@@ -118,6 +120,8 @@ Fabric FFT/CFAR is not planned - decision gate in G11.
 - [X] K7 - TX switch (G8): HMC849A module on the VNA (IL, isolation, S11);
       `tdm_en` + chirp-pair period + `tx_sel` on J30, MAGIC FMC5, VUnit; bench
       test with port A -> pad -> RX, port B terminated.
+      8.4 passed 2026-10-19 (no pad): A/B 30 dB both ways, also triangle + TDM;
+      floor = the E200's TX1 -> RX1 leak (`hardware/bench_measurements.md`).
 - [ ] K8 - single patch on FR4 (G9.3): openEMS, fab, solder SMAs, S11, back out
       eps_r. Order the PCB early; do K7 while it ships.
       Simulation done 2026-10-05 (`scripts/antenna_design/`): eps_r 4.4 geometry at
@@ -130,7 +134,17 @@ Fabric FFT/CFAR is not planned - decision gate in G11.
       coupling, isolation vs spacing, gain +-1 dB, pattern + A-B phase vs angle.
 - [ ] K10 - angle on the host (G10.1): TDM split, Doppler correction,
       calibration, x-y view; fake targets at +-30 deg within 1 deg at 0 and
-      +-20 m/s.
+      +-20 m/s. Can start before K9:
+      - [ ] Software: `process_cpi` keeps the B rows (RD map for B too); per
+            detection `psi = angle(B / A)` - Doppler turn (1 chirp TDM, 2 with
+            triangle) - `psi0`; `theta = asin(psi / pi)` (d = lambda/2).
+            `apply_if`: per-target angle, B tone x `exp(j*pi*sin(theta))`.
+      - [ ] Cable test: TX1 -> RFC; RF1, RF2 -> two cables -> 2-way combiner
+            (Wilkinson to 6 GHz, or an SMA tee) -> RX1, no pad, TX -30 dB
+            (ceiling -20). Dechirp Delay ~41 (not 61) moves the cable path to
+            ~53 m, clear of the board leak. Proves `psi0`, CPI-to-CPI
+            stability, sign flip when the cables swap ports. Not Doppler, not
+            real antennas (K9).
 - [ ] K11 - tracker in (x, y) + field day 2 (G10.2): EKF on (r, theta, v_r);
       patches on air, one change at a time.
 

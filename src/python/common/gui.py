@@ -828,8 +828,8 @@ class RadarDisplay(QMainWindow):
         self.set_detection_limits(
             r_min=0,
             r_max=a_config.MAX_RANGE,
-            v_min=-a_config.MAX_VELOCITY / 2,
-            v_max=a_config.MAX_VELOCITY / 2,
+            v_min=-a_config.MAX_VELOCITY,
+            v_max=a_config.MAX_VELOCITY,
         )
 
 
