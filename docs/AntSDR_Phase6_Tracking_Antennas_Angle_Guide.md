@@ -211,7 +211,7 @@ two-point initialization is needed.
 - `TRACK_MIN_SPEED` (default 0 = off): minimum |v| to start a track, for scenes
   full of parked cars when MTI is off.
 - Velocity ambiguity is not an issue: `MAX_VELOCITY` is 129 m/s (64 m/s in
-  triangle and TDM).
+  triangle or TDM). Triangle and TDM together give 32 m/s, where a fast car aliases.
 - Triangle mode: accept every `kind`. Weighting `R` by kind is a later refinement.
 
 ### 4.4 Placement
