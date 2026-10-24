@@ -1,0 +1,75 @@
+(footprint "K8_patch_witness"
+	(version 20260206)
+	(generator "pcbnew")
+	(generator_version "10.0")
+	(layer "F.Cu")
+	(descr "K8 witness patch, results.md board to fabricate")
+	(tags "patch antenna 5.8GHz")
+	(property "Reference" "REF**"
+		(at 0 -10.864000 0)
+		(layer "F.Fab")
+		(effects
+			(font
+				(size 1 1)
+				(thickness 0.15)
+			)
+		)
+	)
+	(property "Value" "K8_patch_witness"
+		(at 0 10.864000 0)
+		(layer "F.Fab")
+		(effects
+			(font
+				(size 1 1)
+				(thickness 0.15)
+			)
+		)
+	)
+	(attr smd)
+	(fp_text user "K8_patch_witness 2026-10-09"
+		(at 15.921000 12.364000 0)
+		(layer "F.Fab")
+		(effects
+			(font
+				(size 1 1)
+				(thickness 0.15)
+			)
+		)
+	)
+	(fp_text user "eps_r 4.4 h 1.5 mm, launch gap 5 mm"
+		(at 15.921000 13.864000 0)
+		(layer "F.Fab")
+		(effects
+			(font
+				(size 1 1)
+				(thickness 0.15)
+			)
+		)
+	)
+	(fp_text user "L 11.842 W 15.728 inset 3.70"
+		(at 15.921000 15.364000 0)
+		(layer "F.Fab")
+		(effects
+			(font
+				(size 1 1)
+				(thickness 0.15)
+			)
+		)
+	)
+	(pad "1" smd custom
+		(at 5.500000 0)
+		(size 0.2 0.2)
+		(layers "F.Cu" "F.Mask")
+		(options
+			(clearance outline)
+			(anchor rect)
+		)
+		(primitives
+			(gr_poly
+				(pts (xy -0.500000 -1.433895) (xy 18.200000 -1.433895) (xy 18.200000 -2.433895) (xy 14.500000 -2.433895) (xy 14.500000 -7.864000) (xy 26.342000 -7.864000) (xy 26.342000 7.864000) (xy 14.500000 7.864000) (xy 14.500000 2.433895) (xy 18.200000 2.433895) (xy 18.200000 1.433895) (xy -0.500000 1.433895))
+				(width 0)
+				(fill yes)
+			)
+		)
+	)
+)

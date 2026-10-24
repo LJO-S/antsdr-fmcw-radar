@@ -130,18 +130,18 @@ Fabric FFT/CFAR is not planned - decision gate in G11.
       Re-tuned at eps_r 4.6 2026-10-23 (`results.md`, K9; run files in
       `scripts/antenna_design/column/`): 10.8 dBi, S11 -18 dB, tilt -0.7 deg.
 
-      Order recipe, KiCad 10 -> Gerbers. One project per board (`k9-tx/`, `k9-rx/` next
+      Order recipe, KiCad 10 -> Gerbers. One project per board (`tx/`, `rx/` next
       to `line-pair/`); coordinates in mm from the feed edge on the board centre line.
 
       - [ ] 0. The K8 launch: the SMA ground holes are present (2026-10-24), so the
             -6 to -8 dB launch is unexplained. Decide before ordering: find the cause, or
             order as is (the launch costs ~1 dB and hides the column's own S11).
       
-      - [ ] 1. Footprints (openEMS venv, `scripts/antenna_design/`):
+      - [x] 1. Footprints (openEMS venv, `scripts/antenna_design/`; done 2026-10-23):
             `python make_footprints.py --eps-r 4.6 --L 11.531 --lc 12.45 --tw 4.481 --tl 6.587`
             -> `antenna.pretty/` column + witness patch. Check the `.png` previews.
       
-      - [ ] 2. New project. Copy `line-pair/line-pair.kicad_dru` to `k9-tx/k9-tx.kicad_dru`
+      - [ ] 2. New project. Copy `line-pair/line-pair.kicad_dru` to `tx/tx.kicad_dru`
             (SMA pads may touch the edge). Preferences -> Manage Footprint Libraries ->
             Project Specific: nickname `antenna`, path `${KIPRJMOD}/../antenna.pretty`.
       
