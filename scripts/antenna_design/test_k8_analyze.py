@@ -72,6 +72,56 @@ def test_line_pair():
     assert abs(r["lambda_g_mm"] - k8.C0 / 5.8e9 / np.sqrt(3.2) * 1e3) < 0.1
 
 
+def abcd_to_s2(m, z0=50.0):
+    """General ABCD (n, 2, 2) -> S (n, 2, 2)."""
+    a, b, c, d = m[:, 0, 0], m[:, 0, 1], m[:, 1, 0], m[:, 1, 1]
+    den = a + b / z0 + c * z0 + d
+    s = np.empty_like(m)
+    s[:, 0, 0] = (a + b / z0 - c * z0 - d) / den
+    s[:, 0, 1] = 2 * (a * d - b * c) / den
+    s[:, 1, 0] = 2 / den
+    s[:, 1, 1] = (-a + b / z0 - c * z0 + d) / den
+    return s
+
+
+def test_launch_removal():
+    """Asymmetric launch (30 ps of coax, shunt 0.35 pF, series 0.3 nH) on both line ends
+    (mirrored) and on a patch-like series RLC at 5.68 GHz: the box and the load come back."""
+    f = np.linspace(5e9, 6.3e9, 401)
+    w = 2 * np.pi * f
+    one, zero = np.ones_like(f, complex), np.zeros_like(f, complex)
+
+    def abcd(a, b, c, d):
+        return np.stack([np.stack([a, b], -1), np.stack([c, d], -1)], -2)
+
+    th = w * 30e-12
+    coax = abcd(np.cos(th) + 0j, 50j * np.sin(th), 1j * np.sin(th) / 50, np.cos(th) + 0j)
+    box = coax @ abcd(one, zero, 1j * w * 0.35e-12, one) @ abcd(one, 1j * w * 0.3e-9, zero, one)
+    mirror = box[:, ::-1, ::-1].transpose(0, 2, 1)  # reciprocal network reversed: A <-> D
+
+    def line(length):
+        gl = (1.7 + 1j * w * np.sqrt(3.2 + 0.15 * (f - 5.8e9) / 1e9) / k8.C0) * length
+        return abcd(np.cosh(gl), 50 * np.sinh(gl), np.sinh(gl) / 50, np.cosh(gl))
+
+    ss = abcd_to_s2(box @ line(25e-3) @ mirror)
+    sl = abcd_to_s2(box @ line(95e-3) @ mirror)
+    assert np.allclose(ss[:, 0, 0], ss[:, 1, 1], atol=1e-9)  # S22 = S11 holds for a mirror
+    lr = 1.4e-9
+    cr = 1 / ((2 * np.pi * 5.68e9) ** 2 * lr)
+    z = 50 + 1j * (w * lr - 1 / (w * cr))
+    g = (z - 50) / (z + 50)
+    sa = abcd_to_s2(box)
+    gm = sa[:, 0, 0] + sa[:, 0, 1] * sa[:, 1, 0] * g / (1 - sa[:, 1, 1] * g)
+    a11, a22, a21sq = k8.launch_box(f, ss, sl, 70.0, 25.0)
+    assert np.allclose(a11, sa[:, 0, 0], atol=1e-6)
+    assert np.allclose(a22, sa[:, 1, 1], atol=1e-6)
+    assert np.allclose(a21sq, sa[:, 1, 0] ** 2, atol=1e-6)
+    assert np.allclose(k8.deembed(gm, a11, a22, a21sq), g, atol=1e-6)
+    r = k8.analyze_patch(f, k8.deembed(gm, a11, a22, a21sq))
+    assert abs(r["f_res"] - 5.68e9) < 1e6, r["f_res"]
+    assert abs(k8.analyze_patch(f, gm)["f_res"] - 5.68e9) > 5e6  # the launch did move it
+
+
 def test_reader_rejects():
     with tempfile.TemporaryDirectory() as d:
         p = os.path.join(d, "bad.s2p")

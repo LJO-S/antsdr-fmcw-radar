@@ -7,6 +7,8 @@ Reads the LiteVNA Touchstone files of the two calibration boards and backs out t
   patch board: S11 minimum -> eps_r, via the sweep table in sweep/ (sweep_eps_r.py)
   line pair:   S21 phase difference -> eps_eff (launches cancel), loss difference -> dB/mm
                and an upper bound on tan d, lambda_g at 5.8 GHz (K9's element pitch)
+  both:        the line pair also yields the launch, which is removed from the patch S11
+               (same sweep needed); that resonance replaces the 25 MHz SMA correction
 Only S11 and S21 are used (a LiteVNA .s2p holds S12/S22 as zeros). Any subset of inputs works.
 
     python k8_analyze.py --patch patch.s1p
@@ -287,12 +289,15 @@ def line_gamma(f, s_short, s_long, dl):
     """Propagation constant of the length difference dl (m), launches cancelled exactly:
     T_long = T_A T(l+dl) T_B and T_short = T_A T(l) T_B (same launches), so
     T_long inv(T_short) = T_A T(dl) inv(T_A) has eigenvalues exp(+-gamma dl).
+    The forward one is the eigenvalue nearest S21_long / S21_short (the same quantity with
+    the launches not cancelled). Picking the smaller magnitude fails where the loss is
+    small next to the measurement error: the pair swaps and the phase jumps.
     -> (alpha Np/m, unwrapped beta*dl without the 2 pi integer)."""
     m = t_matrix(s_long) @ np.linalg.inv(t_matrix(s_short))
     ev = np.linalg.eigvals(m)
-    lam = np.where(
-        np.abs(ev[:, 0]) < np.abs(ev[:, 1]), ev[:, 0], ev[:, 1]
-    )  # decaying one
+    ref = s_long[:, 1, 0] / s_short[:, 1, 0]
+    k = np.argmin(np.abs(ev - ref[:, None]), axis=1)
+    lam = ev[np.arange(len(ev)), k]
     return -np.log(np.abs(lam)) / dl, np.unwrap(-np.angle(lam))
 
 
@@ -307,6 +312,41 @@ def line_eps_eff(f, s_short, s_long, dl_mm):
         n=n,
         att=alpha * (20 / np.log(10)) / 1000,
     )
+
+
+def launch_box(f, s_short, s_long, dl_mm, l_short_mm):
+    """Port-1 launch A (coax -> microstrip, reference plane at the board edge) from the line
+    pair, as reciprocal S-parameters (a11, a22, a21^2), each (n,).
+    The eigenvectors of T_long inv(T_short) = T_A T(dl) inv(T_A) are the columns of T_A up
+    to scale: they give a11 and a11 - a21^2 / a22. The short line's S11, with its far launch
+    taken as A mirrored, gives a22^2. a22 keeps its sqrt branch by continuity, and the sign
+    pair (a22, a21^2) is set so a21^2 -> +1 at DC (a short launch)."""
+    r = line_eps_eff(f, s_short, s_long, dl_mm)
+    gamma = r["att"] * 1000 / (20 / np.log(10)) + 1j * r["phase"] / (dl_mm * 1e-3)
+    m = t_matrix(s_long) @ np.linalg.inv(t_matrix(s_short))
+    ev, vec = np.linalg.eig(m)
+    ref = s_long[:, 1, 0] / s_short[:, 1, 0]
+    k = np.argmin(np.abs(ev - ref[:, None]), axis=1)  # forward, as in line_gamma
+    i = np.arange(len(f))
+    c1, c2 = vec[i, :, k], vec[i, :, 1 - k]  # columns 1 and 2 of T_A, up to scale
+    a11 = c2[:, 0] / c2[:, 1]
+    r1 = c1[:, 0] / c1[:, 1]  # = a11 - a21^2 / a22
+    s11 = s_short[:, 0, 0]
+    e = np.exp(-2 * gamma * l_short_mm * 1e-3)
+    a22 = np.sqrt((s11 - a11) / ((s11 - r1) * e))
+    for j in range(1, len(f)):
+        if abs(a22[j] - a22[j - 1]) > abs(a22[j] + a22[j - 1]):
+            a22[j] = -a22[j]
+    a21sq = a22 * (a11 - r1)
+    if np.cos(np.polyfit(f, np.unwrap(np.angle(a21sq)), 1)[1]) < 0:
+        a22, a21sq = -a22, -a21sq
+    return a11, a22, a21sq
+
+
+def deembed(s11, a11, a22, a21sq):
+    """S11 measured through the launch -> S11 at the board edge (the sim's port)."""
+    d = s11 - a11
+    return d / (a21sq + a22 * d)
 
 
 def sim_pair(sim_dir, eps, ref, thick=False):
@@ -455,7 +495,7 @@ def report(patch, lines, args):
             ),
             "  worst S11 5.75-5.85 GHz: {:.1f} dB".format(patch["worst"]),
             "  eps_r (table):      {:.3f}".format(patch["eps_r_table"]),
-            "  eps_r (SMA-corr.):  {:.3f}   (f_min - 25 MHz, +-10 MHz ~ +-0.02; the better patch value)".format(
+            "  eps_r (SMA-corr.):  {:.3f}   (f_min - 25 MHz, the simulated launch, +-10 MHz ~ +-0.02)".format(
                 patch["eps_r_sma"]
             ),
             "  eps_r (formula):    {:.3f}   (4.4 * (f_sim / f_meas)^2, cross-check)".format(
@@ -464,6 +504,28 @@ def report(patch, lines, args):
         ]
         if patch["warn"]:
             t.append("  WARNING: " + patch["warn"])
+        de = patch.get("deembedded")
+        if de:
+            t += [
+                "  launch removed with the line pair (assumes the same launch on both boards):",
+                "    S11 minimum:      {:.4f} GHz, {:.1f} dB   (launch shift {:+.0f} MHz)".format(
+                    de["f_res"] / 1e9, de["depth"], (patch["f_res"] - de["f_res"]) / 1e6
+                ),
+                "    -10 dB band:      "
+                + (
+                    "{:.3f}-{:.3f} GHz".format(*np.divide(de["band"], 1e9))
+                    if de["band"]
+                    else "none"
+                ),
+                "    eps_r (table):    {:.3f}   (the patch value to use)".format(
+                    de["eps_r_table"]
+                ),
+                "    max |S11|:        {:+.1f} dB   (> 0 dB: the two boards' launches differ)".format(
+                    de["s11_db"].max()
+                ),
+            ]
+            if de["warn"]:
+                t.append("    WARNING: " + de["warn"])
         t.append("")
     if lines:
         t += [
@@ -544,7 +606,9 @@ def plots(patch, f_p, lines, out):
 
     if patch:
         fig, ax = plt.subplots(figsize=(8, 5), tight_layout=True)
-        ax.plot(f_p / 1e9, patch["s11_db"])
+        ax.plot(f_p / 1e9, patch["s11_db"], label="measured")
+        if patch.get("deembedded"):
+            ax.plot(f_p / 1e9, patch["deembedded"]["s11_db"], label="launch removed")
         ax.axvspan(
             BAND[0] / 1e9, BAND[1] / 1e9, color="g", alpha=0.15, label="5.75-5.85 GHz"
         )
@@ -557,7 +621,11 @@ def plots(patch, f_p, lines, out):
         )
         ax.set_xlabel("Frequency (GHz)")
         ax.set_ylabel("S11 (dB)")
-        ax.set_title("Patch board: eps_r {:.2f} (table)".format(patch["eps_r_table"]))
+        ax.set_title(
+            "Patch board: eps_r {:.2f} (table)".format(
+                patch.get("deembedded", patch)["eps_r_table"]
+            )
+        )
         ax.grid()
         ax.legend()
         fig.savefig(os.path.join(out, "k8_patch_s11.png"))
@@ -569,7 +637,7 @@ def plots(patch, f_p, lines, out):
             f,
             lines["model_line"],
             "--",
-            label="model, eps_r {:.2f} (from line)".format(lines["eps_r_line"]),
+            label="model, eps_r {:.2f} (from line)".format(lines["eps_r_kj"]),
         )
         if "model_patch" in lines:
             ax.plot(f, lines["model_patch"], ":", label="model, eps_r from patch")
@@ -604,6 +672,12 @@ def main():
     )
     p.add_argument("--width", type=float, default=2.868, help="line width in mm")
     p.add_argument("--h", type=float, default=1.5, help="dielectric thickness in mm")
+    p.add_argument(
+        "--l-short",
+        type=float,
+        default=25.0,
+        help="short line, board edge to board edge in mm (launch removal)",
+    )
     p.add_argument("--out", help="write k8_summary.md and plots here")
     args = p.parse_args()
     if bool(args.short) != bool(args.long):
@@ -612,14 +686,21 @@ def main():
         p.error("nothing to do: give --patch and/or --short and --long")
 
     patch = lines = f_p = None
-    if args.patch:
-        f_p, s = read_touchstone(args.patch)
-        patch = analyze_patch(f_p, s[:, 0, 0])
     if args.short:
         f, ss = read_touchstone(args.short)
         f2, sl = read_touchstone(args.long)
         assert ss.shape[1] == 2 and sl.shape[1] == 2, "line files must be .s2p"
         assert np.allclose(f, f2), "the two line files have different frequency grids"
+    if args.patch:
+        f_p, s = read_touchstone(args.patch)
+        patch = analyze_patch(f_p, s[:, 0, 0])
+        if args.short:
+            assert np.allclose(
+                f_p, f
+            ), "patch and lines need the same sweep (span and points) to remove the launch"
+            box = launch_box(f, ss, sl, args.dl, args.l_short)
+            patch["deembedded"] = analyze_patch(f, deembed(s[:, 0, 0], *box))
+    if args.short:
         lines = analyze_lines(
             f,
             ss,
@@ -627,7 +708,7 @@ def main():
             args.dl,
             args.width,
             args.h,
-            patch["eps_r_table"] if patch else None,
+            patch.get("deembedded", patch)["eps_r_table"] if patch else None,
             sim_table(),
         )
         lines["s21_short"], lines["s21_long"] = ss[:, 1, 0], sl[:, 1, 0]

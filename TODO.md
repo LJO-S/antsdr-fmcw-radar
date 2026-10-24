@@ -22,11 +22,11 @@ Roadmap for the FMCW radar.
 their design conclusions move to `CLAUDE.md`, which is the maintained map - don't
 grow narrative back in here as parts close.
 
-Current state (2026-10-20): Parts A-G and I are done. **Part K (Phase 6) is active**:
-K0-K2, K4, K5 and K7 done. FMC5 (TDM + `tx_sel` on J30) is on hardware, and fabric /8
-has run on cable RF (K7 bench) but not yet on air (K6). Next: K10 software (angle),
-K3 (tracker); K8 boards ordered; K6 waits on weather. Part H stays deferred. Part J
-blocks nothing and can run in parallel.
+Current state (2026-10-23): Parts A-G and I are done. **Part K (Phase 6) is active**:
+K0-K2, K4, K5, K7 and K8 done. FMC5 (TDM + `tx_sel` on J30) is on hardware, and fabric /8
+has run on cable RF (K7 bench) but not yet on air (K6). Next: K9 boards (KiCad, order),
+K10 software (angle) while they ship, K3 (tracker); K6 waits on weather. Part H stays
+deferred. Part J blocks nothing and can run in parallel.
 
 ---
 
@@ -118,16 +118,80 @@ Fabric FFT/CFAR is not planned - decision gate in G11.
       test with port A -> pad -> RX, port B terminated.
       8.4 passed 2026-10-19 (no pad): A/B 30 dB both ways, also triangle + TDM;
       floor = the E200's TX1 -> RX1 leak (`hardware/bench_measurements.md`).
-- [ ] K8 - single patch on FR4 (G9.3): openEMS, fab, solder SMAs, S11, back out
-      eps_r. Order the PCB early; do K7 while it ships.
-      Simulation done 2026-10-05 (`scripts/antenna_design/`): eps_r 4.4 geometry at
-      h 1.5 mm, mesh converged; at the board edge the S11 null is at 5.801 GHz, worst
-      in band -16.3 dB; 59 % efficiency, 5.7 dBi. In band for eps_r ~4.3-4.5, -60 MHz
-      per +0.1 (`eps_r_sweep.md`; `--measured` turns a VNA reading into eps_r).
-      KiCad done 2026-10-05: patch board + line-pair board, Gerbers checked
-      (`scripts/antenna_design/README.md`, "Boards"). Ordered (by 2026-10-13). Left: solder, measure.
+- [X] K8 - single patch on FR4 (G9.3): sim, fab, SMAs, VNA, eps_r. Closed 2026-10-23
+      (`scripts/antenna_design/results.md`, K8 "Measured"): patch eps_r **4.61** (launch
+      removed), line pair 4.85 (eps_eff 3.83, lambda_g 26.4 mm, 0.0195 dB/mm, tan d
+      0.018-0.019). The 0.24 gap misses the 0.1 target; the lines' value is taken as a
+      setup artefact (unverified) and K9 is designed at **4.6**. The patch value is
+      robust to launch differences (4.37-4.65). SMA launch S11 -6 to -8 dB (sim -33),
+      cause open (K9 step 0).
 - [ ] K9 - columns + bench (G9.4-9.5): TX 2x(1x8) at lambda/2, RX 1x8; S11,
       coupling, isolation vs spacing, gain +-1 dB, pattern + A-B phase vs angle.
+      Re-tuned at eps_r 4.6 2026-10-23 (`results.md`, K9; run files in
+      `scripts/antenna_design/column/`): 10.8 dBi, S11 -18 dB, tilt -0.7 deg.
+
+      Order recipe, KiCad 10 -> Gerbers. One project per board (`k9-tx/`, `k9-rx/` next
+      to `line-pair/`); coordinates in mm from the feed edge on the board centre line.
+
+      - [ ] 0. The K8 launch: the SMA ground holes are present (2026-10-24), so the
+            -6 to -8 dB launch is unexplained. Decide before ordering: find the cause, or
+            order as is (the launch costs ~1 dB and hides the column's own S11).
+      
+      - [ ] 1. Footprints (openEMS venv, `scripts/antenna_design/`):
+            `python make_footprints.py --eps-r 4.6 --L 11.531 --lc 12.45 --tw 4.481 --tl 6.587`
+            -> `antenna.pretty/` column + witness patch. Check the `.png` previews.
+      
+      - [ ] 2. New project. Copy `line-pair/line-pair.kicad_dru` to `k9-tx/k9-tx.kicad_dru`
+            (SMA pads may touch the edge). Preferences -> Manage Footprint Libraries ->
+            Project Specific: nickname `antenna`, path `${KIPRJMOD}/../antenna.pretty`.
+      
+      - [ ] 3. Schematic, per antenna: `Connector:Conn_Coaxial` (footprint
+            `Connector_Coaxial:SMA_Molex_73251-1153_EdgeMount_Horizontal`), centre pin
+            wired to a `Device:Antenna` (footprint `antenna:K9_column_N8_uniform` or
+            `antenna:K8_patch_witness`), shield to GND (+ PWR_FLAG). Nets TX: COL_A,
+            COL_B, WITNESS; RX: COL, WITNESS. Annotate, ERC.
+      
+      - [ ] 4. Board Setup: stackup 2 layers, 1.6 mm, core 1.51 FR4, eps_r 4.6, tan d
+            0.02 (documentation only). DRC severity "solder mask aperture bridges items
+            with different nets" -> ignore (step 8 opens the whole top mask).
+      
+      - [ ] 5. Update PCB from schematic (F8). Place -> Grid Origin at the feed edge on
+            the centre line; Preferences -> Origins & Axes: display origin = grid origin.
+            Place at rotation 0, antennas at x 0, each SMA at x 4.26 on its antenna's y.
+            TX: col A y -12.95, col B y +12.95, witness y 63.678. RX: col y 0, witness
+            y 50.728.
+      
+      - [ ] 6. Edge.Cuts polygon: the column board plus the K8 patch board (51.842 x
+            55.728, same ground margins) as a tab at the feed end. All SMAs on one edge;
+            the tab's small asymmetry is calibrated out by the turntable (9.5).
+            TX: (0,-35.814) (225.985,-35.814) (225.985,35.814) (51.842,35.814)
+            (51.842,91.542) (0,91.542). RX: (0,-22.864) (225.985,-22.864)
+            (225.985,22.864) (51.842,22.864) (51.842,78.592) (0,78.592).
+      
+      - [ ] 7. B.Cu zone, net GND, over the whole board, pad connections solid. Fill (B),
+            then view B.Cu alone: one plane, solid around every SMA pad and hole.
+      
+      - [ ] 8. F.Mask: one filled rectangle over the whole board (top mask open, as
+            simulated and as K8). Text on B.SilkS only: name, eps_r 4.6, date,
+            `JLCJLCJLCJLC`. Optional: M3 holes (`MountingHole:MountingHole_3.2mm_M3`)
+            near the corners, >= 10 mm from antenna copper.
+      
+      - [ ] 9. DRC: no errors, no unconnected items. Expected leftovers only: SMA
+            courtyards over the edge, antenna footprints without courtyard. 3D view.
+      
+      - [ ] 10. File -> Fabrication Outputs -> Gerbers to `gerbers/`: F.Cu, B.Cu, F.Mask,
+            B.Mask, B.SilkS, Edge.Cuts, Protel extensions on. Then **Generate Drill
+            Files** in the same dialog (Excellon, mm, PTH and NPTH separate): without it
+            the SMA ground holes are not made.
+      
+      - [ ] 11. Gerber Viewer: load the Gerbers and both drill files. Count 2 holes per
+            SMA; measure patch L 11.531, W 15.728, pitch 23.981, board 225.985 against
+            `results.md`. Zip `gerbers/`.
+      
+      - [ ] 12. JLCPCB, TX and RX in one order (one batch, one fc): as K8 (FR-4
+            TG135-140, 2 layers, 1.6 mm, 1 oz, HASL), order number at the
+            `JLCJLCJLCJLC` text. Check the holes in their viewer before paying.
+
 - [ ] K10 - angle on the host (G10.1, read G13.4 first). Can start before K9. Done
       when fake targets at +-30 deg come back within 1 deg at 0 and +-20 m/s, and
       the cable test agrees with the VNA. Sawtooth + TDM first, triangle after.

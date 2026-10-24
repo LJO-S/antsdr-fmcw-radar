@@ -44,6 +44,12 @@ parser.add_argument(
     help="eps_r of the simulated substrate (default: --design). Set it apart from "
     "--design to see what another board does to a fixed geometry",
 )
+parser.add_argument(
+    "--eps-xy",
+    type=float,
+    help="in-plane eps_r (default: --eps-r, isotropic). --eps-r is then the vertical one: "
+    "FR4's glass weave makes in-plane higher (K8: patch and line pair disagree)",
+)
 parser.add_argument("--out", help="save plots and S11 data here instead of showing them")
 parser.add_argument(
     "--refine",
@@ -58,9 +64,14 @@ if args.out:
 
 design_epsR = args.design  # sets the geometry
 substrate_epsR = args.design if args.eps_r is None else args.eps_r  # the material simulated
+eps_xy = substrate_epsR if args.eps_xy is None else args.eps_xy  # in-plane (x, y)
+aniso = eps_xy != substrate_epsR
 
-# One tag per (geometry, substrate, mesh): names the sim directory and the saved results
-tag = "d{:.2f}_e{:.2f}_r{:g}".format(design_epsR, substrate_epsR, args.refine)
+# One tag per (geometry, substrate, mesh): names the sim directory and the saved results.
+# Anisotropic runs get _x<eps_xy>: keep them out of sweep/ (its glob would take them).
+tag = "d{:.2f}_e{:.2f}{}_r{:g}".format(
+    design_epsR, substrate_epsR, "_x{:.2f}".format(eps_xy) if aniso else "", args.refine
+)
 Sim_Path = os.path.join(tempfile.gettempdir(), "Patch_Inset_" + tag)
 
 post_proc_only = False  # set to True to skip the simulation and only do post-processing
@@ -237,6 +248,12 @@ patch.AddBox(
 
 # create substrate
 substrate = CSX.AddMaterial("substrate", epsilon=substrate_epsR, kappa=substrate_kappa)
+if aniso:  # diagonal tensor, z vertical; kappa scaled per axis so tan d stays 0.02
+    substrate.SetIsotropy(False)
+    eps_vec = [eps_xy, eps_xy, substrate_epsR]
+    substrate.SetMaterialProperty(
+        epsilon=eps_vec, kappa=[substrate_kappa * e / substrate_epsR for e in eps_vec]
+    )
 start = [-substrate_width / 2, -substrate_length / 2, 0]
 stop = [substrate_width / 2, substrate_length / 2, substrate_thickness]
 substrate.AddBox(priority=0, start=start, stop=stop)
@@ -423,9 +440,12 @@ print(
     )
 )
 print(
-    "Stackup   FR4, eps_r {:.2f}, tan d {:.3f}, dielectric h {:.3f} mm. Sim copper has zero "
+    "Stackup   FR4, eps_r {:.2f}{}, tan d {:.3f}, dielectric h {:.3f} mm. Sim copper has zero "
     "thickness and no solder mask: open the mask over all F.Cu.".format(
-        substrate_epsR, tan_d, substrate_thickness
+        substrate_epsR,
+        " (z; x, y {:.2f})".format(eps_xy) if aniso else "",
+        tan_d,
+        substrate_thickness,
     )
 )
 print(

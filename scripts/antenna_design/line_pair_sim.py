@@ -27,9 +27,17 @@ C0_ = 299792458.0
 LINE_W = 2.868  # mm, the feed width of the patch board
 
 
-def make_tag(length, eps_r, copper, refine, thick=False):
-    return "L{:g}_e{:.2f}_{}_r{:g}{}".format(
-        length, eps_r, "cu" if copper else "pec", refine, "_t35" if thick else ""
+def make_tag(length, eps_r, copper, refine, thick=False, eps_xy=None):
+    """Anisotropic runs get _x<eps_xy>: keep them out of line_pair_sim/ (k8_analyze's glob
+    would take them)."""
+    aniso = eps_xy is not None and eps_xy != eps_r
+    return "L{:g}_e{:.2f}{}_{}_r{:g}{}".format(
+        length,
+        eps_r,
+        "_x{:.2f}".format(eps_xy) if aniso else "",
+        "cu" if copper else "pec",
+        refine,
+        "_t35" if thick else "",
     )
 
 
@@ -225,6 +233,11 @@ parser.add_argument(
     "--eps-r", type=float, default=4.4, help="eps_r of the substrate (default 4.4)"
 )
 parser.add_argument(
+    "--eps-xy",
+    type=float,
+    help="in-plane eps_r (default: --eps-r, isotropic); --eps-r is then the vertical one",
+)
+parser.add_argument(
     "--copper",
     action="store_true",
     help="35 um copper sheet (5.8e7 S/m) instead of PEC, for conductor loss",
@@ -259,7 +272,8 @@ from openEMS import openEMS
 from openEMS.physical_constants import *
 
 substrate_epsR = args.eps_r
-tag = make_tag(args.length, substrate_epsR, args.copper, args.refine, args.thick)
+eps_xy = substrate_epsR if args.eps_xy is None else args.eps_xy
+tag = make_tag(args.length, substrate_epsR, args.copper, args.refine, args.thick, eps_xy)
 Sim_Path = os.path.join(tempfile.gettempdir(), "LinePair_" + tag)
 
 f0 = 5.75e9  # centre of the VNA span
@@ -292,11 +306,12 @@ Box = dict(
 )
 
 print(
-    "line {:g} mm x {:.3f} mm on {:.0f} mm board, eps_r {:.2f}, {}".format(
+    "line {:g} mm x {:.3f} mm on {:.0f} mm board, eps_r {:.2f}{}, {}".format(
         length,
         line_width,
         board_w,
         substrate_epsR,
+        " (z; x, y {:.2f})".format(eps_xy) if eps_xy != substrate_epsR else "",
         "copper 35 um" if args.copper else "thick PEC" if args.thick else "PEC",
     )
 )
@@ -353,6 +368,12 @@ line.AddBox(
 )
 
 substrate = CSX.AddMaterial("substrate", epsilon=substrate_epsR, kappa=substrate_kappa)
+if eps_xy != substrate_epsR:  # diagonal tensor, z vertical; tan d kept per axis
+    substrate.SetIsotropy(False)
+    eps_vec = [eps_xy, eps_xy, substrate_epsR]
+    substrate.SetMaterialProperty(
+        epsilon=eps_vec, kappa=[substrate_kappa * e / substrate_epsR for e in eps_vec]
+    )
 substrate.AddBox(
     priority=0,
     start=[0, -board_w / 2, 0],
@@ -448,6 +469,7 @@ if args.out:
         z_ref=z_ref,
         length=length,
         eps_r=substrate_epsR,
+        eps_xy=eps_xy,
         h=substrate_thickness,
         copper=args.copper,
         refine=args.refine,

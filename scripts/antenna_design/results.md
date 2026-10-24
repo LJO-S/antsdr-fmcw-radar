@@ -158,9 +158,104 @@ A model of the Molex edge SMA, against the ideal edge port of every table above:
 - Line pair: the launches cancel (eps_r 4.402 vs 4.400). The lines are the better eps_r.
 - Launch S11 ~-33 dB in band, ~0.14 dB loss each.
 
+## Measured (2026-10-22, LiteVNA-64)
+
+One patch board, one line pair (JLCPCB FR4 1.6 mm, 1 oz HASL). 5.0-6.3 GHz, 401 points,
+SOL + thru + isolation, NanoVNA-Saver. Raw `.s1p/.s2p` kept locally, not in the repo.
+
+| Quantity | Predicted (eps_r 4.4) | Measured |
+|---|---|---|
+| Patch S11 minimum, raw | ~5.825 GHz (5.801 + 25 MHz launch) | 5.819 GHz, -11.5 dB; -10 dB band 5.61-5.91 |
+| Patch S11 minimum, launch removed | 5.801 GHz, -33 dB | **5.678 GHz**, -36 dB; -10 dB band 5.60-5.80 |
+| Patch eps_r (launch removed) | 4.4 | **4.61** (flipped line files: 4.61) |
+| Line eps_eff at 5.8 GHz | 3.489 | **3.83** (+-0.02 ripple in band) |
+| Line eps_r (sim table, extrapolated) | 4.4 | **4.85** (K-J inverted 4.87) |
+| lambda_g at 5.8 GHz | 27.67 mm | **26.43 mm** |
+| Group index | 1.91 | 2.03 |
+| Loss | 0.020-0.021 dB/mm | 0.0195 +- 0.006 dB/mm |
+| tan d | 0.02 (assumed) | 0.018-0.019 |
+| Line S11 in band (launch) | ~-33 dB (sim) | **-6 to -8 dB** |
+
+- **The line pair is solid.** Flipped lines repeat S21 within +-2 deg and 0.06 dB, S22 = S11,
+  and the full 2-port (measured S22) gives the same eps_eff, 3.83. Both the phase and the
+  group delay say the long line is slower than predicted, so it is not a phase offset.
+- **The launch is far worse than simulated**: |a22| up to 0.4 (sim -33 dB). It moved the patch
+  dip +141 MHz and made it shallow and wide; the 25 MHz SMA correction does not cover it. The
+  launch comes out of the line pair (`k8_analyze.py`, launch removal). After removal the dip
+  looks like the sim. Max |S11| reaches +2 dB off resonance: mostly LiteVNA port 2 (below).
+- **TDR** (each line from both ends, far end on the cal-kit load; the patch board; 50 kHz-6.3 GHz, 3201
+  points, low-pass step from the `.s1p` with a Hann window): the lines are **45.5 Ohm** along
+  their whole length (47.9 predicted at eps_r 4.85, h 1.5). The 45 Ohm "dip" first read as
+  ~0.28 pF of solder at the launch was the short line itself: retracted. The four near
+  launches overlap within 0.4 Ohm and 2 ps, so the two boards' launches match, as the line
+  method needs. The launch mismatch only shows at high frequency, which the Hann-weighted
+  TDR (mostly < 3 GHz) cannot resolve: line S11 rises from -25 dB at 1 GHz to -6 dB at
+  5.8 GHz (cause open, next bullet). Edge timing, long minus short, gives eps_eff 3.82 +- 0.08 (1-3 GHz):
+  the line is slow without port 2 or the eigenvalue method. NanoVNA-Saver's TDR plot
+  smooths too much for features this short.
+- **The bad launch is unexplained.** It measures like a launch without ground vias
+  (`sma_launch_sim.py --kind pair --length 25 --eps-r 4.85 --omit vias` matches 5.0-5.7 GHz;
+  the top pads become a quarter-wave stub at 5.75 GHz), but the boards have the
+  footprint's two plated holes per SMA (checked 2026-10-24). With them the sim gives -30
+  to -40 dB. `TODO.md`, K9 step 0.
+- **LiteVNA port 2 is not corrected** (1.5-port): its match, seen through the port-2 cable,
+  puts a ~0.3 GHz ripple on the two-port S11 (0.1-0.15 off the load-terminated S11) and on
+  S21 (+-0.5 dB). With the load-terminated S11 swapped in: line eps_eff 3.81-3.83, patch
+  5.679-5.690 GHz (4.59-4.61), max |S11| after removal +0.6-0.8 dB. The results stand. Clean
+  two-port data without port 2: far end on the cal-kit load, open and short, solved for S11,
+  S22, S21^2 like a SOL calibration.
+- **eps_r: 4.61 from the patch, 4.85 from the lines** - a 0.24 gap, over the 0.1 target.
+  Each reading holds on its own. Ruled out:
+  - anisotropy: `--eps-xy` moves patch and line by the same 12-13 % of their isotropic
+    slopes, so no tensor fits both (fit to the patch, the line reads 3.645);
+  - launches (TDR), port 2, fab geometry (calipers: as drawn, cores ~1.49 line pair /
+    ~1.54 mm patch);
+  - the patch's launch removal (2026-10-24): a different patch launch (+-0.3 pF, +-0.6
+    nH, reflections x0-x1.5) gives 4.37-4.65, never 4.85. The patch sim matches Balanis
+    within 0.3 %.
+
+  The TDR "same laminate" argument is retracted (the patch feed is too short to read).
+  Two fits remain: (a) **something of eps_r ~1.7 touching the lines** makes a 4.6 board
+  read eps_eff 3.83 (q 0.73), Z0 and TDR included; a ~2 mm gap would mostly remove it.
+  (b) **two laminate panels** (cores 1.49 / 1.54 mm).
+- **For K9**: eps_r **4.6** (decided 2026-10-23). Right under (a); under (b) the witness
+  patch measures the new panel and fc trims +-0.08 eps_r.
+
 ## Phase 6 K9
 
-All at eps_r 4.4, h 1.5 mm, tan d 0.02, PEC copper. Re-tune once K8 gives the real eps_r.
+#### Re-tune at eps_r 4.6 (2026-10-23, the K8 patch)
+
+The board to fabricate. h 1.5, tan d 0.02, PEC copper; same topology, feed, W and
+connector width as the baseline below. L by the Balanis length shift, lc by the connector's
+lambda_g ratio less 0.1 mm (the tilt trend of the 4.73 / 4.85 runs), transformer
+re-synthesized. No trim needed. A lossless check of the same scaling at 4.73 put the
+broadside mode at 5.801 GHz.
+
+```
+python column_sim.py --eps-r 4.6 --L 11.531 --lc 12.45 --tw 4.481 --tl 6.587 [--refine 1.5]
+python make_footprints.py --only column --eps-r 4.6 --L 11.531 --lc 12.45 --tw 4.481 --tl 6.587
+```
+
+L 11.531 x W 15.728 mm, connectors 0.6 x 12.45 mm, pitch 23.981 mm, transformer 4.481 x
+6.587 mm (37.8 Ohm), feed 2.868 x 20 mm. Board 226.0 mm long (was 230.7).
+
+| | 4.6, refine 1.5 | 4.6, two columns (refine 1) | design on eps_r 4.85 (refine 1) |
+|---|---|---|---|
+| worst S11, 5.75-5.85 GHz | -18.1 dB | -18.4 dB | -11.8 dB |
+| Dmax / efficiency / gain | 14.8 dBi / 40 % / 10.8 dBi | 14.3 / 39 % / 10.3 dBi | 14.5 / 28 % / 9.0 dBi |
+| HPBW E / H | 13.4 / 79.4 deg | | 12.5 / 102.9 deg |
+| first E-plane sidelobes | -12.8 / -12.8 dB | | -10.8 / -12.6 dB |
+| tilt 5.775 / 5.8 / 5.825 GHz | -1.4 / -0.7 / 0.0 deg | -1.4 / -0.7 / +0.1 deg | +3.9 / +5.2 / +6.4 deg |
+| coupling S21 | | -24.3 dB | |
+| A-B phase vs pi sin(az) | | 4.6 deg rms, +-95.9 at +-30 deg | |
+
+- Same behaviour as the 4.4 baseline; gain 0.3 dB lower (shorter pitch, 0.46 lambda0).
+- If the board is really 4.85 (the K8 lines), this design loses 1.8 dB of gain, S11 rises to
+  -11.8 dB and the beam tilts +5 deg. The reverse error is milder: a 4.85 design (L 11.216,
+  lc 12.05, tw 4.322, tl 6.431; S11 -20.3 dB, 10.6 dBi at refine 1.5) on 4.61 kept -17.7 dB
+  and 10.6 dBi, tilt -5 deg.
+
+Below: the 4.4 design, all at eps_r 4.4, h 1.5 mm, tan d 0.02, PEC copper.
 Far-field numbers corrected for a phase-centre units bug (fixed in `column_sim.py`).
 
 #### 1x8 column baseline (2026-10-09, refine 1.5)
@@ -186,11 +281,17 @@ Columns at y = +-12.95 mm (25.9 mm apart), translated copies, A driven, B 50 Ohm
 
 #### Taylor -20 dB taper (learning variant, not for the first board)
 
-Needs per-patch W and L and per-section connector lengths, set from the per-patch
-probes (`--probes`): one shared connector length gave an 11 deg phase step at the centre
-and -13 dB sidelobes. Trimmed (`b5_p6`, refine 1.5): -19.4 / -22.4 dB, gain 10.4 dBi,
-worst S11 -11.4 dB (no transformer yet). The edge port and feed line radiate at
--22..-28 dB re the beam, which costs 1-3 dB at -20 dB sidelobes; whether a real SMA does
-too is open. Geometry: `--W-list 7.09,8.22,11.56,14.72,15.73,14.17,11.32,9.49
+- **What**: the centre patches fed harder than the ends (patch width W sets each one's
+  share), so the elevation sidelobes drop from -13 to -20 dB for a slightly wider beam.
+- **Why not now**: it only shapes elevation; angle (K10) is azimuth. The elevation
+  sidelobes hit the ground within ~4 m (1.5 m height), inside the 15 m close-in mask; the
+  main beam's ground clutter from ~13 m is MTI's job. It costs 0.6 dB of gain, worse S11
+  and 23 dimensions instead of 3, tuned at eps_r 4.4 only. Worth it if field data shows
+  returns from above or below the beam past the mask.
+- **Sim** (eps_r 4.4, `b5_p6`, refine 1.5): -19.4 / -22.4 dB, 10.4 dBi, worst S11 -11.4 dB
+  (no transformer yet). W moves each patch's resonance and phase, so L and each connector
+  length are set from the per-patch probes (`--probes`); one shared connector length gave
+  an 11 deg phase step and -13 dB. The edge port and feed line radiate at -22..-28 dB re
+  the beam (1-3 dB of sidelobe), a real SMA maybe more. Geometry: `--W-list 7.09,8.22,11.56,14.72,15.73,14.17,11.32,9.49
 --L-list 12.319,12.215,11.987,11.838,11.800,11.861,12.001,12.116
 --lc-list 13.913,13.600,13.214,12.941,12.992,13.372,13.527 --tl 0`.

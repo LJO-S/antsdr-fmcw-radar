@@ -13,7 +13,7 @@ openEMS FDTD simulations of the 5.8 GHz inset-fed patch on FR4.
 | `line-pair/` | KiCad: two 50 Ohm lines, 95 and 25 mm, for eps_eff and loss |
 | `line_pair_sim.py` | The line pair in openEMS: predicted phase, eps_eff, lambda_g, loss vs eps_r |
 | `line_pair_sim/` | Its per-run `.npz` / `.s2p` (local, git-ignored; `--all` regenerates) |
-| `k8_analyze.py` | VNA Touchstone files -> patch eps_r; line pair eps_eff, lambda_g, dB/mm, tan d, eps_r |
+| `k8_analyze.py` | VNA Touchstone files -> patch eps_r (launch removed via the line pair); line pair eps_eff, lambda_g, dB/mm, tan d, eps_r |
 | `test_k8_analyze.py` | Its board-free tests (`python test_k8_analyze.py`) |
 | `column_sim.py` | K9: series-fed 1xN column(s), one port per column, S11/S21, pattern cuts, A-B phase, KiCad summary |
 | `column/` | Its per-run data (local, git-ignored) |
@@ -94,10 +94,13 @@ echo 'export PATH="$HOME/opt/openEMS/bin:$PATH"' >> ~/.bashrc
   the witness patch, each one custom pad "1" (F.Cu + F.Mask). Same options as
   `column_sim.py`, so a re-tune or a taper is one command. Origin = board edge on the line
   centre. The first 5 mm of line is left to the SMA centre pad, as on K8 (`--launch-gap`).
-- TX board: two columns at y = +-12.95 mm, Edge.Cuts 230.72 x 71.63 mm (y +-35.81). RX
-  board: one column, 230.72 x 45.73 mm (y +-22.86). Solid GND on B.Cu, as simulated.
-- Give each pad the net of its SMA centre pin. Not yet opened in KiCad: check the pad
-  loads and fills before ordering.
+- The board to fabricate is the eps_r 4.6 re-tune (`results.md`, K9): pass its options, as
+  the defaults are still the 4.4 baseline.
+- TX board: two columns at y = +-12.95 mm, Edge.Cuts 225.99 x 71.63 mm (y +-35.81). RX
+  board: one column, 225.99 x 45.73 mm (y +-22.86). Solid GND on B.Cu, as simulated.
+- The SMA footprint's two plated ground holes are the launch sim's vias: the drill file
+  must be in the order. The K8 launch measured like one without them (`results.md`, K8).
+- Step-by-step KiCad -> Gerbers: `TODO.md`, K9.
 - Witness patch: the K8 table assumes the K8 board. Keep its ground margins (about
   20 mm on every side) and compare it with the K8 measurement, not the table alone.
 
@@ -107,11 +110,12 @@ Predictions first (`results.md`): patch S11 minimum near 5.8 GHz for eps_r 4.4 (
 per 0.1 eps_r, launch shifts it 20-35 MHz); line pair eps_eff 3.49, lambda_g 27.7 mm, dphi
 ~911 deg over dL 70 mm, ~0.020-0.021 dB/mm (all at eps_r 4.4; 4.2-4.6 spans eps_eff 3.34-3.64).
 
-1. **Settings**: 5.0-6.5 GHz, 401 points or more (3.75 MHz steps is plenty for both
-   boards), highest averaging / lowest IF bandwidth the menu offers, default output power.
-2. **Calibrate** SOLT at the SS405 cable ends (short, open, load on port 1, again on port 2,
-   barrel thru), with the same span and points as the measurement. Changing span or points
-   means recalibrating. Save it to a memory slot.
+1. **Settings**: 5.0-6.3 GHz (the LiteVNA-64's top), 401 points or more, the same sweep for
+   both boards (the launch removal needs it), highest averaging / lowest IF bandwidth the
+   menu offers, default output power.
+2. **Calibrate** SOL on port 1 + thru + isolation (the LiteVNA is 1.5-port: port 2 gets no
+   SOL), with the same span and points as the measurement. Changing span or points means
+   recalibrating; NanoVNA-Saver must sweep exactly the calibrated span. Save it to a memory slot.
 3. **Check**: re-measure the cal load and the barrel thru. Both should look near perfect
    (they were the standards); if not, recalibrate. Fix the cables for the whole session.
 4. **Save**: use NanoVNA-Saver 0.7.0 or newer (first LiteVNA support) with the USB link, then
@@ -127,9 +131,15 @@ per 0.1 eps_r, launch shifts it 20-35 MHz); line pair eps_eff 3.49, lambda_g 27.
    Optional: flip each line (ports swapped), save `short_flip.s2p` / `long_flip.s2p`; flipped
    S11 should match the S22 the analysis assumes (equal to S11).
 7. **Analyse**: `python k8_analyze.py --patch patch.s1p --short short.s2p --long long.s2p --out k8/`
-   (`--dl`, `--width`, `--h` default to the design 70, 2.868, 1.5). Copy from `k8/k8_summary.md`
-   into `results.md`: eps_r from the patch (raw and SMA-corrected) and from the lines (table and cross-check),
-   eps_eff, lambda_g, dB/mm, tan d range. Done (guide 9.3): the two eps_r agree within ~0.1.
+   (`--dl`, `--width`, `--h`, `--l-short` default to the design 70, 2.868, 1.5, 25). Copy from
+   `k8/k8_summary.md` into `results.md`: eps_r from the patch and from the lines (table and
+   cross-check), eps_eff, lambda_g, dB/mm, tan d range. Done (guide 9.3): the two eps_r agree
+   within ~0.1.
+   With all three files, the line pair also yields the launch (eigenvectors of the T-matrix
+   ratio, plus the short line's S11 with mirrored launches) and removes it from the patch S11.
+   That eps_r is the patch value: the real launch moved the dip +140 MHz on the first boards,
+   not the simulated 25 MHz. It assumes both boards have the same launch; a max |S11| above
+   0 dB after removal (off resonance) shows how far that holds.
 
 Sources: [NanoVNA-Saver v0.7.0 release](https://github.com/NanoVNA-Saver/nanovna-saver/releases)
 (LiteVNA support), [Selteq LiteVNA 64 specs](https://selteq.com.ua/en/litevna-64/) (points),

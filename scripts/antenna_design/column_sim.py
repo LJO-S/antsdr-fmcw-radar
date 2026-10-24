@@ -162,6 +162,8 @@ def parse_args():
     p.add_argument("--excite", type=int, default=0, help="index of the driven column")
     p.add_argument("--center", type=fl, help="far-field phase centre x,y mm (default board centre)")
     p.add_argument("--eps-r", type=float, default=DESIGN_EPSR, help="substrate eps_r simulated")
+    p.add_argument("--eps-xy", type=float,
+                   help="in-plane eps_r (default: --eps-r, isotropic); --eps-r is then the vertical one")
     p.add_argument("--tan-d", type=float, default=0.02, help="substrate loss tangent")
     p.add_argument("--out", default="column", help="results directory (default column/)")
     p.add_argument("--refine", type=float, default=1.0, help="mesh refinement factor")
@@ -185,9 +187,12 @@ def main():
     N = args.N
     L_list, W_list, zt, tw_d, tl_d, tw, tl = column_params(args)
     eps = args.eps_r
+    eps_xy = eps if args.eps_xy is None else args.eps_xy
+    aniso = eps_xy != eps
     ycols = args.y_cols
     nc = len(ycols)
-    tag = "N{}{}_e{:.2f}_r{:g}{}".format(N, "x{}".format(nc) if nc > 1 else "", eps, args.refine, args.tag)
+    tag = "N{}{}_e{:.2f}{}_r{:g}{}".format(N, "x{}".format(nc) if nc > 1 else "", eps,
+                                          "_x{:.2f}".format(eps_xy) if aniso else "", args.refine, args.tag)
     Sim_Path = os.path.join(tempfile.gettempdir(), "Column_" + tag)
 
     global FREQS_PAT
@@ -285,6 +290,10 @@ def main():
     for poly in polys:
         copper.AddPolygon(np.array(poly).T, "z", H, priority=10)
     sub = CSX.AddMaterial("substrate", epsilon=eps, kappa=kappa)
+    if aniso:  # diagonal tensor, z vertical; tan d kept per axis
+        sub.SetIsotropy(False)
+        ev = [eps_xy, eps_xy, eps]
+        sub.SetMaterialProperty(epsilon=ev, kappa=[kappa * e / eps for e in ev])
     sub.AddBox(priority=0, start=[x_b, y_lo, 0], stop=[board_x, y_hi, H])
     gnd = CSX.AddMetal("gnd")
     gnd.AddBox([x_b, y_lo, 0], [board_x, y_hi, 0], priority=10)
@@ -463,8 +472,9 @@ def main():
     lines = []
     lines.append("==== KiCad summary, N = {} x {} column(s), eps_r {:.2f} ====".format(N, nc, eps))
     lines.append(
-        "Stackup   FR4, eps_r {:.2f}, tan d {:.3f}, dielectric h {:.3f} mm. Sim copper has zero "
-        "thickness and no solder mask: open the mask over all F.Cu.".format(eps, args.tan_d, H)
+        "Stackup   FR4, eps_r {:.2f}{}, tan d {:.3f}, dielectric h {:.3f} mm. Sim copper has zero "
+        "thickness and no solder mask: open the mask over all F.Cu.".format(
+            eps, " (z; x, y {:.2f})".format(eps_xy) if aniso else "", args.tan_d, H)
     )
     lines.append(
         "Edge.Cuts {:.3f} mm (x, along the column) x {:.3f} mm (y), y from {:.3f} to {:.3f}. "
@@ -558,7 +568,7 @@ def main():
         sll_db=sll if sll is not None else nan,
         geometry=dict(N=N, L=L_list, W=W_list, wc=args.wc, lc=args.lc, lc_list=lc_mm, tw=tw, tl=tl,
                       feed_w=feed_w, pitch=pitch, centres=info["centres"], y_cols=ycols,
-                      board=[board_x, y_lo, y_hi], polygons=polys, h=H, eps_r=eps),
+                      board=[board_x, y_lo, y_hi], polygons=polys, h=H, eps_r=eps, eps_xy=eps_xy),
         cells=cells, runtime_s=t_all, **extra,
     )
 

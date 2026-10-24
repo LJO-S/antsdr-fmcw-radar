@@ -149,7 +149,7 @@ def main(argv=None):
         uniform = not (args.L_list or args.W_list or args.lc_list)
         name = m.name or "K9_column_N{}_{}".format(args.N, "uniform" if uniform else "taper")
         poly = clean(trim_launch(poly, g))
-        lines = ["{} {}".format(name, today), "eps_r {} h {} mm, {}".format(cs.DESIGN_EPSR, cs.H, note),
+        lines = ["{} {}".format(name, today), "eps_r {} h {} mm, {}".format(args.eps_r, cs.H, note),
                  "L {:g}..{:g} W {:g}..{:g} wc {:g} lc {:g}".format(
                      min(L_list), max(L_list), min(W_list), max(W_list), args.wc, args.lc)]
         write(m.lib_dir, name, poly, lines, "K9 series-fed 1x{} patch column, simulated copper".format(args.N), g)
