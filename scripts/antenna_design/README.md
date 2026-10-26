@@ -6,7 +6,7 @@ openEMS FDTD simulations of the 5.8 GHz inset-fed patch on FR4.
 |---|---|
 | `Simple_Patch_Antenna.py` | One patch: S11 at the board edge, Zin at the feed point, pattern, efficiency, gain, tuning hints, KiCad summary |
 | `sweep_eps_r.py` | The eps_r 4.4 geometry on eps_r 4.2-4.6: the calibration curve, `--measured <GHz>` -> eps_r |
-| `results.md` | Designs per eps_r and the board to fabricate (hand-kept) |
+| `results.md` | K8 and K9 designs, sims and measurements (hand-kept) |
 | `eps_r_sweep.md`, `.png` | Sweep table and plot (generated) |
 | `sweep/` | Per-run `.npz` the sweep reads, plus plots; delete an `.npz` to re-simulate it |
 | `antenna-bringup/` | KiCad: the patch board (= the simulated board) |

@@ -31,7 +31,7 @@ FMT = "{:.6f}".format
 
 
 def k8_patch(h=cs.H, eps_r=cs.DESIGN_EPSR):
-    """results.md 'board to fabricate' (eps_r 4.4, h 1.5): 12-vertex polygon, mm."""
+    """results.md K8 board (eps_r 4.4, h 1.5): 12-vertex polygon, mm."""
     fw = cs.msl_width(cs.FEED_R, eps_r, h)
     L, W, inset, gap, x0 = 11.842, 15.728, 3.70, 1.0, 20.0
     a, b, c = fw / 2, fw / 2 + gap, W / 2
@@ -158,7 +158,7 @@ def main(argv=None):
         poly = clean(trim_launch(k8_patch(), g))
         lines = ["{} {}".format(name, today), "eps_r {} h {} mm, {}".format(cs.DESIGN_EPSR, cs.H, note),
                  "L 11.842 W 15.728 inset 3.70"]
-        write(m.lib_dir, name, poly, lines, "K8 witness patch, results.md board to fabricate", g)
+        write(m.lib_dir, name, poly, lines, "K8 witness patch, results.md K8 board", g)
 
 
 if __name__ == "__main__":

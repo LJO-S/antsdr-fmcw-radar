@@ -446,7 +446,7 @@ mesh_res = C0 / (f0 + fc) / unit / np.sqrt(design_eps) / 20 / args.refine
 edge_res = mesh_res / 2
 fine = args.fine
 
-# patch geometry = results.md "board to fabricate" (Simple_Patch_Antenna.py TUNED[4.4])
+# patch geometry = results.md K8 board (Simple_Patch_Antenna.py TUNED[4.4])
 P_L, P_INSET, GND_MARGIN, INSET_GAP = 11.842, 3.70, 20.0, 1.0
 P_W = C0 / (2 * 5.8e9) * np.sqrt(2 / (design_eps + 1)) / unit  # 15.728
 board_x = P_L + 2 * GND_MARGIN  # 51.842
