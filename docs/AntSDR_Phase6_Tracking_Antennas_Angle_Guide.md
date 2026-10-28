@@ -566,8 +566,9 @@ Read first: 13.4.
   convention. Then `theta = asin(psi * lambda / (2*pi*d))`, or a lookup on the K9
   turntable curve, which also absorbs mutual coupling. `lambda` comes from
   `CHIRP_FC_HZ` (fc may move, 9.4); `d` is the physical 25.9 mm.
-- The residual from a half-bin error in `f_d` is <= 0.7 deg at 128 chirps per
-  antenna, less after sub-bin refinement.
+- A half-bin error in `f_d` leaves 0.7 deg of psi at 128 chirps per antenna: ~0.22 deg
+  of angle at boresight, 0.26 at 30 deg. Sub-bin refinement on log power takes it
+  under 0.01 deg (K10 exercise, 2026-10-28).
 - **Sign**: `IF = TX * conj(RX)` conjugates the echo phase, so the sign of psi vs
   theta runs opposite to the textbook. Fix it by experiment (walk to one side) and
   write it into `CLAUDE.md` next to the Doppler sign.
