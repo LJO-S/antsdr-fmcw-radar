@@ -366,8 +366,11 @@ Control pin tied to 3.3 V or GND through the module's jumper, one state at a tim
   compare with the K4 floor measurement.
 - S11 of each port, in both states.
 
-Finite isolation means the off antenna radiates too, which bends the measured angle
-by up to `asin(10^(-I/20))`: 1.8 deg at 30 dB, 0.6 deg at 40 dB.
+Finite isolation means the off antenna radiates too. A leak `e = 10^(-I/20)` at
+phase `a` (the same in both states) biases psi by `-2e cos(a) sin(psi)`: towards
+boresight at a = 0, away at 180, none at +-90. Worst over +-60 deg is 1.4 deg of
+angle at 30 dB, 0.43 deg at 40 dB, near +-36 deg (K10 exercise `--exp iso`,
+2026-10-29).
 
 ### 8.3 HDL (MAGIC -> FMC5 = `0x464D4335`)
 
@@ -580,8 +583,9 @@ Read first: 13.4.
   from range and Doppler only. Accuracy collapses towards +-90 deg (the cos theta
   term).
 - `TargetSim.apply_if` with `TDM_EN`: every row is an up-chirp (no sign flip on odd
-  rows); odd rows get `exp(j pi sin(theta))` on top of the continuous Doppler, with
-  the sign matched to the hardware once found. `FakeTarget` gains `theta0`. This
+  rows); odd rows get `exp(-j 2 pi d sin(theta) / lambda)` (the estimator's d and
+  lambda, not `pi sin(theta)`: d is not exactly lambda/2) on top of the continuous
+  Doppler, with the sign matched to the hardware once found. `FakeTarget` gains `theta0`. This
   tests the whole chain offline and in loopback before any antenna exists.
 - Targets gain `theta`, `x = r sin(theta)`, `y = r cos(theta)`. GUI: a bird's-eye
   x-y scatter next to the RD maps.

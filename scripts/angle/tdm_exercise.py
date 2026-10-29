@@ -13,6 +13,16 @@ starts at m*T:
                 * (B ? exp(-j*2*pi*d*sin(theta)/lam) : 1) + noise
     f_s = 2*v/lam   (same sign as process_cpi's velocity axis)
 
+Names:
+
+    theta   target azimuth, deg, > 0 towards antenna B
+    phi     geometry phase 2*pi*d*sin(theta)/lam (ang_phase in make_if)
+    dphi    measured angle(XB * conj(XA)) at the cell: -phi + Doppler gap
+    k_d     signed Doppler bin + sub-bin offset
+    psi     dphi - pi*k_d/REPS (the Doppler gap), wrapped: -phi, so
+            theta = asin(-psi * lam / (2*pi*d))
+    XA, XB  windowed 2D FFTs of the A and B rows
+
 Experiments (plots go to scripts/angle/local/, git-ignored):
 
   v        angle error vs v at theta in {-30, 0, +30}, with and without the
@@ -20,7 +30,8 @@ Experiments (plots go to scripts/angle/local/, git-ignored):
   subbin   integer k_d vs sub-bin k_d, target half a Doppler bin off.
   snr      sigma_theta vs per-antenna cell SNR (Monte Carlo) vs
            1 / (sqrt(SNR) * pi * cos(theta)).
-  iso      optional: finite switch isolation leaks A into B rows and back.
+  iso      finite switch isolation leaks A into B rows and back, swept over the
+           leak phase a. First order: phi biased by -2*eps*cos(a)*sin(phi).
 
 Usage (venv active):
   python scripts/angle/tdm_exercise.py --exp v
@@ -61,18 +72,67 @@ def make_config() -> config.RadarConfig:
 
 
 # ===================================================================================
+def window_2d(a_cfg: config.RadarConfig) -> np.ndarray:
+    """Per-antenna [CHIRP_REPS x N_IF] Blackman window, as build_cpi_context"""
+    return np.outer(np.blackman(a_cfg.CHIRP_REPS), np.blackman(a_cfg.N_IF))
+
+
+# ===================================================================================
+def true_cell(a_cfg: config.RadarConfig, a_v: float) -> tuple:
+    """
+    (row, col) nearest the target in estimate_theta's map: row on the fftshifted
+    Doppler axis (CHIRP_REPS//2 = 0 Hz, circular), col the range bin.
+    """
+    n = a_cfg.CHIRP_REPS
+    lam = config.c / a_cfg.CHIRP_FC_HZ
+    # Per-antenna slow time is sampled every 2*T_EFF: bin width 1 / (2*T_EFF*n)
+    k = 2 * a_v / lam * 2 * a_cfg.T_EFF * n
+    row = (round(k) + n // 2) % n
+    # Range bin width is 1 / T_EFF, so f_b * T_EFF = 2*R*BW/c
+    col = round(2 * R_M * a_cfg.CHIRP_BW_HZ / config.c)
+    return row, col
+
+
+# ===================================================================================
+def add_cell_noise(
+    a_cfg: config.RadarConfig,
+    a_x: np.ndarray,
+    a_cell_snr_db: float,
+    a_rng: np.random.Generator = None,
+) -> np.ndarray:
+    """Copy of a_x plus complex noise giving a_cell_snr_db per antenna in the cell"""
+    if a_rng is None:
+        a_rng = np.random.default_rng()
+    # Cell SNR -> per-sample noise: an on-bin unit tone peaks at sum(w), the
+    # noise adds up to var * sum(w^2), so the FFT gains (sum w)^2 / sum(w^2)
+    # (~44.8 dB at 128 x 707 Blackman)
+    w = window_2d(a_cfg)
+    gain = np.sum(w) ** 2 / np.sum(w**2)
+    noise_power = gain / 10 ** (a_cell_snr_db / 10)
+    noise_std = np.sqrt(noise_power / 2)  # For complex noise
+    noise = a_rng.normal(0, noise_std, a_x.shape) + 1j * a_rng.normal(
+        0, noise_std, a_x.shape
+    )
+    return a_x + noise
+
+
+# ===================================================================================
 def make_if(
     a_cfg: config.RadarConfig,
     a_theta_deg: float,
     a_v: float,
-    a_snr_db: float = None,
+    a_cell_snr_db: float = None,
     a_iso_db: float = None,
+    a_leak_deg: float = 0.0,
     a_rng: np.random.Generator = None,
 ) -> np.ndarray:
     """
     IF matrix [2*CHIRP_REPS x N_IF], rows alternating A, B.
-    a_snr_db: per-sample input SNR, None = no noise.
-    a_iso_db: switch isolation, None = ideal switch.
+    a_cell_snr_db: per-antenna SNR in the target's cell after the windowed 2D FFT
+        (on-bin target; off-bin scalloping lowers it), None = no noise.
+    a_iso_db: switch isolation under the through path, None = ideal switch.
+    a_leak_deg: leak phase vs the through path, the same in both states
+        (symmetric switch).
     """
 
     # 1. Generate beat tone at f_b = 2*R_M*BW/(c*T_EFF) (same for A and B)
@@ -98,28 +158,19 @@ def make_if(
 
     # 4. Add isolation leak from A to B and back if a_iso_db is not None
     if a_iso_db is not None:
-        iso_linear = 10 ** (-a_iso_db / 20)  # Convert dB to linear scale
+        # Linear amplitude and phase of the leak
+        leak = 10 ** (-a_iso_db / 20) * np.exp(1j * np.radians(a_leak_deg))
         # The off antenna also radiates into active...
         # ... borrow other row and shift by slow-time phase to 'now'
         step = np.exp(1j * 2 * np.pi * f_s * a_cfg.T_EFF)
         temp_A = x[0::2, :].copy()
         temp_B = x[1::2, :].copy()
-        x[0::2, :] += iso_linear * temp_B / step
-        x[1::2, :] += iso_linear * temp_A * step
+        x[0::2, :] += leak * temp_B / step
+        x[1::2, :] += leak * temp_A * step
 
-    # 5. Add noise if a_snr_db is not None
-    if a_snr_db is not None:
-        if a_rng is None:
-            a_rng = np.random.default_rng()
-        # Calculate noise power based on SNR
-        signal_power = 1.0  # unit-amplitude tone
-        snr_linear = 10 ** (a_snr_db / 10)
-        noise_power = signal_power / snr_linear
-        noise_std = np.sqrt(noise_power / 2)  # For complex noise
-        noise = a_rng.normal(0, noise_std, x.shape) + 1j * a_rng.normal(
-            0, noise_std, x.shape
-        )
-        x += noise
+    # 5. Add noise if a_cell_snr_db is not None
+    if a_cell_snr_db is not None:
+        x = add_cell_noise(a_cfg, x, a_cell_snr_db, a_rng)
     return x
 
 
@@ -129,33 +180,46 @@ def estimate_theta(
     a_x: np.ndarray,
     a_doppler_term: bool = True,
     a_subbin: bool = True,
+    a_cell: tuple = None,
 ) -> float:
     """
     Split A/B, window + 2D FFT each, peak on |XA|^2 + |XB|^2, then
     dphi -> psi -> theta (TODO.md K10 step 3). Returns theta in degrees.
+    a_cell: (row, col) to read instead of the peak, e.g. true_cell(). At low SNR
+        the peak lands on noise cells, which measures detection, not phase noise.
     """
     xa = a_x[0::2, :]
     xb = a_x[1::2, :]
-    window = np.outer(np.blackman(a_cfg.CHIRP_REPS), np.blackman(a_cfg.N_IF))
+    window = window_2d(a_cfg)
     # fftshift on the Doppler axis only: signed Doppler bin, range stays 0..N_IF-1
     XA = np.fft.fftshift(np.fft.fft2(xa * window), axes=0)
     XB = np.fft.fftshift(np.fft.fft2(xb * window), axes=0)
     pwr = np.abs(XA) ** 2 + np.abs(XB) ** 2
 
-    # Positive beats only: the first half of the range axis
-    half = pwr[:, : a_cfg.N_IF // 2]
-    row, col = np.unravel_index(np.argmax(half), half.shape)
+    if a_cell is None:
+        # Positive beats only: the first half of the range  axis
+        half = pwr[:, : a_cfg.N_IF // 2]
+        row, col = np.unravel_index(np.argmax(half), half.shape)
+    else:
+        row, col = a_cell
     dphi = np.angle(XB[row, col] * np.conj(XA[row, col]))
 
     k_d = 0.0
     if a_doppler_term:
-        k_d = row - a_cfg.CHIRP_REPS // 2
+        n = a_cfg.CHIRP_REPS
+        k_d = row - n // 2
         if a_subbin:
             # Parabola on log power: a windowed peak is closest to a parabola there.
             # Neighbours wrap with % REPS: the Doppler axis is circular.
-            n = a_cfg.CHIRP_REPS
             y_m, y_0, y_p = np.log(pwr[[(row - 1) % n, row, (row + 1) % n], col])
-            k_d += 0.5 * (y_m - y_p) / (y_m + y_p - 2 * y_0)
+            # Only a concave-down fit is a peak (a noise cell at low SNR may not be)
+            den = y_m + y_p - 2 * y_0
+            if den < 0:
+                k_d += 0.5 * (y_m - y_p) / den
+        # Back into [-n/2, n/2): row 0 is bin -n/2, so a target at +63.8 bins peaks
+        # there and the fit gives -64.2. Same slow-time frequency on the 2T grid,
+        # but pi*k_d/n below differs by exactly pi between the two
+        k_d = (k_d + n / 2) % n - n / 2
 
     # Motion-corrected phase: one A-to-B gap of Doppler is pi*k_d/REPS
     psi = wrap_rad(dphi - np.pi * k_d / a_cfg.CHIRP_REPS)
@@ -204,31 +268,180 @@ def exp_error_vs_v(a_cfg: config.RadarConfig):
 
 # ===================================================================================
 def exp_subbin(a_cfg: config.RadarConfig):
-    # TODO: v half a Doppler bin off, a_subbin True vs False
-    # Next: exp_subbin
-    # Do: fix θ ∈ {0, 30}. Put the target near Doppler bin 20 and sweep the fractional offset from 0 to 1 bin (~41 points). Plot the angle error with integer k_d and with sub-bin k_d.
-    # - Build v from the bin: v = (20 + frac) * lam / (4 * T_EFF * CHIRP_REPS). Use T_EFF so that "half a bin" really is half a bin.
-
-    # Predict first:
-    # 1. Integer k_d: what shape does the error have vs the fraction? Where is the jump, and what is the max error at θ = 0 and at 30°? (You already measured one point: 0.22° at half a bin.)
-    # 2. Sub-bin on log power: what order of magnitude is the max error?
-    # 3. The fraction you can't see: a range off-bin doesn't affect the angle. Why does a Doppler off-bin matter for the angle?
-
-    # Finish line: one plot, and the printed max |error| per curve next to your predictions.
-    raise NotImplementedError
+    thetas = [0, 30]
+    doppler_bin = 20
+    frac = np.linspace(0, 1, 41)
+    # One colour per theta: dots = integer k_d, solid = sub-bin k_d
+    plt.figure(figsize=(10, 6))
+    for i, theta in enumerate(thetas):
+        err_int = []
+        err_subbin = []
+        for f in frac:
+            v_i = (
+                (doppler_bin + f)
+                * config.c
+                / (4 * a_cfg.T_EFF * a_cfg.CHIRP_REPS * a_cfg.CHIRP_FC_HZ)
+            )
+            x = make_if(a_cfg, theta, v_i)
+            est_int = estimate_theta(a_cfg, x, a_doppler_term=True, a_subbin=False)
+            est_subbin = estimate_theta(a_cfg, x, a_doppler_term=True, a_subbin=True)
+            err_int.append(est_int - theta)
+            err_subbin.append(est_subbin - theta)
+        err_int = np.array(err_int)
+        err_subbin = np.array(err_subbin)
+        # Signed error has no log axis: plot |error|, floored so exact zeros show
+        floor = 1e-6
+        plt.semilogy(
+            frac,
+            np.maximum(np.abs(err_int), floor),
+            ".",
+            ms=4,
+            color=f"C{i}",
+            label=f"{theta:+d} deg, sub-bin off",
+        )
+        plt.semilogy(
+            frac,
+            np.maximum(np.abs(err_subbin), floor),
+            "-",
+            color=f"C{i}",
+            label=f"{theta:+d} deg, sub-bin on",
+        )
+        print(
+            f"Theta {theta} deg: max |error| integer k_d {np.max(np.abs(err_int)):.4f} deg"
+        )
+        print(
+            f"Theta {theta} deg: max |error| sub-bin k_d {np.max(np.abs(err_subbin)):.4f} deg"
+        )
+    plt.xlabel("Fractional Doppler Bin Offset")
+    plt.ylabel("|Angle Error| (deg)")
+    plt.title(f"Angle Error vs Fractional Doppler Bin Offset")
+    plt.grid()
+    plt.legend(fontsize="small")
+    plt.savefig(os.path.join(OUT_DIR, f"exp_subbin.png"))
+    plt.close()
 
 
 # ===================================================================================
 def exp_sigma_vs_snr(a_cfg: config.RadarConfig, a_trials: int):
-    # TODO: target on-bin in range and Doppler, theta in {0, 30, 60}, cell SNR
-    # sweep, std of theta over a_trials vs the formula.
-    raise NotImplementedError
+    thetas = [0, 30, 60]
+    snr_db = np.arange(-10, 31, 5)
+    rng = np.random.default_rng(SEED)
+    lam = config.c / a_cfg.CHIRP_FC_HZ
+    # Read the true cell: a peak search at low SNR lands on noise, which measures
+    # detection and not phase noise
+    cell = true_cell(a_cfg, 0.0)
+    plt.figure(figsize=(10, 6))
+    for i, theta in enumerate(thetas):
+        # Clean signal once per theta, only the noise changes per trial
+        x_clean = make_if(a_cfg, theta, 0.0)
+        sigma = []
+        for snr in snr_db:
+            est = np.array(
+                [
+                    estimate_theta(
+                        a_cfg, add_cell_noise(a_cfg, x_clean, snr, rng), a_cell=cell
+                    )
+                    for _ in range(a_trials)
+                ]
+            )
+            sigma.append(np.std(est))
+        sigma = np.array(sigma)
+        # Formula: sigma_psi = 1 / sqrt(SNR) (two cells, each 1 / sqrt(2 SNR)),
+        # d(psi)/d(theta) = 2*pi*d*cos(theta) / lam. High SNR, no wrap.
+        pred = np.degrees(
+            1
+            / (
+                np.sqrt(10 ** (snr_db / 10))
+                * 2
+                * np.pi
+                * D_M
+                / lam
+                * np.cos(np.radians(theta))
+            )
+        )
+        plt.semilogy(snr_db, sigma, ".", ms=4, color=f"C{i}", label=f"{theta:+d} deg")
+        plt.semilogy(snr_db, pred, "-", color=f"C{i}")
+        # The formula needs a small phase error and no wrap past +-pi
+        ok = snr_db >= 20
+        print(
+            f"Theta {theta:+d} deg: sigma/formula at >= 20 dB "
+            f"{np.round(sigma[ok] / pred[ok], 2)}"
+        )
+    plt.xlabel("Per-Antenna Cell SNR (dB)")
+    plt.ylabel("Std of Angle Estimate (deg)")
+    plt.title(
+        f"Angle Estimate Std vs Per-Antenna Cell SNR ({a_trials} trials per point)"
+    )
+    plt.grid()
+    plt.legend(fontsize="small")
+    plt.savefig(os.path.join(OUT_DIR, "exp_sigma_vs_snr.png"))
+    plt.close()
 
 
 # ===================================================================================
 def exp_isolation(a_cfg: config.RadarConfig):
-    # TODO (optional): bias vs theta at a few isolations, 30 dB = K7 measured
-    raise NotImplementedError
+    # Leak e*exp(j*a) in both states: B*conj(A) = exp(-j*phi) + 2*e*cos(a) + O(e^2),
+    # so phi is biased by -2*e*cos(a)*sin(phi). Towards boresight at a = 0, away at
+    # 180, nothing at +-90. Static target: make_if time-aligns the leak, v changes
+    # nothing.
+    lam = config.c / a_cfg.CHIRP_FC_HZ
+    thetas = np.arange(-60, 61, 2)
+    phi = 2 * np.pi * D_M * np.sin(np.radians(thetas)) / lam
+    # d(phi)/d(theta): turns a bias in phi into one in theta
+    dphi_dtheta = 2 * np.pi * D_M * np.cos(np.radians(thetas)) / lam
+
+    fig, (ax0, ax1) = plt.subplots(1, 2, figsize=(14, 6))
+
+    # Left: bias vs theta at 30 dB (K7 measured), dots = estimator, lines = first order
+    eps = 10 ** (-30 / 20)
+    for i, a in enumerate([0, 45, 90, 135, 180]):
+        bias = [
+            estimate_theta(a_cfg, make_if(a_cfg, th, 0.0, a_iso_db=30, a_leak_deg=a))
+            - th
+            for th in thetas
+        ]
+        pred = np.degrees(-2 * eps * np.cos(np.radians(a)) * np.sin(phi) / dphi_dtheta)
+        ax0.plot(thetas, bias, ".", color=f"C{i}", label=f"leak {a} deg")
+        ax0.plot(thetas, pred, "-", lw=1, color=f"C{i}")
+    ax0.set_xlabel("Target Angle (deg)")
+    ax0.set_ylabel("Angle Bias (deg)")
+    ax0.set_title("Bias vs angle, 30 dB isolation (lines: first order)")
+    ax0.grid()
+    ax0.legend(fontsize="small")
+
+    # Right: worst |bias| over theta vs leak phase (theta every 6 deg covers the
+    # peak at ~36 deg)
+    leaks = np.arange(0, 361, 15)
+    for i, iso in enumerate((30, 40)):
+        eps = 10 ** (-iso / 20)
+        worst = [
+            max(
+                abs(
+                    estimate_theta(
+                        a_cfg, make_if(a_cfg, th, 0.0, a_iso_db=iso, a_leak_deg=a)
+                    )
+                    - th
+                )
+                for th in thetas[::3]
+            )
+            for a in leaks
+        ]
+        pred = np.degrees(2 * eps * np.max(np.abs(np.sin(phi)) / dphi_dtheta))
+        ax1.plot(leaks, worst, "o", color=f"C{i}", label=f"{iso} dB")
+        ax1.plot(leaks, pred * np.abs(np.cos(np.radians(leaks))), "-", color=f"C{i}")
+        print(
+            f"iso {iso} dB: worst {max(worst):.4f} deg, first order {pred:.4f}, "
+            f"guide asin(eps) {np.degrees(np.arcsin(eps)):.4f}"
+        )
+    ax1.set_xlabel("Leak Phase (deg)")
+    ax1.set_ylabel("Worst |Bias| over +-60 deg (deg)")
+    ax1.set_title("Worst bias vs leak phase (lines: first order)")
+    ax1.grid()
+    ax1.legend(fontsize="small")
+
+    fig.tight_layout()
+    fig.savefig(os.path.join(OUT_DIR, "exp_isolation.png"))
+    plt.close(fig)
 
 
 # ===================================================================================

@@ -116,15 +116,19 @@ Fabric FFT/CFAR is not planned - decision gate in G11.
       when fake targets at +-30 deg come back within 1 deg at 0 and +-20 m/s, and
       the cable test agrees with the VNA. Sawtooth + TDM first, triangle after.
 
-      - [ ] 1. Exercise (G13.4): numpy 2T1R TDM, one target at (r, v, theta). Angle
-            error vs v with and without the Doppler term; sigma_theta vs SNR vs G10.1.
-            Expect ~9 deg at 20 m/s without the term (773 Hz x 100 us = 28 deg of psi).
+      - [x] 1. Exercise (G13.4, 2026-10-29), `scripts/angle/tdm_exercise.py`: 8.9 deg at
+            20 m/s without the Doppler term, < 0.003 deg with it up to +-MAX_VELOCITY;
+            sub-bin 0.22 deg (integer) -> 0.003 (log); sigma matches G10.1 at >= 20 dB,
+            wraps below ~5 / 10 / 20 dB at 0 / 30 / 60 deg; switch leak <= 1.4 deg at
+            30 dB (calibrates out).
       
       - [ ] 2. Fake targets: `FakeTarget.theta0` (deg, > 0 = towards antenna B).
             `apply_if` with `TDM_EN`: rows with `row % LEGS_PER_PERIOD >=
-            LEGS_PER_PERIOD // 2` are B, times `exp(-1j*pi*sin(theta))`. Minus: the IF
-            is conj(RX), the same flip as the Doppler sign. The continuous Doppler
-            already gives B its motion phase; add nothing for it.
+            LEGS_PER_PERIOD // 2` are B, times
+            `exp(-1j*2*pi*ANGLE_D_M*sin(theta)/lambda)`, the same d and lambda as
+            step 3 (d is not exactly lambda/2: `pi*sin(theta)` leaves a 0.07 deg bias
+            at 30 deg). Minus: the IF is conj(RX), the same flip as the Doppler sign.
+            The continuous Doppler already gives B its motion phase; add nothing for it.
       
       - [ ] 3. `process_cpi` with `TDM_EN`: B rows through the same steps as A (fast-
             time mean, MTI, window, FFT, close-in mask). CFAR and the displayed map
@@ -135,8 +139,13 @@ Fabric FFT/CFAR is not planned - decision gate in G11.
             `theta = asin(clip(-psi * lambda / (2*pi*d), -1, 1))`
             `k_d` = signed Doppler bin + sub-bin offset; `pi * k_d / CHIRP_REPS` is
             `2*pi*f_d*T_rep/2`, one A-to-B gap, so it holds with triangle too.
-            `lambda` from `CHIRP_FC_HZ`. New config fields `ANGLE_CAL_DEG` (psi0, 0)
-            and `ANGLE_D_M` (0.0259), group `angle`. Targets gain `theta`,
+            Sub-bin offset from a parabola on **log** power with circular neighbours
+            (`subbin_refine` is linear and skips edge rows: up to 0.08 bin, ~0.04
+            deg; r and v keep it, so replays stay exact). Then wrap `k_d` into
+            [-REPS/2, REPS/2), else a target at +63.8 bins reads -64.2 and psi is
+            off by pi. Reference: `scripts/angle/tdm_exercise.py` `estimate_theta`.
+            `lambda` from `CHIRP_FC_HZ`. New config fields `ANGLE_PSI0_DEG` (psi0, a
+            phase, 0) and `ANGLE_D_M` (0.0259), group `angle`. Targets gain `theta`,
             `x = r sin(theta)`, `y = r cos(theta)` only with `TDM_EN`, so non-TDM
             replays are unchanged. Past `MAX_VELOCITY` the Doppler term takes the
             wrong alias: psi off by pi, angle mirrored.
@@ -161,9 +170,9 @@ Fabric FFT/CFAR is not planned - decision gate in G11.
             the antennas' (K9 turntable).
             a. VNA prediction: S21 RFC -> tee output, switch jumper on A, then B:
                `psi_pred = -(angle(S21_B) - angle(S21_A))` (minus: conj(RX)).
-            b. Radar, `ANGLE_CAL_DEG` 0: psi of the path over >= 100 CPIs. Mean vs
+            b. Radar, `ANGLE_PSI0_DEG` 0: psi of the path over >= 100 CPIs. Mean vs
                psi_pred (within a few deg: the E200 ports are not 50 ohm), std =
-               stability. Then set `ANGLE_CAL_DEG` so theta reads 0.
+               stability. Then set `ANGLE_PSI0_DEG` to the mean psi, so theta reads 0.
             c. An SMA adapter into arm B, repeat a and b: both move by the same step
                with the same sign. Expected: a longer B path raises psi and lowers
                theta (target on A's side). Write the sign into `CLAUDE.md` next to
