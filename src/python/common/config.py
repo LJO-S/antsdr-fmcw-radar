@@ -66,6 +66,17 @@ class RadarConfig:
         default=False,
         metadata={"label": "TDM (2T1R)", "unit": "", "scale": 1, "group": "fabric"},
     )
+    # Antenna Tx separation in meters, fixed by the TX board: shown, not editable
+    TDM_TX_ANT_SEP_M: float = field(
+        default=0.0259,
+        metadata={
+            "label": "TX spacing",
+            "unit": "m",
+            "scale": 1,
+            "group": "angle",
+            "readonly": True,
+        },
+    )
     # TX->RX digital loopback latency in samples
     FABRIC_DECHIRP_DELAY: int = field(
         default=61,

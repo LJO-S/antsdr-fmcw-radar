@@ -81,6 +81,7 @@ class RadarDisplay(QMainWindow):
         ("r0", "Range [m]", 500.0),
         ("v0", "Vel [m/s]", 0.0),
         ("a0", "Accel [m/s2]", 0.0),
+        ("theta0", "Azimuth [deg]", 0.0),
         ("duration", "Duration [s]", 10.0),
         ("amp", "Amp", 0.1),
     ]
@@ -273,7 +274,7 @@ class RadarDisplay(QMainWindow):
         self.fake_target_box = fake_target_box
         fake_targets_layout = QVBoxLayout(fake_target_box)
         # Targets
-        self.fake_targets_table = QTableWidget(0, 5)
+        self.fake_targets_table = QTableWidget(0, 6)
         self.fake_targets_table.setHorizontalHeaderLabels(
             [c[1] for c in self.FAKE_TGT_COLUMNS]
         )

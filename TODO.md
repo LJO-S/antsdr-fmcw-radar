@@ -122,10 +122,10 @@ Fabric FFT/CFAR is not planned - decision gate in G11.
             wraps below ~5 / 10 / 20 dB at 0 / 30 / 60 deg; switch leak <= 1.4 deg at
             30 dB (calibrates out).
       
-      - [ ] 2. Fake targets: `FakeTarget.theta0` (deg, > 0 = towards antenna B).
+      - [X] 2. Fake targets: `FakeTarget.theta0` (deg, > 0 = towards antenna B).
             `apply_if` with `TDM_EN`: rows with `row % LEGS_PER_PERIOD >=
             LEGS_PER_PERIOD // 2` are B, times
-            `exp(-1j*2*pi*ANGLE_D_M*sin(theta)/lambda)`, the same d and lambda as
+            `exp(-1j*2*pi*TDM_TX_ANT_SEP_M*sin(theta)/lambda)`, the same d and lambda as
             step 3 (d is not exactly lambda/2: `pi*sin(theta)` leaves a 0.07 deg bias
             at 30 deg). Minus: the IF is conj(RX), the same flip as the Doppler sign.
             The continuous Doppler already gives B its motion phase; add nothing for it.
@@ -145,7 +145,7 @@ Fabric FFT/CFAR is not planned - decision gate in G11.
             [-REPS/2, REPS/2), else a target at +63.8 bins reads -64.2 and psi is
             off by pi. Reference: `scripts/angle/tdm_exercise.py` `estimate_theta`.
             `lambda` from `CHIRP_FC_HZ`. New config fields `ANGLE_PSI0_DEG` (psi0, a
-            phase, 0) and `ANGLE_D_M` (0.0259), group `angle`. Targets gain `theta`,
+            phase, 0) and `TDM_TX_ANT_SEP_M` (0.0259), group `angle`. Targets gain `theta`,
             `x = r sin(theta)`, `y = r cos(theta)` only with `TDM_EN`, so non-TDM
             replays are unchanged. Past `MAX_VELOCITY` the Doppler term takes the
             wrong alias: psi off by pi, angle mirrored.

@@ -31,6 +31,15 @@ class FakeTarget:
             "group": "sim_target",
         },
     )
+    theta0: float = field(
+        default=0,
+        metadata={
+            "label": "Azimuth",
+            "unit": "deg",
+            "scale": 1,
+            "group": "sim_target",
+        },
+    )
     amp: float = field(
         default=1,
         metadata={
@@ -125,9 +134,17 @@ class TargetSim:
         rms = np.sqrt(np.mean(np.abs(a_if_raw) ** 2))
         rms = rms if rms > 0 else 1.0
 
+        # TDM B rows: the second half of each period
+        is_b = (
+            np.arange(n // N) % a_config.LEGS_PER_PERIOD
+        ) >= a_config.LEGS_PER_PERIOD // 2
+
         for target in self.fake_targets:
             r, v = self._kinematics(target, a_config, now)
 
+            # ---------------
+            # Beat Frequency
+            # ---------------
             f_b = S * 2 * r / dsp.c
             if abs(f_b) >= a_config.FS_IF / 2:
                 if not target.nyquist_warned:
@@ -153,6 +170,9 @@ class TargetSim:
 
             echo = (target.amp * rms * tone).astype(a_if_raw.dtype, copy=False)
 
+            # ---------------
+            # Doppler Shift
+            # ---------------
             # dsp.apply_doppler_shift's minus-sign convention is calibrated for
             # pre-mix RX-domain use (mix_signal's conj(RX) flips it to the correct
             # sign downstream). apply_if writes directly into the IF domain,
@@ -161,6 +181,23 @@ class TargetSim:
             echo = dsp.apply_doppler_shift(
                 a_signal=echo, a_velocity=-v, a_config=a_config, a_fs=a_config.FS_IF
             )
+
+            # ---------------
+            # Azimuth Phase
+            # ---------------
+            if a_config.TDM_EN:
+                # The geometry phase is 2*pi*d*sin(theta)/lam, where d is the
+                # antenna separation and lam is the wavelength. The Doppler gap
+                # is already applied.
+                phi = (
+                    2
+                    * np.pi
+                    * a_config.TDM_TX_ANT_SEP_M
+                    * np.sin(np.radians(target.theta0))
+                    / (dsp.c / (a_config.CHIRP_FC_HZ))
+                )
+
+                echo.reshape(-1, N)[is_b] *= np.exp(-1j * phi)
 
             ret += echo
 
