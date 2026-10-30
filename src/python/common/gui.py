@@ -43,7 +43,7 @@ class RadarDisplay(QMainWindow):
     │  Up-chirp RD map        │ Detections │            │
     │                         │  (r, v)    │ Detections │
     ├─────────────────────────┼────────────┤    List    │
-    │  Down-chirp RD map      │ Bird's-eye │            │
+    │  Down-chirp RD map      │ Sector-PPI │            │
     │                         │ x-y (TDM)  │            │
     │                         ├─────────────────────────┤
     │                         │ [] Up-down detections   │
@@ -98,7 +98,7 @@ class RadarDisplay(QMainWindow):
 
     # Detections faster than this are coloured as receding (v > 0) or approaching
     MOVING_V_MS = 5.0
-    # Bird's-eye view: the fan drawn, and the spoke spacing inside it
+    # Sector-PPI: the fan drawn, and the spoke spacing inside it
     XY_FOV_DEG = 60
     XY_SPOKE_DEG = 30
 
@@ -150,20 +150,26 @@ class RadarDisplay(QMainWindow):
         self.det_plot.showGrid(x=True, y=True, alpha=0.3)
         middle_col.addWidget(self.det_plot)
 
-        # Bird's-eye x-y, TDM only (set_config): x = r sin(theta), y = r cos(theta)
-        self.xy_plot = pg.PlotWidget(title="Bird's-eye")
-        self.xy_plot.setLabel("left", "Down-range y", units="m")
-        self.xy_plot.setLabel("bottom", "Cross-range x (+: antenna B side)", units="m")
+        # Sector-PPI (plan position indicator), TDM only (set_config):
+        # x = r sin(theta), y = r cos(theta)
+        self.xy_plot = pg.PlotWidget(title="Sector-PPI")
+        # No y axis: the bottom ticks label each range ring where it meets the fan edge
+        self.xy_plot.hideAxis("left")
+        self.xy_plot.setLabel("bottom", "Range", units="m")
+        self.xy_plot.getAxis("bottom").enableAutoSIPrefix(False)
         self.xy_plot.setBackground("#0a1628")
         self.xy_plot.setAspectLocked(True)
-        # Metres on both axes: auto SI prefixes would put km on one and m on the other
-        for side in ("left", "bottom"):
-            self.xy_plot.getAxis(side).enableAutoSIPrefix(False)
         # Range rings and spokes, one NaN-separated curve; rebuilt per config
         self.xy_grid = pg.PlotCurveItem(
             pen=pg.mkPen((255, 255, 255, 60), width=1), connect="finite"
         )
         self.xy_plot.addItem(self.xy_grid)
+        self._xy_angle_labels = []  # one TextItem per spoke, rebuilt with the grid
+        self.xy_xlines = pg.PlotCurveItem(
+            pen=pg.mkPen((255, 255, 255, 70), width=1, style=Qt.DotLine),
+            connect="finite",
+        )
+        self.xy_plot.addItem(self.xy_xlines, ignoreBounds=True)
         self.xy_scatter = pg.ScatterPlotItem(pen=pg.mkPen(None))
         self.xy_plot.addItem(self.xy_scatter)
         self._xy_brushes = {
@@ -629,7 +635,7 @@ class RadarDisplay(QMainWindow):
         )
 
     # ---------------------------------
-    # Bird's-eye x-y (TDM)
+    # Sector-PPI (TDM)
     # ---------------------------------
     def _update_xy(self, a_targets, a_show_xs):
         """Detections with an angle, same kind filter as the (r, v) scatter. Dots
@@ -646,9 +652,11 @@ class RadarDisplay(QMainWindow):
         paired = [not tri or t["kind"] == "both" for t in shown]
         brushes = [
             self._xy_brushes[
-                "receding"
-                if t["v"] > self.MOVING_V_MS
-                else "approaching" if t["v"] < -self.MOVING_V_MS else "slow"
+                (
+                    "receding"
+                    if t["v"] > self.MOVING_V_MS
+                    else "approaching" if t["v"] < -self.MOVING_V_MS else "slow"
+                )
             ]
             for t in shown
         ]
@@ -665,20 +673,58 @@ class RadarDisplay(QMainWindow):
         step = 10 ** np.floor(np.log10(a_max_range))
         if a_max_range / step < 4:
             step /= 2
+        rings = np.arange(step, a_max_range + 1e-9, step)
         fan = np.radians(np.linspace(-self.XY_FOV_DEG, self.XY_FOV_DEG, 121))
         xs, ys = [], []
-        for r in np.arange(step, a_max_range + 1e-9, step):
+        for r in rings:
             xs += [r * np.sin(fan), [np.nan]]
             ys += [r * np.cos(fan), [np.nan]]
-        for a in np.radians(
-            np.arange(-self.XY_FOV_DEG, self.XY_FOV_DEG + 1, self.XY_SPOKE_DEG)
-        ):
-            xs += [[0, a_max_range * np.sin(a)], [np.nan]]
-            ys += [[0, a_max_range * np.cos(a)], [np.nan]]
+        for label in self._xy_angle_labels:
+            self.xy_plot.removeItem(label)
+        self._xy_angle_labels = []
+        for deg in range(-self.XY_FOV_DEG, self.XY_FOV_DEG + 1, self.XY_SPOKE_DEG):
+            a = np.radians(deg)
+            x, y = a_max_range * np.sin(a), a_max_range * np.cos(a)
+            xs += [[0, x], [np.nan]]
+            ys += [[0, y], [np.nan]]
+            # Anchored on the text's side facing the origin, so it sits outside the arc
+            label = pg.TextItem(
+                f"{deg:+d}°" if deg else "0°",
+                color=(255, 255, 255, 150),
+                anchor=(0.5 - 0.5 * np.sin(a), 0.5 + 0.5 * np.cos(a)),
+            )
+            label.setPos(x, y)
+            self.xy_plot.addItem(label, ignoreBounds=True)
+            self._xy_angle_labels.append(label)
         self.xy_grid.setData(x=np.concatenate(xs), y=np.concatenate(ys))
-        half_w = a_max_range * np.sin(np.radians(self.XY_FOV_DEG))
+
+        # Dotted verticals from below the axis up to where each ring meets the fan
+        # edge (x = r sin(fov)); the tick there is labelled with the ring's range.
+        # The axis sits wherever the locked aspect puts the view's bottom, hence the
+        # far start (the item ignores bounds).
+        fov = np.radians(self.XY_FOV_DEG)
+        half_w = a_max_range * np.sin(fov)
+        # Label every ring, or every second one when they crowd; the rest get a tick
+        every = 2 if len(rings) > 4 else 1
+        xs, ys = [[0.0, 0.0], [np.nan]], [[-10 * a_max_range, 0.0], [np.nan]]
+        major, minor = [(0.0, "0")], []
+        for i, r in enumerate(rings):
+            labelled = (i + 1) % every == 0
+            for x in (-r * np.sin(fov), r * np.sin(fov)):
+                xs += [[x, x], [np.nan]]
+                ys += [[-10 * a_max_range, r * np.cos(fov)], [np.nan]]
+                if labelled:
+                    major.append((x, f"{r:g}"))
+                else:
+                    minor.append((x, ""))
+        self.xy_xlines.setData(x=np.concatenate(xs), y=np.concatenate(ys))
+        self.xy_plot.getAxis("bottom").setTicks([major, minor])
+
+        # Side margin for the outer ring's tick label and the edge angle labels
         self.xy_plot.setRange(
-            xRange=(-half_w, half_w), yRange=(0, a_max_range), padding=0.02
+            xRange=(-1.25 * half_w, 1.25 * half_w),
+            yRange=(0, a_max_range),
+            padding=0,
         )
 
     # ---------------------------------
@@ -877,7 +923,7 @@ class RadarDisplay(QMainWindow):
         # A new config (or a new playback session) starts a new history
         self._reset_history()
 
-        # Angle exists only with TDM: the bird's-eye plot and the azimuth column
+        # Angle exists only with TDM: the Sector-PPI and the azimuth column
         self.xy_plot.setVisible(a_config.TDM_EN)
         self.det_table.setColumnHidden(3, not a_config.TDM_EN)
         self.xy_scatter.setData(x=[], y=[])
@@ -1140,7 +1186,7 @@ if __name__ == "__main__":
     from .config import RadarConfig
 
     app = QApplication(sys.argv)
-    # TDM so the bird's-eye plot and the azimuth column show
+    # TDM so the Sector-PPI and the azimuth column show
     window = RadarDisplay(a_config=RadarConfig(TDM_EN=True))
     window.show()
 
