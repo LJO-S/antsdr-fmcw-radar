@@ -9,7 +9,7 @@ each stage of process_cpi, median over --runs. The stages come from a mirror of
 process_cpi that is checked against the real one before timing, so a stale mirror
 fails loudly instead of timing old code.
 
-    python -m offline.profile_cpi [--k 0 5 20 50] [--runs 50] [--triangle] [--mti]
+    python -m offline.profile_cpi [--k 0 5 20 50] [--runs 50] [--triangle] [--mti] [--tdm]
 """
 
 import argparse
@@ -47,7 +47,10 @@ def fake_targets(a_k, a_cfg):
     for i in range(a_k):
         r = 40 + (i % 10) * (0.9 * a_cfg.MAX_RANGE - 40) / 9
         v = (-0.55 + 0.3 * (i // 10 % 5)) * a_cfg.MAX_VELOCITY
-        targets.append({"r0": r, "v0": v, "a0": 0.0, "amp": AMP, "duration": 1e6})
+        theta = -40 + (i % 9) * 10  # only read with TDM_EN
+        targets.append(
+            {"r0": r, "v0": v, "a0": 0.0, "theta0": theta, "amp": AMP, "duration": 1e6}
+        )
     return targets
 
 
@@ -68,20 +71,24 @@ def staged_process_cpi(a_if_signal, a_config, a_ctx, a_lap):
     rng = a_ctx.ranges_pos
     vel = a_ctx.velocities
     tri = a_config.TRIANGLE_EN
+    tdm = a_config.TDM_EN
+    L = a_config.LEGS_PER_PERIOD
 
-    # Reshape, fast-time DC, MTI, window
-    if tri:
-        full = a_if_signal[: 2 * a_config.CHIRP_REPS * N].reshape(-1, N)
-        mats = [full[0::2, :].copy(), full[1::2, :].copy()]
-    else:
-        mats = [a_if_signal[: a_config.CHIRP_REPS * N].reshape(-1, N).copy()]
+    # Reshape, fast-time DC, MTI, window. mats = up (+ down), then the same for B
+    full = a_if_signal[: L * a_config.CHIRP_REPS * N].reshape(a_config.CHIRP_REPS, L, N)
+    ants = [full[:, : L // 2], full[:, L // 2 :]] if tdm else [full]
+    mats = []
+    for ant in ants:
+        rows = ant.reshape(-1, N)
+        mats += [rows[0::2, :].copy(), rows[1::2, :].copy()] if tri else [rows.copy()]
     for m in mats:
         m -= m.mean(axis=1, keepdims=True)
         if a_config.MTI_EN:
             m -= m.mean(axis=0, keepdims=True)
         m *= a_ctx.window_2d
     if tri:
-        mats[1] = np.conj(mats[1])
+        for i in range(1, len(mats), 2):
+            mats[i] = np.conj(mats[i])
     a_lap("prep (DC/MTI/window)")
 
     mats = [np.fft.fft(m, axis=1) for m in mats]
@@ -93,13 +100,24 @@ def staged_process_cpi(a_if_signal, a_config, a_ctx, a_lap):
         rd[:, : a_config.CFAR_MASK_N] = np.median(np.abs(rd))
     a_lap("close-in mask")
 
-    dbs = [20 * np.log10(np.abs(rd[:, pos]) + 1e-12) for rd in rds]
+    # One magnitude map per ramp: root-sum-square of A and B with TDM
+    n_ramps = 2 if tri else 1
+    if tdm:
+        mags = [
+            np.sqrt(np.abs(a) ** 2 + np.abs(b) ** 2)
+            for a, b in zip(rds[:n_ramps], rds[n_ramps:])
+        ]
+        a_lap("A+B RSS")
+    else:
+        mags = [np.abs(rd) for rd in rds]
+
+    dbs = [20 * np.log10(mag[:, pos] + 1e-12) for mag in mags]
     max_val = max(np.max(db) for db in dbs)
     for db in dbs:
         db -= max_val
     a_lap("dB map")
 
-    cfars = [dsp.cfar_ca_2d(rd, a_config, a_apply_nms=False) for rd in rds]
+    cfars = [dsp.cfar_ca_2d(mag, a_config, a_apply_nms=False) for mag in mags]
     a_lap("CFAR")
     # nsize=3 matches the hardcoded value inside cfar_ca_2d
     dets = [dsp.nms(det, pwr, a_nsize=3) for det, pwr in cfars]
@@ -133,14 +151,27 @@ def staged_process_cpi(a_if_signal, a_config, a_ctx, a_lap):
     for kind, pwr, mask in groups:
         dop, rbin = np.where(mask)
         row_off, col_off = dsp.subbin_refine(pwr, dop, rbin)
-        refined.append((kind, rng[rbin] + col_off * rng_bw, vel[dop] + row_off * vel_bw))
+        refined.append(
+            (kind, dop, rbin, rng[rbin] + col_off * rng_bw, vel[dop] + row_off * vel_bw)
+        )
     a_lap("sub-bin refine")
 
-    targets = [
-        {"r": r, "v": v, "kind": kind}
-        for kind, rs, vs in refined
-        for r, v in zip(rs, vs)
-    ]
+    # Angle per detection, sawtooth TDM only (triangle is K10 step 5)
+    thetas = {}
+    if tdm and not tri:
+        _, dop, rbin, _, _ = refined[0]
+        thetas["up"] = dsp.estimate_angle(
+            a_config, rds[0][:, pos], rds[1][:, pos], mags[0][:, pos], dop, rbin
+        )
+        a_lap("angle")
+
+    targets = []
+    for kind, _, _, rs, vs in refined:
+        for i, (r, v) in enumerate(zip(rs, vs)):
+            t = {"r": r, "v": v, "kind": kind}
+            if kind in thetas:
+                t["theta"] = thetas[kind][i]
+            targets.append(t)
     a_lap("target dicts")
 
     return dbs[0], (dbs[1] if tri else None), targets
@@ -157,6 +188,9 @@ def check_mirror(a_if, a_cfg, a_ctx):
     for a, b in zip(targets, m_targets):
         assert a["kind"] == b["kind"], msg
         assert np.isclose(a["r"], b["r"]) and np.isclose(a["v"], b["v"]), msg
+        assert ("theta" in a) == ("theta" in b), msg
+        if "theta" in a:
+            assert np.isclose(a["theta"], b["theta"]), msg
 
 
 # ===================================================================================
@@ -220,15 +254,19 @@ if __name__ == "__main__":
     ap.add_argument("--runs", type=int, default=50)
     ap.add_argument("--triangle", action="store_true")
     ap.add_argument("--mti", action="store_true")
+    ap.add_argument("--tdm", action="store_true")
     args = ap.parse_args()
 
     cfg = config.RadarConfig(
-        FABRIC_DECHIRP_EN=True, TRIANGLE_EN=args.triangle, MTI_EN=args.mti
+        FABRIC_DECHIRP_EN=True,
+        TRIANGLE_EN=args.triangle,
+        MTI_EN=args.mti,
+        TDM_EN=args.tdm,
     )
     print(
         f"Fabric /{config.FABRIC_DECIMATE_RATIO}: N_IF={cfg.N_IF}, "
         f"CHIRP_REPS={cfg.CHIRP_REPS}, triangle={cfg.TRIANGLE_EN}, MTI={cfg.MTI_EN}, "
-        f"runs={args.runs}\n"
+        f"TDM={cfg.TDM_EN}, runs={args.runs}\n"
     )
     results = [profile(cfg, k, args.runs) for k in args.k]
     print_table(args.k, results)

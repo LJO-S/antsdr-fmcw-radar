@@ -106,6 +106,12 @@ def nms(a_detections: np.ndarray, a_rd_matrix_pwr: np.ndarray, a_nsize=2):
 
 
 # ===================================================================================
+def wrap_rad(a_x: np.ndarray) -> np.ndarray:
+    """Wrap angles to [-pi, pi]"""
+    return (a_x + np.pi) % (2 * np.pi) - np.pi
+
+
+# ===================================================================================
 def subbin_refine(a_pwr, a_rows, a_cols):
     """
     Parabolic sub-bin interpolation around detected peaks.
@@ -157,6 +163,60 @@ def subbin_refine(a_pwr, a_rows, a_cols):
         )
 
     return row_offsets, col_offsets
+
+
+# ===================================================================================
+def estimate_angle(
+    a_config: RadarConfig,
+    a_XA: np.ndarray,
+    a_XB: np.ndarray,
+    a_rss: np.ndarray,
+    a_rows: np.ndarray,
+    a_cols: np.ndarray,
+):
+    """
+    Angle (deg) per detection from the TDM phase difference, Doppler gap removed.
+    a_rows: fftshifted Doppler rows; a_cols index the same slice as a_XA, a_XB, a_rss.
+    """
+
+    # Phase diff
+    dphi = np.angle(a_XB[a_rows, a_cols] * np.conj(a_XA[a_rows, a_cols]))
+    # Doppler correction
+    k_d = (a_rows - a_config.CHIRP_REPS // 2).astype(float)
+    y_m, y_0, y_p = np.log(
+        a_rss[
+            [
+                (a_rows - 1) % a_config.CHIRP_REPS,
+                a_rows,
+                (a_rows + 1) % a_config.CHIRP_REPS,
+            ],
+            a_cols,
+        ]
+        + 1e-12
+    )
+    # Only a concave-down fit is a peak (a noise cell at low SNR may not be)
+    den = y_m + y_p - 2 * y_0
+    k_d += np.where(den < 0, 0.5 * (y_m - y_p) / np.where(den < 0, den, 1), 0)
+    k_d = (k_d + a_config.CHIRP_REPS / 2) % a_config.CHIRP_REPS - (
+        a_config.CHIRP_REPS / 2
+    )
+    # Angle
+    psi = wrap_rad(
+        dphi - np.pi * k_d / a_config.CHIRP_REPS - np.radians(a_config.ANGLE_PSI0_DEG)
+    )
+    # Degrees, like FakeTarget.theta0
+    theta = np.degrees(
+        np.arcsin(
+            np.clip(
+                -psi
+                * c
+                / (2 * np.pi * a_config.CHIRP_FC_HZ * a_config.TDM_TX_ANT_SEP_M),
+                -1,
+                1,
+            )
+        )
+    )
+    return theta
 
 
 # ===================================================================================
@@ -296,7 +356,7 @@ def process_cpi(a_if_signal: np.ndarray, a_config: RadarConfig, a_ctx: CPIContex
     7. Generate detections
     8. Point-cloud reduction
     9. Sub-bin refinement
-    10. Angle estimation TODO (K10 step 3): angle estimation (TDM_EN)
+    10. Angle estimation (TDM_EN)
     11. Target readout
     """
     N = a_ctx.N_if_samples
@@ -465,7 +525,9 @@ def process_cpi(a_if_signal: np.ndarray, a_config: RadarConfig, a_ctx: CPIContex
         down_mask = down_mask_full & ~both_dil
 
     # ---------------------------------------------
-    # 9. Target readout
+    # 9. Sub-bin refinement
+    # 10. Angle estimation (TDM_EN)
+    # 11. Target readout
     # ---------------------------------------------
     rng_bw = rng[1] - rng[0]
     vel_bw = vel[1] - vel[0]
@@ -504,7 +566,28 @@ def process_cpi(a_if_signal: np.ndarray, a_config: RadarConfig, a_ctx: CPIContex
         up_rng_r = rng[up_det_rng] + col_off * rng_bw
         up_dop_r = vel[up_det_dop] + row_off * vel_bw
 
-        targets = [{"r": r, "v": v, "kind": "up"} for r, v in zip(up_rng_r, up_dop_r)]
+        if a_config.TDM_EN:
+            X_A = up_matrix_rd[:, pos]
+            X_B = up_matrix_rd_B[:, pos]
+            # Same positive-range slice as up_det_rng
+            rss = up_rss[:, pos]
+            theta = estimate_angle(
+                a_config=a_config,
+                a_XA=X_A,
+                a_XB=X_B,
+                a_rss=rss,
+                a_rows=up_det_dop,
+                a_cols=up_det_rng,
+            )
+
+        targets = (
+            [
+                {"r": r, "v": v, "theta": t, "kind": "up"}
+                for r, v, t in zip(up_rng_r, up_dop_r, theta)
+            ]
+            if a_config.TDM_EN
+            else [{"r": r, "v": v, "kind": "up"} for r, v in zip(up_rng_r, up_dop_r)]
+        )
 
     down_db = magnitude_db_rd_down if a_config.TRIANGLE_EN else None
     return magnitude_db_rd_up, down_db, targets, rng, vel

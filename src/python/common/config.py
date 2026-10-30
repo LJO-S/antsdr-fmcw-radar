@@ -70,11 +70,20 @@ class RadarConfig:
     TDM_TX_ANT_SEP_M: float = field(
         default=0.0259,
         metadata={
-            "label": "TX spacing",
+            "label": "TX antenna spacing",
             "unit": "m",
             "scale": 1,
             "group": "angle",
             "readonly": True,
+        },
+    )
+    ANGLE_PSI0_DEG: float = field(
+        default=0.0,
+        metadata={
+            "label": "Phase Offset calibration",
+            "unit": "deg",
+            "scale": 1,
+            "group": "angle",
         },
     )
     # TX->RX digital loopback latency in samples
