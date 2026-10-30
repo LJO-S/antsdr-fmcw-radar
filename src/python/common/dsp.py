@@ -166,17 +166,19 @@ def subbin_refine(a_pwr, a_rows, a_cols):
 
 
 # ===================================================================================
-def estimate_angle(
+def tdm_phasor(
     a_config: RadarConfig,
     a_XA: np.ndarray,
     a_XB: np.ndarray,
     a_rss: np.ndarray,
     a_rows: np.ndarray,
     a_cols: np.ndarray,
+    a_conj: bool = False,
 ):
     """
-    Angle (deg) per detection from the TDM phase difference, Doppler gap removed.
-    a_rows: fftshifted Doppler rows; a_cols index the same slice as a_XA, a_XB, a_rss.
+    Unit phasor exp(j*psi) per detection: the TDM A-B phase, Doppler gap removed.
+    a_rows: fftshifted Doppler rows of these maps; a_cols index the same slice as
+    a_XA, a_XB, a_rss. a_conj: maps built from conj(rows), i.e. the down ramps.
     """
 
     # Phase diff
@@ -200,10 +202,19 @@ def estimate_angle(
     k_d = (k_d + a_config.CHIRP_REPS / 2) % a_config.CHIRP_REPS - (
         a_config.CHIRP_REPS / 2
     )
-    # Angle
-    psi = wrap_rad(
-        dphi - np.pi * k_d / a_config.CHIRP_REPS - np.radians(a_config.ANGLE_PSI0_DEG)
-    )
+    psi = dphi - np.pi * k_d / a_config.CHIRP_REPS
+    # A conj-built map carries the conjugate phase. Read on its own rows, its
+    # Doppler is mirrored too, so the gap term above already holds.
+    return np.exp(-1j * psi) if a_conj else np.exp(1j * psi)
+
+
+# ===================================================================================
+def estimate_angle(a_config: RadarConfig, a_phasor: np.ndarray):
+    """
+    Angle (deg) per detection from tdm_phasor(), or from a sum of them (circular
+    mean, e.g. up + down ramp). psi0 is removed here.
+    """
+    psi = wrap_rad(np.angle(a_phasor) - np.radians(a_config.ANGLE_PSI0_DEG))
     # Degrees, like FakeTarget.theta0
     theta = np.degrees(
         np.arcsin(
@@ -217,6 +228,17 @@ def estimate_angle(
         )
     )
     return theta
+
+
+# ===================================================================================
+def target_dicts(a_kind, a_r, a_v, a_theta=None):
+    """Target dicts for one kind; theta only when given (TDM)."""
+    if a_theta is None:
+        return [{"r": r, "v": v, "kind": a_kind} for r, v in zip(a_r, a_v)]
+    return [
+        {"r": r, "v": v, "theta": t, "kind": a_kind}
+        for r, v, t in zip(a_r, a_v, a_theta)
+    ]
 
 
 # ===================================================================================
@@ -532,6 +554,13 @@ def process_cpi(a_if_signal: np.ndarray, a_config: RadarConfig, a_ctx: CPIContex
     rng_bw = rng[1] - rng[0]
     vel_bw = vel[1] - vel[0]
 
+    if a_config.TDM_EN:
+        # Same positive-range slice as the masks
+        X_A = up_matrix_rd[:, pos]
+        X_B = up_matrix_rd_B[:, pos]
+        rss = up_rss[:, pos]
+
+    theta_both = theta_up = theta_down = theta = None
     if a_config.TRIANGLE_EN:
         both_dop, both_rng = np.where(both_mask)
         up_only_dop, up_only_rng = np.where(up_mask)
@@ -554,10 +583,53 @@ def process_cpi(a_if_signal: np.ndarray, a_config: RadarConfig, a_ctx: CPIContex
         down_rng_r = rng[down_only_rng] + col_off * rng_bw
         down_dop_r = vel[down_only_dop] + row_off * vel_bw
 
+        if a_config.TDM_EN:
+            X_A_down = down_matrix_rd[:, pos]
+            X_B_down = down_matrix_rd_B[:, pos]
+            rss_down = down_rss[:, pos]
+            # The masks are on the up map's Doppler rows; the down maps are read on
+            # their own. align_down_doppler's row map, i -> (REPS - i) % REPS, is
+            # its own inverse.
+            both_dop_down = (a_config.CHIRP_REPS - both_dop) % a_config.CHIRP_REPS
+            down_only_dop_raw = (
+                a_config.CHIRP_REPS - down_only_dop
+            ) % a_config.CHIRP_REPS
+
+            # "both": up + down phasors, two independent looks (sigma / sqrt(2))
+            theta_both = estimate_angle(
+                a_config,
+                tdm_phasor(a_config, X_A, X_B, rss, both_dop, both_rng)
+                + tdm_phasor(
+                    a_config,
+                    X_A_down,
+                    X_B_down,
+                    rss_down,
+                    both_dop_down,
+                    both_rng,
+                    a_conj=True,
+                ),
+            )
+            theta_up = estimate_angle(
+                a_config,
+                tdm_phasor(a_config, X_A, X_B, rss, up_only_dop, up_only_rng),
+            )
+            theta_down = estimate_angle(
+                a_config,
+                tdm_phasor(
+                    a_config,
+                    X_A_down,
+                    X_B_down,
+                    rss_down,
+                    down_only_dop_raw,
+                    down_only_rng,
+                    a_conj=True,
+                ),
+            )
+
         targets = (
-            [{"r": r, "v": v, "kind": "both"} for r, v in zip(both_rng_r, both_dop_r)]
-            + [{"r": r, "v": v, "kind": "up"} for r, v in zip(up_rng_r, up_dop_r)]
-            + [{"r": r, "v": v, "kind": "down"} for r, v in zip(down_rng_r, down_dop_r)]
+            target_dicts("both", both_rng_r, both_dop_r, theta_both)
+            + target_dicts("up", up_rng_r, up_dop_r, theta_up)
+            + target_dicts("down", down_rng_r, down_dop_r, theta_down)
         )
     else:
         up_det_dop, up_det_rng = np.where(up_detections[:, pos])
@@ -567,27 +639,12 @@ def process_cpi(a_if_signal: np.ndarray, a_config: RadarConfig, a_ctx: CPIContex
         up_dop_r = vel[up_det_dop] + row_off * vel_bw
 
         if a_config.TDM_EN:
-            X_A = up_matrix_rd[:, pos]
-            X_B = up_matrix_rd_B[:, pos]
-            # Same positive-range slice as up_det_rng
-            rss = up_rss[:, pos]
             theta = estimate_angle(
-                a_config=a_config,
-                a_XA=X_A,
-                a_XB=X_B,
-                a_rss=rss,
-                a_rows=up_det_dop,
-                a_cols=up_det_rng,
+                a_config,
+                tdm_phasor(a_config, X_A, X_B, rss, up_det_dop, up_det_rng),
             )
 
-        targets = (
-            [
-                {"r": r, "v": v, "theta": t, "kind": "up"}
-                for r, v, t in zip(up_rng_r, up_dop_r, theta)
-            ]
-            if a_config.TDM_EN
-            else [{"r": r, "v": v, "kind": "up"} for r, v in zip(up_rng_r, up_dop_r)]
-        )
+        targets = target_dicts("up", up_rng_r, up_dop_r, theta)
 
     down_db = magnitude_db_rd_down if a_config.TRIANGLE_EN else None
     return magnitude_db_rd_up, down_db, targets, rng, vel

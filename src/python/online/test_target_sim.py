@@ -66,9 +66,26 @@ def detect(a_cfg, a_targets):
     return detections
 
 
-def tdm_config():
+def detect_down_only(a_cfg, a_targets):
+    """detect() with the echo's up legs blanked: the target is in the down maps only.
+    Needs SDR_LOOPBACK_EN off, so apply_if adds the echo and nothing else."""
+    ctx = dsp.build_cpi_context(a_cfg)
+    noise = noise_floor_block(a_cfg, ctx)
+    ts = TargetSim()
+    ts.set_targets(a_targets)
+    echo = ts.apply_if(a_if_raw=noise, a_config=a_cfg, a_ctx=ctx) - noise
+    # Triangle rows alternate up, down
+    echo.reshape(-1, ctx.N_if_samples)[0::2] = 0
+    _, _, detections, _, _ = dsp.process_cpi(noise + echo, a_cfg, ctx)
+    return detections
+
+
+def tdm_config(a_triangle=False):
     return dataclasses.replace(
-        config.RadarConfig(), FABRIC_DECHIRP_EN=True, TDM_EN=True
+        config.RadarConfig(),
+        FABRIC_DECHIRP_EN=True,
+        TDM_EN=True,
+        TRIANGLE_EN=a_triangle,
     )
 
 
@@ -119,9 +136,8 @@ def test_moving_target_negative_velocity():
     assert find_match(detections, 300.0, -20.0, cfg) is not None, detections
 
 
-def test_tdm_angle():
-    # K10 step 4: theta0 comes back within 1 deg, at 0 and +-20 m/s
-    cfg = tdm_config()
+def check_tdm_angle(a_cfg, a_kind, a_detect=detect):
+    """theta0 in {-30, 0, +30} x v0 in {-20, 0, +20} comes back within 1 deg."""
     errors = []
     for theta0 in (-30.0, 0.0, 30.0):
         for v0 in (-20.0, 0.0, 20.0):
@@ -133,11 +149,28 @@ def test_tdm_angle():
                 "amp": 5.0,
                 "duration": 100.0,
             }
-            d = find_match(detect(cfg, [target]), 300.0, v0, cfg)
+            d = find_match(a_detect(a_cfg, [target]), 300.0, v0, a_cfg, a_kind)
             assert d is not None, (theta0, v0)
             if abs(d["theta"] - theta0) >= 1.0:
                 errors.append((theta0, v0, d["theta"]))
     assert not errors, errors
+
+
+def test_tdm_angle():
+    # K10 step 4
+    check_tdm_angle(tdm_config(), "up")
+
+
+def test_tdm_triangle_angle():
+    # K10 step 5: a clean target pairs as "both", angle from up + down maps.
+    # MAX_VELOCITY is 32 m/s here, so +-20 stays inside it.
+    check_tdm_angle(tdm_config(a_triangle=True), "both")
+
+
+def test_tdm_triangle_down_only_angle():
+    # Down-only detections read the conj-built down maps on their own rows
+    cfg = dataclasses.replace(tdm_config(a_triangle=True), SDR_LOOPBACK_EN=False)
+    check_tdm_angle(cfg, "down", detect_down_only)
 
 
 def test_tdm_doppler_term_is_live():
@@ -183,6 +216,8 @@ if __name__ == "__main__":
         test_moving_target_positive_velocity,
         test_moving_target_negative_velocity,
         test_tdm_angle,
+        test_tdm_triangle_angle,
+        test_tdm_triangle_down_only_angle,
         test_tdm_doppler_term_is_live,
         test_triangle_pairing,
     ]

@@ -156,22 +156,29 @@ def staged_process_cpi(a_if_signal, a_config, a_ctx, a_lap):
         )
     a_lap("sub-bin refine")
 
-    # Angle per detection, sawtooth TDM only (triangle is K10 step 5)
+    # Angle per detection: up maps rds[0] (A) / rds[n_ramps] (B); triangle down maps
+    # rds[1] / rds[3], read on their own rows. "both" sums the two phasors.
     thetas = {}
-    if tdm and not tri:
-        _, dop, rbin, _, _ = refined[0]
-        thetas["up"] = dsp.estimate_angle(
-            a_config, rds[0][:, pos], rds[1][:, pos], mags[0][:, pos], dop, rbin
-        )
+    if tdm:
+        reps = a_config.CHIRP_REPS
+        up = (rds[0][:, pos], rds[n_ramps][:, pos], mags[0][:, pos])
+        down = (rds[1][:, pos], rds[3][:, pos], mags[1][:, pos]) if tri else None
+        for kind, dop, rbin, _, _ in refined:
+            p = 0
+            if kind != "down":
+                p = p + dsp.tdm_phasor(a_config, *up, dop, rbin)
+            if kind != "up":
+                p = p + dsp.tdm_phasor(
+                    a_config, *down, (reps - dop) % reps, rbin, a_conj=True
+                )
+            thetas[kind] = dsp.estimate_angle(a_config, p)
         a_lap("angle")
 
-    targets = []
-    for kind, _, _, rs, vs in refined:
-        for i, (r, v) in enumerate(zip(rs, vs)):
-            t = {"r": r, "v": v, "kind": kind}
-            if kind in thetas:
-                t["theta"] = thetas[kind][i]
-            targets.append(t)
+    targets = [
+        t
+        for kind, _, _, rs, vs in refined
+        for t in dsp.target_dicts(kind, rs, vs, thetas.get(kind))
+    ]
     a_lap("target dicts")
 
     return dbs[0], (dbs[1] if tri else None), targets

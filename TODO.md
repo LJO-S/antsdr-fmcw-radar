@@ -61,6 +61,22 @@ on weather. Part H stays deferred. Part J blocks nothing and can run in parallel
       Phase 5 guide, Section 4.2 - easy to miss: `logic_or/Op1 <- dac_valid_i0`, and
       `rm` the e200 `.dtb` after the dtsi edit). The halfband fold is done (folded FIR,
       48 -> 24). Done when software mode and `dechirp_verify.py --ab` still pass.
+- [ ] Velocity axis on `T_EFF`, not `CHIRP_DUR_S`: the chirp period is `SWEEP_LEN / FS`,
+      but `dsp.build_cpi_context` (`T_rep`), `config.MAX_VELOCITY`, the "Velocity
+      Resolution" row and `test_target_sim.py` use `CHIRP_DUR_S`. Fabric /8 reads v
+      0.07 % low (0.12 % worst case); software mode exact at the defaults. Angle is
+      unaffected (Doppler term in bins). Found in the K10 exercise, 2026-10-28.
+- [ ] Sub-bin fit on log power: `subbin_refine` fits its parabola on linear power (the
+      `cfar_ca_2d` output), which reads up to ~0.085 bin low with Blackman (true 0.25
+      -> 0.166): ~0.26 m in range, ~0.17 m/s in sawtooth velocity. On log power it is
+      nearly exact (0.25 -> 0.256). Matters against the K3 tracker's `sr` 0.7 m /
+      `sv` 0.5 m/s. Found in the K10 exercise, 2026-10-28.
+- [ ] Doppler wrap in NMS: `nms` (`maximum_filter`, `mode="nearest"`) and `subbin_refine`
+      do not wrap the Doppler axis, so a target near +-`MAX_VELOCITY` whose peak spans
+      rows `REPS-1` and 0 is detected twice (+63.6 and -64.7 m/s at 0.98 `MAX_VELOCITY`,
+      TDM). Fix: `mode=("wrap", "nearest")` in `nms`, circular rows in `subbin_refine`.
+      Changes detections, so old recordings no longer replay exact. Found in K10 step 3,
+      2026-10-30.
 
 ---
 
@@ -145,21 +161,44 @@ Fabric FFT/CFAR is not planned - decision gate in G11.
             [-REPS/2, REPS/2), else a target at +63.8 bins reads -64.2 and psi is
             off by pi. Reference: `scripts/angle/tdm_exercise.py` `estimate_theta`.
             `lambda` from `CHIRP_FC_HZ`. New config fields `ANGLE_PSI0_DEG` (psi0, a
-            phase, 0) and `TDM_TX_ANT_SEP_M` (0.0259), group `angle`. Targets gain `theta`,
-            `x = r sin(theta)`, `y = r cos(theta)` only with `TDM_EN`, so non-TDM
-            replays are unchanged. Past `MAX_VELOCITY` the Doppler term takes the
+            phase, 0) and `TDM_TX_ANT_SEP_M` (0.0259), group `angle`. Targets gain `theta`
+            (deg) only with `TDM_EN`, so non-TDM replays are unchanged; x and y are
+            the GUI's (step 6) and K11's EKF works on (r, theta, v_r). Past `MAX_VELOCITY` the Doppler term takes the
             wrong alias: psi off by pi, angle mirrored.
       
-      - [ ] 4. Test next to the v-sign check in `online/test_target_sim.py`: theta0 in
+      - [x] 4. Test next to the v-sign check in `online/test_target_sim.py`: theta0 in
             {-30, 0, +30} x v0 in {-20, 0, +20}, |error| < 1 deg; with the Doppler
             term disabled, ~9 deg at 20 m/s (the term is live). `run_tests.py` green;
             `profile_cpi.py` with TDM: extra ms vs the K1 table.
+            Done 2026-10-30 (`test_tdm_angle`, `test_tdm_doppler_term_is_live`;
+            `profile_cpi.py --tdm`). Sawtooth /8, median ms, K1 -> TDM:
+
+            | | K 0 | K 50 |
+            |---|---|---|
+            | `process_cpi` | 28.6 -> 28.1 | 25.2 -> 28.2 |
+            | of which RSS + angle | 0.4 | 0.4 |
+            | `apply_if` | 7.0 -> 14.1 | 136 -> 279 |
+            | CPI/s bound | 28 -> 24 | 6.2 -> 3.3 |
+
+            TDM costs ~3 ms in `process_cpi` (B's FFTs and prep); the angle is 0.2 ms,
+            flat in detections. `apply_if` doubles (2x rows, ~5.3 ms per fake target).
       
-      - [ ] 5. Triangle + TDM: angle from the up map (A-up to B-up is 2T, same
-            formula). Down-only detections get none for now. `MAX_VELOCITY` 32 m/s.
+      - [x] 5. Triangle + TDM (A-up to B-up and A-down to B-down are both 2T, same
+            formula). `MAX_VELOCITY` 32 m/s. Done 2026-10-30: `dsp.tdm_phasor` per
+            map, `dsp.estimate_angle` on the phasor (or a sum), `dsp.target_dicts`.
+            "up" from the up maps, "down" from the down maps, "both" sums the two
+            phasors (independent looks: sigma / sqrt(2), 1.3-1.6x measured). Down
+            maps are `fft2(conj(...))`: the phasor is conjugated, and they are read
+            on their own rows `(REPS - row) % REPS` (the inverse of
+            `align_down_doppler`), where the gap term holds unchanged. psi0 is
+            removed after the sum and calibrates both ramps. Tests
+            `test_tdm_triangle_angle`, `test_tdm_triangle_down_only_angle`;
+            `profile_cpi.py --triangle --tdm` mirrors it.
       
       - [ ] 6. GUI: x-y scatter next to the RD maps, theta in the detections table.
             Loopback fake targets at +-30 deg in the live app.
+            GUI done 2026-10-30 (bird's-eye plot + "Azimuth [deg]" column, TDM only,
+            checked offscreen on `process_cpi` output); the live-app check is open.
       
       - [ ] 7. Cable test (no Doppler, no antennas). TX1 -> switch RFC; RF1, RF2 ->
             two cables -> tee -> RX1, no pad. TX -30 dB (`SDR_TX_GAIN_MAX_DB` -20),

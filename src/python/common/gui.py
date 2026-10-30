@@ -40,13 +40,15 @@ class RadarDisplay(QMainWindow):
     """
     Tab 0 - Radar:
     ┌─────────────────────────┬─────────────────────────┐
-    │  Up-chirp RD map        │            │            │
-    ├─────────────────────────┤ Detections │ Detections │
-    │  Down-chirp RD map      │    Plot    │    List    │
+    │  Up-chirp RD map        │ Detections │            │
+    │                         │  (r, v)    │ Detections │
+    ├─────────────────────────┼────────────┤    List    │
+    │  Down-chirp RD map      │ Bird's-eye │            │
+    │                         │ x-y (TDM)  │            │
     │                         ├─────────────────────────┤
+    │                         │ [] Up-down detections   │
     │                         │ [] MTI                  │
     │                         │ [] Record [notes      ] │
-    │                         │ [] Up-down detections   │
     └─────────────────────────┴─────────────────────────┘
 
     Tab 1 - History (last N s, detections as dots):
@@ -93,6 +95,12 @@ class RadarDisplay(QMainWindow):
     HISTORY_BIN_S = 0.1
     HISTORY_REDRAW_S = 0.2
     HISTORY_FLOOR_DB = -80.0  # the RD maps' display floor
+
+    # Detections faster than this are coloured as receding (v > 0) or approaching
+    MOVING_V_MS = 5.0
+    # Bird's-eye view: the fan drawn, and the spoke spacing inside it
+    XY_FOV_DEG = 60
+    XY_SPOKE_DEG = 30
 
     def __init__(self, a_config):
         super().__init__()
@@ -141,6 +149,29 @@ class RadarDisplay(QMainWindow):
         self.det_plot.setBackground("#0a1628")
         self.det_plot.showGrid(x=True, y=True, alpha=0.3)
         middle_col.addWidget(self.det_plot)
+
+        # Bird's-eye x-y, TDM only (set_config): x = r sin(theta), y = r cos(theta)
+        self.xy_plot = pg.PlotWidget(title="Bird's-eye")
+        self.xy_plot.setLabel("left", "Down-range y", units="m")
+        self.xy_plot.setLabel("bottom", "Cross-range x (+: antenna B side)", units="m")
+        self.xy_plot.setBackground("#0a1628")
+        self.xy_plot.setAspectLocked(True)
+        # Metres on both axes: auto SI prefixes would put km on one and m on the other
+        for side in ("left", "bottom"):
+            self.xy_plot.getAxis(side).enableAutoSIPrefix(False)
+        # Range rings and spokes, one NaN-separated curve; rebuilt per config
+        self.xy_grid = pg.PlotCurveItem(
+            pen=pg.mkPen((255, 255, 255, 60), width=1), connect="finite"
+        )
+        self.xy_plot.addItem(self.xy_grid)
+        self.xy_scatter = pg.ScatterPlotItem(pen=pg.mkPen(None))
+        self.xy_plot.addItem(self.xy_scatter)
+        self._xy_brushes = {
+            "receding": pg.mkBrush("#4da3ff"),
+            "approaching": pg.mkBrush("#ff6b6b"),
+            "slow": pg.mkBrush("yellow"),
+        }
+        middle_col.addWidget(self.xy_plot)
 
         self.xs_toggle = QCheckBox("Up/Down Detections")
         self.xs_toggle.setChecked(False)
@@ -194,9 +225,9 @@ class RadarDisplay(QMainWindow):
         # ---------------------------------
         # C. Right column = detections list
         # ---------------------------------
-        self.det_table = QTableWidget(0, 4)
+        self.det_table = QTableWidget(0, 5)
         self.det_table.setHorizontalHeaderLabels(
-            ["#", "Range [m]", "Velocity [m/s]", "RCS [m²]"]
+            ["#", "Range [m]", "Velocity [m/s]", "Azimuth [deg]", "RCS [m²]"]
         )
         self.det_table.verticalHeader().setVisible(False)
         self.det_table.setEditTriggers(QTableWidget.NoEditTriggers)
@@ -564,22 +595,28 @@ class RadarDisplay(QMainWindow):
         self.scatter_up.setVisible(show_xs and len(up) > 0)
         self.scatter_down.setVisible(show_xs and len(down) > 0)
 
+        if self._config.TDM_EN:
+            self._update_xy(a_targets, show_xs)
+
         # -------------------------
         # Update target list
         # -------------------------
         # vel_res = float(a_velocities[1] - a_velocities[0])
         self.det_table.setRowCount(len(a_targets))  # Flush rows
         for i, t in enumerate(a_targets):
-            for col, item in enumerate((str(i), f'{t["r"]:.1f}', f'{t["v"]:.2f}', "-")):
+            theta = t.get("theta")
+            theta_str = "-" if theta is None else f"{theta:+.1f}"
+            row = (str(i), f'{t["r"]:.1f}', f'{t["v"]:.2f}', theta_str, "-")
+            for col, item in enumerate(row):
                 table_item = QTableWidgetItem(item)
                 table_item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
                 table_item.setForeground(QBrush(QColor("white")))
                 # if t["v"] > 2 * vel_res and col == 2:
-                if t["v"] > 5 and col == 2:
+                if t["v"] > self.MOVING_V_MS and col == 2:
                     table_item.setBackground(QBrush(QColor("#25415c")))
                     table_item.setForeground(QBrush(QColor("white")))
                 # elif t["v"] < -2 * vel_res and col == 2:
-                elif t["v"] < -5 and col == 2:
+                elif t["v"] < -self.MOVING_V_MS and col == 2:
                     table_item.setBackground(QBrush(QColor("#5c2a2a")))
                 self.det_table.setItem(i, col, table_item)
 
@@ -589,6 +626,59 @@ class RadarDisplay(QMainWindow):
             a_ranges,
             a_velocities,
             a_targets,
+        )
+
+    # ---------------------------------
+    # Bird's-eye x-y (TDM)
+    # ---------------------------------
+    def _update_xy(self, a_targets, a_show_xs):
+        """Detections with an angle, same kind filter as the (r, v) scatter. Dots
+        for "both" (or sawtooth), crosses for single-ramp ones; colour by v."""
+        tri = self._config.TRIANGLE_EN
+        shown = [
+            t
+            for t in a_targets
+            if t.get("theta") is not None
+            and (not tri or t["kind"] == "both" or a_show_xs)
+        ]
+        r = np.array([t["r"] for t in shown], dtype=float)
+        theta = np.radians([t["theta"] for t in shown])
+        paired = [not tri or t["kind"] == "both" for t in shown]
+        brushes = [
+            self._xy_brushes[
+                "receding"
+                if t["v"] > self.MOVING_V_MS
+                else "approaching" if t["v"] < -self.MOVING_V_MS else "slow"
+            ]
+            for t in shown
+        ]
+        self.xy_scatter.setData(
+            x=r * np.sin(theta),
+            y=r * np.cos(theta),
+            brush=brushes,
+            symbol=["o" if p else "x" for p in paired],
+            size=[10 if p else 8 for p in paired],
+        )
+
+    def _draw_xy_grid(self, a_max_range):
+        """Range rings at a round step and spokes every XY_SPOKE_DEG across the fan."""
+        step = 10 ** np.floor(np.log10(a_max_range))
+        if a_max_range / step < 4:
+            step /= 2
+        fan = np.radians(np.linspace(-self.XY_FOV_DEG, self.XY_FOV_DEG, 121))
+        xs, ys = [], []
+        for r in np.arange(step, a_max_range + 1e-9, step):
+            xs += [r * np.sin(fan), [np.nan]]
+            ys += [r * np.cos(fan), [np.nan]]
+        for a in np.radians(
+            np.arange(-self.XY_FOV_DEG, self.XY_FOV_DEG + 1, self.XY_SPOKE_DEG)
+        ):
+            xs += [[0, a_max_range * np.sin(a)], [np.nan]]
+            ys += [[0, a_max_range * np.cos(a)], [np.nan]]
+        self.xy_grid.setData(x=np.concatenate(xs), y=np.concatenate(ys))
+        half_w = a_max_range * np.sin(np.radians(self.XY_FOV_DEG))
+        self.xy_plot.setRange(
+            xRange=(-half_w, half_w), yRange=(0, a_max_range), padding=0.02
         )
 
     # ---------------------------------
@@ -786,6 +876,12 @@ class RadarDisplay(QMainWindow):
             self.rd_down_image.clear()
         # A new config (or a new playback session) starts a new history
         self._reset_history()
+
+        # Angle exists only with TDM: the bird's-eye plot and the azimuth column
+        self.xy_plot.setVisible(a_config.TDM_EN)
+        self.det_table.setColumnHidden(3, not a_config.TDM_EN)
+        self.xy_scatter.setData(x=[], y=[])
+        self._draw_xy_grid(a_config.MAX_RANGE)
 
         # Fabric IF mode: captured array is IF so hide IF spectrogram
         self.if_spec_plot.setVisible(not a_config.FABRIC_DECHIRP_EN)
@@ -1044,7 +1140,8 @@ if __name__ == "__main__":
     from .config import RadarConfig
 
     app = QApplication(sys.argv)
-    window = RadarDisplay(a_config=RadarConfig())
+    # TDM so the bird's-eye plot and the azimuth column show
+    window = RadarDisplay(a_config=RadarConfig(TDM_EN=True))
     window.show()
 
     n_doppler, n_range = 64, 300
@@ -1056,9 +1153,9 @@ if __name__ == "__main__":
     rd_down = _make_rd_map(n_doppler, n_range, target_idx)
 
     targets = [
-        {"r": ranges[50], "v": velocities[32], "kind": "both"},
-        {"r": ranges[120], "v": velocities[20], "kind": "up"},
-        {"r": ranges[200], "v": velocities[45], "kind": "down"},
+        {"r": ranges[50], "v": velocities[32], "theta": 0.0, "kind": "both"},
+        {"r": ranges[120], "v": velocities[20], "theta": -30.0, "kind": "up"},
+        {"r": ranges[200], "v": velocities[45], "theta": 30.0, "kind": "down"},
     ]
 
     window.update(rd_up, rd_down, ranges, velocities, targets)
