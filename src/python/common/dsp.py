@@ -287,10 +287,17 @@ def align_down_doppler(a_map: np.ndarray):
 def process_cpi(a_if_signal: np.ndarray, a_config: RadarConfig, a_ctx: CPIContext):
     """
     Coherent processing interval:
-    1. Create 2D structure
-    2. Perform range+Doppler FFTs
-    3. Perform CFAR detection
-    4. Clustering
+    1. Reshape IF into [N_reps x N_chirp_samples]
+    2. DC offset removal
+    3. Stationary clutter removal / MTI
+    4. Apply windows
+    5. Generate RD map
+    6. Remove Tx leakage
+    7. Generate detections
+    8. Point-cloud reduction
+    9. Sub-bin refinement
+    10. Angle estimation TODO (K10 step 3): angle estimation (TDM_EN)
+    11. Target readout
     """
     N = a_ctx.N_if_samples
     pos = a_ctx.pos
@@ -304,15 +311,24 @@ def process_cpi(a_if_signal: np.ndarray, a_config: RadarConfig, a_ctx: CPIContex
     full_matrix_iq = a_if_signal[: L * a_config.CHIRP_REPS * N].reshape(
         a_config.CHIRP_REPS, L, N
     )
+
     if a_config.TDM_EN:
-        # A chirps are the first half of each period; B rows unused for now
-        full_matrix_iq = full_matrix_iq[:, : L // 2]
-    full_matrix_iq = full_matrix_iq.reshape(-1, N)
-    if a_config.TRIANGLE_EN:
-        up_matrix_iq = full_matrix_iq[0::2, :].copy()
-        down_matrix_iq = full_matrix_iq[1::2, :].copy()
+        # A chirps are the first half of each period; B rows are the second half.
+        full_matrix_iq_A = full_matrix_iq[:, : L // 2].reshape(-1, N)
+        full_matrix_iq_B = full_matrix_iq[:, L // 2 : L].reshape(-1, N)
     else:
-        up_matrix_iq = full_matrix_iq.copy()
+        full_matrix_iq_A = full_matrix_iq.reshape(-1, N)
+
+    if a_config.TRIANGLE_EN:
+        up_matrix_iq = full_matrix_iq_A[0::2, :].copy()
+        down_matrix_iq = full_matrix_iq_A[1::2, :].copy()
+        if a_config.TDM_EN:
+            up_matrix_iq_B = full_matrix_iq_B[0::2, :].copy()
+            down_matrix_iq_B = full_matrix_iq_B[1::2, :].copy()
+    else:
+        up_matrix_iq = full_matrix_iq_A.copy()
+        if a_config.TDM_EN:
+            up_matrix_iq_B = full_matrix_iq_B.copy()
 
     # ---------------------------------------------
     # 2. DC offset removal
@@ -321,6 +337,10 @@ def process_cpi(a_if_signal: np.ndarray, a_config: RadarConfig, a_ctx: CPIContex
     up_matrix_iq -= up_matrix_iq.mean(axis=1, keepdims=True)
     if a_config.TRIANGLE_EN:
         down_matrix_iq -= down_matrix_iq.mean(axis=1, keepdims=True)
+    if a_config.TDM_EN:
+        up_matrix_iq_B -= up_matrix_iq_B.mean(axis=1, keepdims=True)
+        if a_config.TRIANGLE_EN:
+            down_matrix_iq_B -= down_matrix_iq_B.mean(axis=1, keepdims=True)
 
     # ---------------------------------------------
     # 3. Stationary Clutter Removal / MTI
@@ -331,6 +351,10 @@ def process_cpi(a_if_signal: np.ndarray, a_config: RadarConfig, a_ctx: CPIContex
         up_matrix_iq -= up_matrix_iq.mean(axis=0, keepdims=True)
         if a_config.TRIANGLE_EN:
             down_matrix_iq -= down_matrix_iq.mean(axis=0, keepdims=True)
+        if a_config.TDM_EN:
+            up_matrix_iq_B -= up_matrix_iq_B.mean(axis=0, keepdims=True)
+            if a_config.TRIANGLE_EN:
+                down_matrix_iq_B -= down_matrix_iq_B.mean(axis=0, keepdims=True)
 
     # ---------------------------------------------
     # 4. Apply windows
@@ -338,6 +362,10 @@ def process_cpi(a_if_signal: np.ndarray, a_config: RadarConfig, a_ctx: CPIContex
     up_matrix_iq *= a_ctx.window_2d
     if a_config.TRIANGLE_EN:
         down_matrix_iq *= a_ctx.window_2d
+    if a_config.TDM_EN:
+        up_matrix_iq_B *= a_ctx.window_2d
+        if a_config.TRIANGLE_EN:
+            down_matrix_iq_B *= a_ctx.window_2d
 
     # ---------------------------------------------
     # 5. Generate RD map
@@ -345,6 +373,12 @@ def process_cpi(a_if_signal: np.ndarray, a_config: RadarConfig, a_ctx: CPIContex
     up_matrix_rd = np.fft.fftshift(np.fft.fft2(up_matrix_iq), axes=0)
     if a_config.TRIANGLE_EN:
         down_matrix_rd = np.fft.fftshift(np.fft.fft2(np.conj(down_matrix_iq)), axes=0)
+    if a_config.TDM_EN:
+        up_matrix_rd_B = np.fft.fftshift(np.fft.fft2(up_matrix_iq_B), axes=0)
+        if a_config.TRIANGLE_EN:
+            down_matrix_rd_B = np.fft.fftshift(
+                np.fft.fft2(np.conj(down_matrix_iq_B)), axes=0
+            )
 
     # ---------------------------------------------
     # 6. Remove Tx leakage
@@ -353,11 +387,32 @@ def process_cpi(a_if_signal: np.ndarray, a_config: RadarConfig, a_ctx: CPIContex
     # Thus bin 0-N will be useless for detection so zero them to not affect CFAR
     up_matrix_rd_median = np.median(np.abs(up_matrix_rd))
     up_matrix_rd[:, : a_config.CFAR_MASK_N] = up_matrix_rd_median
-    magnitude_db_rd_up = 20 * np.log10(np.abs(up_matrix_rd[:, pos]) + 1e-12)
     if a_config.TRIANGLE_EN:
         down_matrix_rd_median = np.median(np.abs(down_matrix_rd))
         down_matrix_rd[:, : a_config.CFAR_MASK_N] = down_matrix_rd_median
-        magnitude_db_rd_down = 20 * np.log10(np.abs(down_matrix_rd[:, pos]) + 1e-12)
+    if a_config.TDM_EN:
+        up_matrix_rd_B[:, : a_config.CFAR_MASK_N] = np.median(np.abs(up_matrix_rd_B))
+        if a_config.TRIANGLE_EN:
+            down_matrix_rd_B[:, : a_config.CFAR_MASK_N] = np.median(
+                np.abs(down_matrix_rd_B)
+            )
+
+    # Root-sum-square of A and B for CFAR and the display (A only without TDM).
+    # The complex maps stay untouched for the angle.
+    if a_config.TDM_EN:
+        up_rss = np.sqrt(np.abs(up_matrix_rd) ** 2 + np.abs(up_matrix_rd_B) ** 2)
+        if a_config.TRIANGLE_EN:
+            down_rss = np.sqrt(
+                np.abs(down_matrix_rd) ** 2 + np.abs(down_matrix_rd_B) ** 2
+            )
+    else:
+        up_rss = np.abs(up_matrix_rd)
+        if a_config.TRIANGLE_EN:
+            down_rss = np.abs(down_matrix_rd)
+
+    magnitude_db_rd_up = 20 * np.log10(up_rss[:, pos] + 1e-12)
+    if a_config.TRIANGLE_EN:
+        magnitude_db_rd_down = 20 * np.log10(down_rss[:, pos] + 1e-12)
 
     # Normalize
     max_val = np.max(magnitude_db_rd_up)
@@ -373,14 +428,14 @@ def process_cpi(a_if_signal: np.ndarray, a_config: RadarConfig, a_ctx: CPIContex
     if a_config.TRIANGLE_EN:
         # NMS each ramp independently so every target is a single clean peak before pairing
         up_detections, up_pwr = cfar_ca_2d(
-            a_rd_matrix=up_matrix_rd, a_config=a_config, a_apply_nms=True
+            a_rd_matrix=up_rss, a_config=a_config, a_apply_nms=True
         )
         down_detections, down_pwr = cfar_ca_2d(
-            a_rd_matrix=down_matrix_rd, a_config=a_config, a_apply_nms=True
+            a_rd_matrix=down_rss, a_config=a_config, a_apply_nms=True
         )
     else:
         up_detections, up_pwr = cfar_ca_2d(
-            a_rd_matrix=up_matrix_rd, a_config=a_config, a_apply_nms=True
+            a_rd_matrix=up_rss, a_config=a_config, a_apply_nms=True
         )
 
     # ---------------------------------------------
