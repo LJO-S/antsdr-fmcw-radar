@@ -96,10 +96,10 @@ def frame_sync_linear(a_rx, a_config, a_ctx, a_delay_samples=0):
 # ===================================================================================
 def nms(a_detections: np.ndarray, a_rd_matrix_pwr: np.ndarray, a_nsize=2):
     """
-    NMS = Non-maximal Suppression
+    NMS = Non-maximal Suppression. Doppler (axis 0) is circular, range is not.
     """
     local_max = maximum_filter(
-        input=a_rd_matrix_pwr, size=2 * a_nsize + 1, mode="nearest"
+        input=a_rd_matrix_pwr, size=2 * a_nsize + 1, mode=("wrap", "nearest")
     )
 
     return a_detections & (a_rd_matrix_pwr == local_max)
@@ -112,22 +112,41 @@ def wrap_rad(a_x: np.ndarray) -> np.ndarray:
 
 
 # ===================================================================================
+def _log_parabola_offset(a_ym, a_y0, a_yp):
+    """
+    Parabola vertex through three LINEAR power samples, fitted on their logs
+    (Gaussian interpolation). Returns 0 where the log parabola is not concave-down,
+    and clips to [-1, 1] to stay inside the three-sample support.
+    """
+    tiny = np.finfo(np.float64).tiny
+    lm, l0, lp = (
+        np.log(np.maximum(np.asarray(y, np.float64), tiny)) for y in (a_ym, a_y0, a_yp)
+    )
+    d = lm + lp - 2 * l0
+    valid = d < 0
+    # The inner np.where avoids a divide warning; invalid results are discarded.
+    delta = np.where(valid, 0.5 * (lm - lp) / np.where(valid, d, 1), 0)
+    return np.clip(delta, -1, 1)
+
+
+# ===================================================================================
 def subbin_refine(a_pwr, a_rows, a_cols):
     """
     Parabolic sub-bin interpolation around detected peaks.
     Returns (row_offsets, col_offsets) as fractional bin displacements.
 
-    For each detection at (row, col), fits a parabola through the three
-    power samples on each axis and finds the analytical peak offset:
-        delta = 0.5 * (y_left - y_right) / (y_left + y_right - 2*y_center)
-    This shifts each detection from its integer bin center toward the true
-    peak, typically reducing position error from +-0.5 bins to +-0.05 bins.
+    For each detection at (row, col), fits a parabola through the log of the
+    three power samples on each axis (exact for a Gaussian peak, ~0.01 bin
+    error with the Blackman window vs ~0.085 on linear power):
+        delta = 0.5 * (l_left - l_right) / (l_left + l_right - 2*l_center)
+    The offset is clipped to [-1, 1]; at a local max it is within +-0.5.
+    Doppler rows are circular; range columns skip the edge (no neighbour).
     """
     n_rows, n_cols = a_pwr.shape
     rows, cols = np.asarray(a_rows), np.asarray(a_cols)
     # One offset slot per detection; both arrays share length because
     # (rows[i], cols[i]) are paired coordinates for detection i.
-    # Default value of 0 means "no shift" for edge detections.
+    # Default value of 0 means "no shift" for range-edge detections.
     row_offsets = np.zeros(len(rows), dtype=float)
     col_offsets = np.zeros(len(rows), dtype=float)
 
@@ -136,30 +155,17 @@ def subbin_refine(a_pwr, a_rows, a_cols):
     col_mask = (cols > 0) & (cols < n_cols - 1)
     if col_mask.any():
         r, c = rows[col_mask], cols[col_mask]
-        # Grab left neighbor, center, and right neighbor power for each detection
-        ym, y0, yp = a_pwr[r, c - 1], a_pwr[r, c], a_pwr[r, c + 1]
-        # Denominator of the parabola formula; negative means the parabola
-        # opens downward e.g. local maxima
-        d = ym + yp - 2 * y0
-        valid = d < 0
-        # Apply formula only where the parabola is concave-down (valid peak)
-        # The inner np.where replaces invalid d values with 1 to avoid a
-        # divide-by-zero warning since those results are discarded by the outer np.where.
-        col_offsets[col_mask] = np.where(
-            valid, 0.5 * (ym - yp) / np.where(valid, d, 1), 0
+        # Left, center and right neighbor power for each detection
+        col_offsets[col_mask] = _log_parabola_offset(
+            a_pwr[r, c - 1], a_pwr[r, c], a_pwr[r, c + 1]
         )
 
-    # --- Doppler axis (rows) --- same logic applied vertically
-    # Skip detections at the top/bottom edge
-    row_mask = (rows > 0) & (rows < n_rows - 1)
-    if row_mask.any():
-        r, c = rows[row_mask], cols[row_mask]
-        # Grab upper neighbor, center, and lower neighbor power
-        ym, y0, yp = a_pwr[r - 1, c], a_pwr[r, c], a_pwr[r + 1, c]
-        d = ym + yp - 2 * y0
-        valid = d < 0
-        row_offsets[row_mask] = np.where(
-            valid, 0.5 * (ym - yp) / np.where(valid, d, 1), 0
+    # --- Doppler axis (rows) --- same logic vertically, neighbours wrap around
+    if len(rows):
+        row_offsets[:] = _log_parabola_offset(
+            a_pwr[(rows - 1) % n_rows, cols],
+            a_pwr[rows, cols],
+            a_pwr[(rows + 1) % n_rows, cols],
         )
 
     return row_offsets, col_offsets
@@ -244,13 +250,38 @@ def target_dicts(a_kind, a_r, a_v, a_theta=None):
 # ===================================================================================
 def box_sum(a_x: np.ndarray, a_size: int) -> np.ndarray:
     """
-    Sum over the a_size x a_size cells centred on each cell, edges "nearest".
+    Sum over the a_size x a_size cells centred on each cell. Doppler (axis 0)
+    wraps, range (axis 1) edges are "nearest".
     Two 1-D passes in float64, each output summed straight from its window (no
     running sum), so a strong peak's rounding error stays inside its window.
     """
     ones = np.ones(a_size)
-    rows = correlate1d(a_x, ones, axis=0, mode="nearest", output=np.float64)
+    rows = correlate1d(a_x, ones, axis=0, mode="wrap", output=np.float64)
     return correlate1d(rows, ones, axis=1, mode="nearest", output=np.float64)
+
+
+# ===================================================================================
+def dilate_doppler(a_mask: np.ndarray, a_iterations: int) -> np.ndarray:
+    """binary_dilation with the Doppler axis (0) circular; range edges stay border 0."""
+    n = a_iterations
+    padded = np.pad(a_mask, ((n, n), (0, 0)), mode="wrap")
+    return binary_dilation(padded, iterations=n)[n : n + a_mask.shape[0]]
+
+
+# ===================================================================================
+def wrap_velocity(a_vel: np.ndarray, a_rows, a_row_off) -> np.ndarray:
+    """
+    Refined velocity of Doppler rows plus a fractional row offset, wrapped back
+    into the velocity axis span. In-span values equal vel[rows] + off * bin width.
+    """
+    bw = a_vel[1] - a_vel[0]
+    v = a_vel[a_rows] + a_row_off * bw
+    lo = a_vel[0]
+    span = len(a_vel) * bw
+    out = (v < lo) | (v >= lo + span)
+    if out.any():
+        v = np.where(out, lo + (v - lo) % span, v)
+    return v
 
 
 # ===================================================================================
@@ -270,8 +301,7 @@ def cfar_ca_2d(
     # Mean of the training cells. The subtraction must stay in float64 (in float32
     # it cancels next to a strong target); cast back like the convolve it replaced.
     noise_level = (
-        (box_sum(rd_matrix_power, outer) - box_sum(rd_matrix_power, guard))
-        / n_training
+        (box_sum(rd_matrix_power, outer) - box_sum(rd_matrix_power, guard)) / n_training
     ).astype(rd_matrix_power.dtype)
 
     # Threshold scale factor: T=a*P
@@ -546,8 +576,8 @@ def process_cpi(a_if_signal: np.ndarray, a_config: RadarConfig, a_ctx: CPIContex
         # of up_mask_full) needs no further thinning. A separate NMS here against avg_pwr
         # would incorrectly drop valid pairings whose up cell is not the avg_pwr local max.
         PAIR_TOL = 2
-        both_mask = up_mask_full & binary_dilation(down_mask_full, iterations=PAIR_TOL)
-        both_dil = binary_dilation(both_mask, iterations=PAIR_TOL)
+        both_mask = up_mask_full & dilate_doppler(down_mask_full, PAIR_TOL)
+        both_dil = dilate_doppler(both_mask, PAIR_TOL)
         up_mask = up_mask_full & ~both_dil
         down_mask = down_mask_full & ~both_dil
 
@@ -557,7 +587,6 @@ def process_cpi(a_if_signal: np.ndarray, a_config: RadarConfig, a_ctx: CPIContex
     # 11. Target readout
     # ---------------------------------------------
     rng_bw = rng[1] - rng[0]
-    vel_bw = vel[1] - vel[0]
 
     if a_config.TDM_EN:
         # Same positive-range slice as the masks
@@ -576,17 +605,17 @@ def process_cpi(a_if_signal: np.ndarray, a_config: RadarConfig, a_ctx: CPIContex
         # Multiplying by bin width converts the shift to physical units.
         row_off, col_off = subbin_refine(avg_pwr, both_dop, both_rng)
         both_rng_r = rng[both_rng] + col_off * rng_bw
-        both_dop_r = vel[both_dop] + row_off * vel_bw
+        both_dop_r = wrap_velocity(vel, both_dop, row_off)
 
         # Refine up-only detections using the up-chirp power (range-masked)
         row_off, col_off = subbin_refine(up_pwr_pos, up_only_dop, up_only_rng)
         up_rng_r = rng[up_only_rng] + col_off * rng_bw
-        up_dop_r = vel[up_only_dop] + row_off * vel_bw
+        up_dop_r = wrap_velocity(vel, up_only_dop, row_off)
 
         # Refine down-only detections using the Doppler-aligned down-chirp power.
         row_off, col_off = subbin_refine(down_pwr_pos, down_only_dop, down_only_rng)
         down_rng_r = rng[down_only_rng] + col_off * rng_bw
-        down_dop_r = vel[down_only_dop] + row_off * vel_bw
+        down_dop_r = wrap_velocity(vel, down_only_dop, row_off)
 
         if a_config.TDM_EN:
             X_A_down = down_matrix_rd[:, pos]
@@ -641,7 +670,7 @@ def process_cpi(a_if_signal: np.ndarray, a_config: RadarConfig, a_ctx: CPIContex
 
         row_off, col_off = subbin_refine(up_pwr[:, pos], up_det_dop, up_det_rng)
         up_rng_r = rng[up_det_rng] + col_off * rng_bw
-        up_dop_r = vel[up_det_dop] + row_off * vel_bw
+        up_dop_r = wrap_velocity(vel, up_det_dop, row_off)
 
         if a_config.TDM_EN:
             theta = estimate_angle(
