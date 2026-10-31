@@ -16,7 +16,6 @@ import argparse
 import time
 
 import numpy as np
-from scipy.ndimage import binary_dilation
 
 import common.config as config
 import common.dsp as dsp
@@ -125,7 +124,6 @@ def staged_process_cpi(a_if_signal, a_config, a_ctx, a_lap):
     a_lap("NMS")
 
     rng_bw = rng[1] - rng[0]
-    vel_bw = vel[1] - vel[0]
 
     if tri:
         up_mask_full = dets[0][:, pos]
@@ -134,8 +132,8 @@ def staged_process_cpi(a_if_signal, a_config, a_ctx, a_lap):
         down_pwr_pos = dsp.align_down_doppler(pwrs[1])[:, pos]
         avg_pwr = (up_pwr_pos + down_pwr_pos) / 2
         PAIR_TOL = 2
-        both_mask = up_mask_full & binary_dilation(down_mask_full, iterations=PAIR_TOL)
-        both_dil = binary_dilation(both_mask, iterations=PAIR_TOL)
+        both_mask = up_mask_full & dsp.dilate_doppler(down_mask_full, PAIR_TOL)
+        both_dil = dsp.dilate_doppler(both_mask, PAIR_TOL)
         up_mask = up_mask_full & ~both_dil
         down_mask = down_mask_full & ~both_dil
         a_lap("pairing")
@@ -151,9 +149,8 @@ def staged_process_cpi(a_if_signal, a_config, a_ctx, a_lap):
     for kind, pwr, mask in groups:
         dop, rbin = np.where(mask)
         row_off, col_off = dsp.subbin_refine(pwr, dop, rbin)
-        refined.append(
-            (kind, dop, rbin, rng[rbin] + col_off * rng_bw, vel[dop] + row_off * vel_bw)
-        )
+        vs = dsp.wrap_velocity(vel, dop, row_off)
+        refined.append((kind, dop, rbin, rng[rbin] + col_off * rng_bw, vs))
     a_lap("sub-bin refine")
 
     # Angle per detection: up maps rds[0] (A) / rds[n_ramps] (B); triangle down maps
@@ -204,10 +201,8 @@ def check_mirror(a_if, a_cfg, a_ctx):
 def profile(a_cfg, a_k, a_runs, a_warmup=3):
     """Median ms per stage for K targets, plus apply_if and the real process_cpi."""
     ctx = dsp.build_cpi_context(a_cfg)
-    sim = TargetSim()
+    sim = TargetSim(a_seed=SEED)  # seeds the loopback noise
     sim.set_targets(fake_targets(a_k, a_cfg))
-    # apply_noise uses the legacy global RNG
-    np.random.seed(SEED)
     if_sig = if_block(a_cfg, ctx, sim)
     check_mirror(if_sig, a_cfg, ctx)
 

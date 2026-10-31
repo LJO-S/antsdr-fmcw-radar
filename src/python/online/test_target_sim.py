@@ -28,7 +28,7 @@ SEED = 0
 
 def find_match(a_detections, a_r, a_v, a_cfg, a_kind=None):
     range_res = config.c / (2 * a_cfg.CHIRP_BW_HZ)
-    T_rep = a_cfg.LEGS_PER_PERIOD * a_cfg.CHIRP_DUR_S
+    T_rep = a_cfg.LEGS_PER_PERIOD * a_cfg.T_EFF
     vel_res = (config.c / a_cfg.CHIRP_FC_HZ) / (2 * T_rep * a_cfg.CHIRP_REPS)
     for d in a_detections:
         if a_kind is not None and d["kind"] != a_kind:
@@ -50,12 +50,9 @@ def noise_floor_block(a_cfg, a_ctx):
 def synth(a_cfg, a_targets):
     ctx = dsp.build_cpi_context(a_cfg)
     if_raw = noise_floor_block(a_cfg, ctx)
-    # dsp.apply_noise (called inside apply_if when SDR_LOOPBACK_EN) draws from
-    # the legacy global np.random, not a seeded Generator - seed it here too,
-    # same pattern offline/test_soft_model.py uses, or this test is flaky
-    # (occasional spurious CFAR false alarms from run to run).
-    np.random.seed(SEED)
-    ts = TargetSim()
+    # Seed the loopback noise too, or this test is flaky (occasional spurious
+    # CFAR false alarms from run to run).
+    ts = TargetSim(a_seed=SEED)
     ts.set_targets(a_targets)
     return ts.apply_if(a_if_raw=if_raw, a_config=a_cfg, a_ctx=ctx), ctx
 

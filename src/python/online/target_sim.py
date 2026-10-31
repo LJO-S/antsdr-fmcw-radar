@@ -63,8 +63,10 @@ class FakeTarget:
 
 
 class TargetSim:
-    def __init__(self):
+    def __init__(self, a_seed=None):
         self.fake_targets = []
+        # Loopback noise source; a_seed makes it repeatable (never replay-exact)
+        self.rng = np.random.default_rng(a_seed)
 
     def set_targets(self, a_targets: list):
         targets = []
@@ -118,14 +120,12 @@ class TargetSim:
         now = time.monotonic() if a_now is None else a_now
         ret = a_if_raw.copy()
 
-        n = len(a_if_raw)
         N = a_ctx.N_if_samples
-        # The beat tone is periodic: fast time resets every chirp, so one chirp
-        # (one triangle period) of phasor tiles across the whole CPI. Building it
-        # full-length instead would be ~CHIRP_REPS times the np.exp work and more memory.
-        # The np.roll below is cheap and vectorized, so this is faster.
-        # Decimated IF domain: N/fs_if, not N_chirp_samples/FS.
-        t_chirp = np.arange(N) / a_config.FS_IF
+        # The reshape below needs a whole number of chirp legs (len % N == 0).
+        rows = ret.reshape(-1, N)
+        k = np.arange(len(rows))
+        m = np.arange(N)
+        fs = a_config.FS_IF
 
         # T_EFF, not CHIRP_DUR_S: SWEEP_LEN (and so T_EFF) shrinks by up to 7
         # samples under decimation, and B is what must stay exact (I5 guide
@@ -135,9 +135,7 @@ class TargetSim:
         rms = rms if rms > 0 else 1.0
 
         # TDM B rows: the second half of each period
-        is_b = (
-            np.arange(n // N) % a_config.LEGS_PER_PERIOD
-        ) >= a_config.LEGS_PER_PERIOD // 2
+        is_b = (k % a_config.LEGS_PER_PERIOD) >= a_config.LEGS_PER_PERIOD // 2
 
         for target in self.fake_targets:
             r, v = self._kinematics(target, a_config, now)
@@ -159,36 +157,18 @@ class TargetSim:
                 continue
             target.nyquist_warned = False
 
-            tone_up = np.exp(2j * np.pi * f_b * t_chirp).astype(a_if_raw.dtype)
-            if a_config.TRIANGLE_EN:
-                # Down-legs have slope -S, i.e. beat -f_b which is exactly the
-                # conjugate of the up-leg tone.
-                period = np.concatenate((tone_up, tone_up.conj()))
-            else:
-                period = tone_up
-            tone = np.tile(period, -(-n // len(period)))[:n]
-
-            echo = (target.amp * rms * tone).astype(a_if_raw.dtype, copy=False)
-
             # ---------------
-            # Doppler Shift
+            # Echo
             # ---------------
-            # dsp.apply_doppler_shift's minus-sign convention is calibrated for
-            # pre-mix RX-domain use (mix_signal's conj(RX) flips it to the correct
-            # sign downstream). apply_if writes directly into the IF domain,
-            # skipping that conjugation, so the velocity must be negated here to
-            # land on the same measured-sign convention as the baseband path.
-            echo = dsp.apply_doppler_shift(
-                a_signal=echo, a_velocity=-v, a_config=a_config, a_fs=a_config.FS_IF
-            )
-
-            # ---------------
-            # Azimuth Phase
-            # ---------------
+            # Per row: amp*rms * slow-time Doppler * TDM phase, times a per-sample
+            # beat + fast-time Doppler tone: one outer product, no full-length exp.
+            # Doppler is +f_dv: this writes the IF domain, past mix_signal's
+            # conj(RX) flip (apply_doppler_shift's minus is for the RX domain).
+            f_dv = 2 * v * a_config.CHIRP_FC_HZ / dsp.c
+            row_vec = target.amp * rms * np.exp(2j * np.pi * f_dv * N * k / fs)
             if a_config.TDM_EN:
-                # The geometry phase is 2*pi*d*sin(theta)/lam, where d is the
-                # antenna separation and lam is the wavelength. The Doppler gap
-                # is already applied.
+                # The geometry phase is 2*pi*d*sin(theta)/lam, d the antenna
+                # separation and lam the wavelength.
                 phi = (
                     2
                     * np.pi
@@ -196,14 +176,25 @@ class TargetSim:
                     * np.sin(np.radians(target.theta0))
                     / (dsp.c / (a_config.CHIRP_FC_HZ))
                 )
+                row_vec = np.where(is_b, row_vec * np.exp(-1j * phi), row_vec)
 
-                echo.reshape(-1, N)[is_b] *= np.exp(-1j * phi)
-
-            ret += echo
+            # Phases in float64; outer product in the block's dtype.
+            row_vec = row_vec.astype(ret.dtype)
+            tone_up = np.exp(2j * np.pi * (f_b + f_dv) * m / fs).astype(ret.dtype)
+            if a_config.TRIANGLE_EN:
+                # Down-legs (odd rows) have slope -S, i.e. beat -f_b
+                tone_down = np.exp(2j * np.pi * (f_dv - f_b) * m / fs)
+                tone_down = tone_down.astype(ret.dtype)
+                rows[0::2] += np.multiply.outer(row_vec[0::2], tone_up)
+                rows[1::2] += np.multiply.outer(row_vec[1::2], tone_down)
+            else:
+                rows += np.multiply.outer(row_vec, tone_up)
 
         if a_config.SDR_LOOPBACK_EN:
             ret = dsp.apply_noise(
-                a_signal=ret, a_snr_db=a_config.SDR_LOOPBACK_NOISE_SNR_DB
+                a_signal=ret,
+                a_snr_db=a_config.SDR_LOOPBACK_NOISE_SNR_DB,
+                a_rng=self.rng,
             )
 
         return ret
@@ -233,7 +224,9 @@ class TargetSim:
         # Add noise if loopback enabled
         if a_config.SDR_LOOPBACK_EN:
             ret = dsp.apply_noise(
-                a_signal=ret, a_snr_db=a_config.SDR_LOOPBACK_NOISE_SNR_DB
+                a_signal=ret,
+                a_snr_db=a_config.SDR_LOOPBACK_NOISE_SNR_DB,
+                a_rng=self.rng,
             )
 
         return ret

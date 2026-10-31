@@ -285,7 +285,7 @@ class RadarConfig:
 
     @property
     def MAX_VELOCITY(self) -> float:
-        t_rep = self.LEGS_PER_PERIOD * self.CHIRP_DUR_S
+        t_rep = self.LEGS_PER_PERIOD * self.T_EFF
         return (c / self.CHIRP_FC_HZ) / (4 * t_rep)
 
     def describe(self):
@@ -301,7 +301,7 @@ class RadarConfig:
         r["Range Resolution"] = (c / (2 * self.CHIRP_BW_HZ), "m")
         r["Velocity Resolution"] = (
             (c / self.CHIRP_FC_HZ)
-            / (2 * self.LEGS_PER_PERIOD * self.CHIRP_DUR_S * self.CHIRP_REPS),
+            / (2 * self.LEGS_PER_PERIOD * self.T_EFF * self.CHIRP_REPS),
             "m/s",
         )
         r["Operational Max Range"] = (self.MAX_RANGE, "m")

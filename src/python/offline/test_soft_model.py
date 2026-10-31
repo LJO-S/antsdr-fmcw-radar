@@ -24,7 +24,7 @@ def match_detections(a_detections, a_targets_truth, a_cfg):
     checker = True
 
     # Create tolerances
-    T_rep = a_cfg.LEGS_PER_PERIOD * a_cfg.CHIRP_DUR_S
+    T_rep = a_cfg.LEGS_PER_PERIOD * a_cfg.T_EFF
     vel_res = (config.c / a_cfg.CHIRP_FC_HZ) / (2 * T_rep * a_cfg.CHIRP_REPS)
     range_res = config.c / (2 * a_cfg.CHIRP_BW_HZ)
 

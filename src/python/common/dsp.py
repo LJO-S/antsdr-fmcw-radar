@@ -365,7 +365,8 @@ def build_cpi_context(a_config: RadarConfig) -> CPIContext:
     N_chirp_samples = int(round(a_config.CHIRP_DUR_S * a_config.FS))
     N_if_samples = a_config.N_IF
     fs_if = a_config.FS_IF
-    T_rep = a_config.LEGS_PER_PERIOD * a_config.CHIRP_DUR_S
+    # Slow-time spacing is the real chirp period T_EFF, not CHIRP_DUR_S.
+    T_rep = a_config.LEGS_PER_PERIOD * a_config.T_EFF
 
     range_freqs = np.fft.fftfreq(N_if_samples, d=1 / fs_if)
     doppler_freqs = np.fft.fftshift(np.fft.fftfreq(a_config.CHIRP_REPS, d=T_rep))
@@ -685,6 +686,9 @@ def process_cpi(a_if_signal: np.ndarray, a_config: RadarConfig, a_ctx: CPIContex
 
 
 # ===================================================================================
+_DOPPLER_BLOCK = 1024
+
+
 def apply_doppler_shift(
     a_signal: np.ndarray, a_velocity: float, a_config: RadarConfig, a_fs: float = None
 ):
@@ -697,26 +701,34 @@ def apply_doppler_shift(
     fs = a_fs if a_fs is not None else a_config.FS
     # Doppler shift = 2*v/c * f_c
     doppler_hz = 2 * a_velocity * a_config.CHIRP_FC_HZ / c
-    t = np.arange(len(a_signal)) / fs
-    # Phase computed in float64 then cast so complex64 captures stay complex64
-    phasor = np.exp(-2j * np.pi * doppler_hz * t).astype(a_signal.dtype, copy=False)
+    # exp(w*(q*B + m)) = exp(w*B*q) * exp(w*m): two short exps and an outer product
+    # instead of one full-length exp. B = 1024 is near sqrt(n) for a raw-RX CPI.
+    w = -2 * np.pi * doppler_hz / fs
+    n = len(a_signal)
+    rows = -(-n // _DOPPLER_BLOCK)
+    # Phases in float64, then cast so complex64 captures stay complex64
+    slow = np.exp(1j * w * _DOPPLER_BLOCK * np.arange(rows)).astype(a_signal.dtype)
+    fast = np.exp(1j * w * np.arange(_DOPPLER_BLOCK)).astype(a_signal.dtype)
+    phasor = np.multiply.outer(slow, fast).ravel()[:n]
     return a_signal * phasor
 
 
 # ===================================================================================
-def apply_noise(a_signal: np.ndarray, a_snr_db: float):
+def apply_noise(a_signal: np.ndarray, a_snr_db: float, a_rng: np.random.Generator):
     """
-    Simulate additive white Gaussian noise on a signal
+    Simulate additive white Gaussian noise on a signal. Draws at the signal's own
+    precision (float32 for complex64) from a_rng.
     """
     if a_snr_db <= 0:
         return a_signal
 
     sig_rms = np.sqrt(np.mean(np.abs(a_signal) ** 2))
     noise_std = sig_rms / (10 ** (a_snr_db / 20)) / np.sqrt(2)  # Split across I and Q
-    noise = noise_std * (
-        np.random.randn(*a_signal.shape) + 1j * np.random.randn(*a_signal.shape)
-    )
-    return a_signal + noise.astype(a_signal.dtype, copy=False)
+    real = a_signal.real.dtype
+    # Interleaved I, Q draws viewed as complex
+    noise = a_rng.standard_normal(2 * a_signal.size, dtype=real).view(a_signal.dtype)
+    noise *= real.type(noise_std)
+    return a_signal + noise.reshape(a_signal.shape)
 
 
 # ===================================================================================

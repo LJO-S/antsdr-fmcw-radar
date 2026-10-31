@@ -587,8 +587,8 @@ Read first: 13.4.
   lambda, not `pi sin(theta)`: d is not exactly lambda/2) on top of the continuous
   Doppler, with the sign matched to the hardware once found. `FakeTarget` gains `theta0`. This
   tests the whole chain offline and in loopback before any antenna exists.
-- Targets gain `theta`, `x = r sin(theta)`, `y = r cos(theta)`. GUI: a bird's-eye
-  x-y scatter next to the RD maps.
+- Targets gain `theta` (deg). GUI: a Sector-PPI (x-y scatter) next to the RD maps,
+  `x = r sin(theta)`, `y = r cos(theta)` computed there, not in `process_cpi`.
 
 Done when fake targets at +-30 deg come back within 1 deg at 0 and +-20 m/s (the
 Doppler correction at work), and on the field a person walking a known line traces

@@ -61,22 +61,70 @@ on weather. Part H stays deferred. Part J blocks nothing and can run in parallel
       Phase 5 guide, Section 4.2 - easy to miss: `logic_or/Op1 <- dac_valid_i0`, and
       `rm` the e200 `.dtb` after the dtsi edit). The halfband fold is done (folded FIR,
       48 -> 24). Done when software mode and `dechirp_verify.py --ab` still pass.
-- [ ] Velocity axis on `T_EFF`, not `CHIRP_DUR_S`: the chirp period is `SWEEP_LEN / FS`,
-      but `dsp.build_cpi_context` (`T_rep`), `config.MAX_VELOCITY`, the "Velocity
-      Resolution" row and `test_target_sim.py` use `CHIRP_DUR_S`. Fabric /8 reads v
-      0.07 % low (0.12 % worst case); software mode exact at the defaults. Angle is
-      unaffected (Doppler term in bins). Found in the K10 exercise, 2026-10-28.
-- [ ] Sub-bin fit on log power: `subbin_refine` fits its parabola on linear power (the
-      `cfar_ca_2d` output), which reads up to ~0.085 bin low with Blackman (true 0.25
-      -> 0.166): ~0.26 m in range, ~0.17 m/s in sawtooth velocity. On log power it is
-      nearly exact (0.25 -> 0.256). Matters against the K3 tracker's `sr` 0.7 m /
-      `sv` 0.5 m/s. Found in the K10 exercise, 2026-10-28.
-- [ ] Doppler wrap in NMS: `nms` (`maximum_filter`, `mode="nearest"`) and `subbin_refine`
-      do not wrap the Doppler axis, so a target near +-`MAX_VELOCITY` whose peak spans
-      rows `REPS-1` and 0 is detected twice (+63.6 and -64.7 m/s at 0.98 `MAX_VELOCITY`,
-      TDM). Fix: `mode=("wrap", "nearest")` in `nms`, circular rows in `subbin_refine`.
-      Changes detections, so old recordings no longer replay exact. Found in K10 step 3,
-      2026-10-30.
+- [ ] Host DSP pass (2026-10-30), in order. Timings on a loaded machine, compare
+      ratios. Steps 2-6 change detections, so old recordings stop replaying exact:
+      each step replays the reference session and explains every changed detection.
+      
+      - [x] 0. Reference sessions (2026-10-31, `data/sessions/20261031-0923*`, fabric
+            TDM sawtooth, 3 fake targets): `092300` (+-17.7 m/s) and `092343`
+            (+-65 m/s), real RF (TX -> cable -> 30 dB pad -> RX); `092417`
+            (+-65 m/s) digital loopback, noise off. All
+            `replay --check` OK.
+      
+      - [x] 1. CFAR (2026-10-30): the 19x19 `convolve` -> `dsp.box_sum` (outer -
+            guard, direct `correlate1d` sums in float64, cast back). ~22 -> ~3 ms per
+            map, triangle + TDM `process_cpi` 70 -> 34 ms. Identical detections in
+            650 noise maps, tones 20-160 dB, 300 `process_cpi` blocks (all modes);
+            replay-safe. Why not `uniform_filter`: see `CLAUDE.md` "Detection pipeline".
+      
+      - [x] 2. Doppler wrap (2026-10-31): `nms`, `box_sum` (axis 0), `subbin_refine`
+            rows and the triangle pairing (`dsp.dilate_doppler`) wrap the Doppler
+            axis; `dsp.wrap_velocity` keeps refined v in [-vmax, vmax). New suite
+            `common/test_dsp.py`. Replay: `092300` unchanged. `092343` / `092417`
+            (targets at +-vmax): the edge duplicates (rows 127 + 0) are merged into one
+            refined detection every CPI. Every other changed detection is in row 0:
+            8 real targets no longer masked when two edge targets cross in range
+            (`092343`), and 415 ridge cells in noise-off loopback (`092417`, the
+            known CFAR-without-noise effect, row 64 already showed it). Outside
+            the edge rows the detections are bitwise identical (also in 200
+            synthetic blocks across all modes). Noise-only false alarms do not rise.
+            Timing unchanged.
+      
+      - [x] 3. Sub-bin fit on log power (2026-10-31): `dsp._log_parabola_offset`,
+            clipped to +-1. Blackman max error 0.09 -> 0.007 bin. Synthetic (all
+            modes) high-SNR RMS ~0.065 -> ~0.005 bin; low SNR never worse (triangle
+            range 0.19 -> 0.07). Replay: same detections and bitwise theta, only r/v
+            move (< 0.33 bin). `092300` vs truth: range RMS 0.076 -> 0.015 bin
+            (0.23 -> 0.05 m), velocity 0.010 -> 0.003 bin. Truth for sawtooth range
+            must include the range-Doppler coupling `f_d * c / 2S` (0.4 bin at
+            100 m/s).
+      
+      - [x] 4. Velocity axis on `T_EFF` (2026-10-31): `build_cpi_context` `T_rep`,
+            `MAX_VELOCITY`, "Velocity Resolution", both test tolerances. `092300` vs
+            truth: v bias -0.073 % -> -0.003 %; every v scales by exactly 5660/5656,
+            r and theta bitwise. In `092343` / `092417` the +-65 m/s fake targets
+            clip to the new, 0.07 % higher `MAX_VELOCITY`, now exactly the Nyquist
+            edge, so which side v (and with it the sign of theta) lands on is a coin
+            toss (edge ambiguity, not a bug). Use targets inside the span for step 7.
+      
+      - [x] 5. Fake-target synthesis speedup (2026-10-31). `apply_if`: one per-row x
+            per-sample outer product per target, 5.6 -> 0.3 ms per target sawtooth,
+            21 -> 1.1 ms triangle+TDM. `apply_doppler_shift` (software `apply()`,
+            soft model): blocked phasor, 29 -> 4.7 ms per target. `apply_noise`:
+            float32 draws from `TargetSim`'s own Generator (`a_seed`), 38 -> 14 ms
+            software block. Output equals a float64 reference of the old formula to
+            ~1e-6 x RMS in all modes; replay `092300` / `092343` same detections
+            (dr, dv < 1e-6 bin, dtheta < 1e-4 deg). `092417` (noise-off loopback)
+            swaps ~3 rounding-floor spurs per CPI below -127 dB; every real
+            target matches.
+      
+      - [x] 6. Range FFT padding: skipped (2026-10-31), not worth it now. Idle
+            machine: 707 -> 720 saves 0.9 ms per map (13-15 % of `process_cpi` at
+            /8), but moves the range bins to 2.95 m. Worth it only in software or
+            fabric /1 (5660 -> 5670: 33 -> 18 ms per map). If ever: pad the range FFT
+            to `scipy.fft.next_fast_len(N_IF)`, axis from the padded length.
+      
+      - [ ] 7. Record a new reference session; `replay --check` passes.
 
 ---
 
@@ -95,10 +143,9 @@ Fabric FFT/CFAR is not planned - decision gate in G11.
 - [X] K1 - profile the host (G2), `offline/profile_cpi.py` (2026-09-28, fabric /8,
       sawtooth): `process_cpi` ~25 ms whatever the fake-target count K (CFAR 19 ms of
       it); `apply_if` ~2.5 ms per fake target (7 ms at K 0, 131 at K 50), so ~30 CPI/s
-      at K 0 and 6 at K 50. Triangle + MTI doubles both. All optional:
-      - [ ] `apply_if`: per-chirp slow phasor x fast phasor, or one matmul for all targets.
-      - [ ] CFAR: 19x19 `convolve` -> two `uniform_filter` box sums (outer - guard).
-      - [ ] Time the GUI slot (`det_table` builds 4 `QTableWidgetItem`s per detection).
+      at K 0 and 6 at K 50. Triangle + MTI doubles both. The optionals moved to the
+      host DSP pass (Open small items); the GUI slot was dropped (2026-10-30: ~5 ms
+      at 20 detections, in the GUI thread).
 - [X] K2 - recorder + replay (G3, 2026-09-29): `online/recorder.py`, `offline/replay.py`
       (`--check` exact on a 60 s loopback session), `offline/playback.py`.
 - [ ] K3 - tracker in (r, v) (G4): CV Kalman, GNN, M-of-N; tests (a)-(e), live
@@ -146,7 +193,9 @@ Fabric FFT/CFAR is not planned - decision gate in G11.
             at 30 deg). Minus: the IF is conj(RX), the same flip as the Doppler sign.
             The continuous Doppler already gives B its motion phase; add nothing for it.
       
-      - [ ] 3. `process_cpi` with `TDM_EN`: B rows through the same steps as A (fast-
+      - [x] 3. Done 2026-10-30: `dsp.tdm_phasor` + `dsp.estimate_angle`, fields
+            `ANGLE_PSI0_DEG` / `TDM_TX_ANT_SEP_M`, tested in step 4. Spec as built:
+            `process_cpi` with `TDM_EN`: B rows through the same steps as A (fast-
             time mean, MTI, window, FFT, close-in mask). CFAR and the displayed map
             on `|X_A|^2 + |X_B|^2` (`cfar_ca_2d` squares its input: pass the
             root-sum-square). Per detection, at its cell:
@@ -156,8 +205,8 @@ Fabric FFT/CFAR is not planned - decision gate in G11.
             `k_d` = signed Doppler bin + sub-bin offset; `pi * k_d / CHIRP_REPS` is
             `2*pi*f_d*T_rep/2`, one A-to-B gap, so it holds with triangle too.
             Sub-bin offset from a parabola on **log** power with circular neighbours
-            (`subbin_refine` is linear and skips edge rows: up to 0.08 bin, ~0.04
-            deg; r and v keep it, so replays stay exact). Then wrap `k_d` into
+            (`subbin_refine` was linear then; since Host DSP pass steps 2-3 it is
+            log and circular too). Then wrap `k_d` into
             [-REPS/2, REPS/2), else a target at +63.8 bins reads -64.2 and psi is
             off by pi. Reference: `scripts/angle/tdm_exercise.py` `estimate_theta`.
             `lambda` from `CHIRP_FC_HZ`. New config fields `ANGLE_PSI0_DEG` (psi0, a
@@ -195,27 +244,48 @@ Fabric FFT/CFAR is not planned - decision gate in G11.
             `test_tdm_triangle_angle`, `test_tdm_triangle_down_only_angle`;
             `profile_cpi.py --triangle --tdm` mirrors it.
       
-      - [ ] 6. GUI: x-y scatter next to the RD maps, theta in the detections table.
+      - [x] 6. GUI: x-y scatter next to the RD maps, theta in the detections table.
             Loopback fake targets at +-30 deg in the live app.
-            GUI done 2026-10-30 (bird's-eye plot + "Azimuth [deg]" column, TDM only,
-            checked offscreen on `process_cpi` output); the live-app check is open.
+            Done 2026-10-30: Sector-PPI (rings, spoke angles, range ticks; follows
+            `MAX_RANGE`) + "Azimuth [deg]" column, TDM only. Live loopback passed:
+            sign, Doppler term at +-20 m/s, triangle, `ANGLE_PSI0_DEG` shift,
+            record + `replay --check`.
       
-      - [ ] 7. Cable test (no Doppler, no antennas). TX1 -> switch RFC; RF1, RF2 ->
-            two cables -> tee -> RX1, no pad. TX -30 dB (`SDR_TX_GAIN_MAX_DB` -20),
-            fabric /8, `TDM_EN`, MTI off (the path is static). `FABRIC_DECHIRP_DELAY`
-            ~41 moves the path out of the close-in mask to ~53 m. The board leak
-            moves with it (same bin), ~30 dB under and common to A and B: a static
-            offset inside psi0. Record every run (K2). This psi0 is the cable's, not
-            the antennas' (K9 turntable).
-            a. VNA prediction: S21 RFC -> tee output, switch jumper on A, then B:
-               `psi_pred = -(angle(S21_B) - angle(S21_A))` (minus: conj(RX)).
+      - [ ] 7. Cable test (no Doppler, no antennas). TX1 -> switch 1 RFC; RF1, RF2 ->
+            two cables -> switch 2 RF1, RF2; switch 2 RFC -> RX1, no pad. Switch 2
+            runs in reverse (passive FETs, reciprocal) as the combiner. Both V_CTL on
+            J30 pin 3 (`tx_sel`), RF1 to RF1 (both units same polarity, K7). VDD: 2 x
+            ~60 mA from J30 pin 1, check the rail first; a separate supply must be up
+            before `tx_sel` drives (V_CTL <= VDD + 1 V). TX -30 dB
+            (`SDR_TX_GAIN_MAX_DB` -20), fabric /8, `TDM_EN`, MTI off (the path is
+            static). `FABRIC_DECHIRP_DELAY` ~41 moves the path out of the close-in
+            mask to ~53 m. The board leak moves with it (same bin), ~30 dB under and
+            common to A and B: a static offset inside psi0. The off arm passes two
+            isolations (~-80 dB): no switch-leak bias. Record every run (K2). This
+            psi0 is the cable's, not the antennas' (K9 turntable).
+            Why not a tee or a Wilkinson (2026-10-31): the radar-vs-VNA psi gap comes
+            from the E200 ports bouncing against the switch modules' poor match (-7
+            to -10 dB), not from the combiner. Monte Carlo with the K7 module numbers
+            and E200 ports at |G| 0.3 (a guess), rms / 95 %: tee 4.2 / 8.0 deg,
+            Wilkinson 3.2 / 6.2, second switch 4.4 / 8.4.
+            0. VNA S11 of the E200 RX1 and TX1 ports, board powered (RX gain as in
+               the test, TX at -90 dB): replaces the |G| 0.3 guess; the gap scales
+               with it, each port about half.
+            a. VNA prediction: S21 switch 1 RFC -> switch 2 RFC, both jumpers on A,
+               then both on B: `psi_pred = -(angle(S21_B) - angle(S21_A))` (minus:
+               conj(RX)).
             b. Radar, `ANGLE_PSI0_DEG` 0: psi of the path over >= 100 CPIs. Mean vs
-               psi_pred (within a few deg: the E200 ports are not 50 ohm), std =
+               psi_pred within ~+-8 deg (the E200 ports are not 50 ohm), std =
                stability. Then set `ANGLE_PSI0_DEG` to the mean psi, so theta reads 0.
             c. An SMA adapter into arm B, repeat a and b: both move by the same step
-               with the same sign. Expected: a longer B path raises psi and lowers
+               with the same sign. VNA the adapter first: its step must sit well away
+               from 0 and 180 deg (1 cm of PTFE ~ 100 deg at 5.8 GHz), else the sign
+               test means nothing. Expected: a longer B path raises psi and lowers
                theta (target on A's side). Write the sign into `CLAUDE.md` next to
                the Doppler sign.
+            Before 7: switch-only S21 (RFC -> RF1, RF2) on the VNA; TX1 -> >= 30 dB
+            pad -> RX1 with `TDM_EN` (same delay trick): A and B share the path, so
+            psi ~0 and its std is the noise floor.
 - [ ] K11 - tracker in (x, y) + field day 2 (G10.2): EKF on (r, theta, v_r);
       patches on air, one change at a time.
 
