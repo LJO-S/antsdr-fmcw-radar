@@ -1,5 +1,5 @@
 import numpy as np
-from scipy.ndimage import convolve
+from scipy.ndimage import correlate1d
 from scipy.ndimage import maximum_filter
 from scipy.ndimage import binary_dilation
 from scipy.signal import stft
@@ -242,32 +242,37 @@ def target_dicts(a_kind, a_r, a_v, a_theta=None):
 
 
 # ===================================================================================
+def box_sum(a_x: np.ndarray, a_size: int) -> np.ndarray:
+    """
+    Sum over the a_size x a_size cells centred on each cell, edges "nearest".
+    Two 1-D passes in float64, each output summed straight from its window (no
+    running sum), so a strong peak's rounding error stays inside its window.
+    """
+    ones = np.ones(a_size)
+    rows = correlate1d(a_x, ones, axis=0, mode="nearest", output=np.float64)
+    return correlate1d(rows, ones, axis=1, mode="nearest", output=np.float64)
+
+
+# ===================================================================================
 def cfar_ca_2d(
     a_rd_matrix: np.ndarray,
     a_config: RadarConfig,
     a_apply_nms: bool = True,
 ):
 
-    # Implement kernel
-    dim_1d = 1 + 2 * a_config.CFAR_GUARD_LEN + 2 * a_config.CFAR_TRAINING_LEN
-    n_guard = (2 * a_config.CFAR_GUARD_LEN + 1) ** 2
-    n_training = dim_1d**2 - n_guard
-    cfar_kernel_2d = np.ones((dim_1d, dim_1d), dtype=float) / n_training
-    cfar_kernel_2d[
-        a_config.CFAR_TRAINING_LEN : a_config.CFAR_TRAINING_LEN
-        + (2 * a_config.CFAR_GUARD_LEN)
-        + 1,
-        a_config.CFAR_TRAINING_LEN : a_config.CFAR_TRAINING_LEN
-        + (2 * a_config.CFAR_GUARD_LEN)
-        + 1,
-    ] = 0.0
+    # Training cells = outer box minus the guard box (the CUT sits in the guard)
+    outer = 1 + 2 * a_config.CFAR_GUARD_LEN + 2 * a_config.CFAR_TRAINING_LEN
+    guard = 1 + 2 * a_config.CFAR_GUARD_LEN
+    n_training = outer**2 - guard**2
 
     # Get real power
     rd_matrix_power = np.abs(a_rd_matrix) ** 2
-    # Convolve
-    noise_level = convolve(
-        input=rd_matrix_power, weights=cfar_kernel_2d, mode="nearest"
-    )
+    # Mean of the training cells. The subtraction must stay in float64 (in float32
+    # it cancels next to a strong target); cast back like the convolve it replaced.
+    noise_level = (
+        (box_sum(rd_matrix_power, outer) - box_sum(rd_matrix_power, guard))
+        / n_training
+    ).astype(rd_matrix_power.dtype)
 
     # Threshold scale factor: T=a*P
     alpha = n_training * (a_config.CFAR_PFA ** (-1 / n_training) - 1)
