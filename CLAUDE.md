@@ -11,20 +11,20 @@ FMCW radar at **5.8 GHz** on an ANTSDR E200 (Zynq + AD9361). Two tracks run in p
 **Terminology:** *offline* = simulation / soft model. *online* = real-time hardware.
 
 **`TODO.md` is the roadmap and the authority on status** — read it before planning work.
-As of 2026-08 it tracks **unfinished work only**: closed parts are one line each and their
+It tracks **unfinished work only**: closed parts are one line each and their
 design conclusions live *here* instead. When a part closes, summarize it there and move
 anything worth keeping into this file — don't let narrative grow back in `TODO.md`.
-Short version (2026-09): Parts A–G done (offline model, online app, GUI, target sim, DSP
+Short version: Parts A–G done (offline model, online app, GUI, target sim, DSP
 hardening, cable loopback, antenna field test), with a handful of small open items still listed.
 **Part I (HDL offload) is done** in digital loopback, only I5b (the ADI FIR reclaim) deferred:
-fabric NCO + fabric dechirp (I4, 2026-09-10), the app drives the fabric through
+fabric NCO + fabric dechirp (I4), the app drives the fabric through
 `online/fabric_ctl.py` (I4b), fake targets work on the IF stream (I4c), and **I5, decimation
-to IF rate, closed 2026-09-26** (MAGIC FMC4; spec
+to IF rate** (MAGIC FMC4; spec
 `docs/archive/AntSDR_Phase5_IF_Decimation_Guide.md`). I6 closed with it (the fabric path
 needs no frame sync). I5 design: operational range 800 m at the steepest chirp
 (56 MHz / 100 us); one fixed divide-by-8 as own HDL inside
 `fmcw_core` - **three cascaded decimate-by-2 halfband stages** (7 / 11 / 27 taps, 2 / 3 / 7
-multiplies per channel; 24 DSPs for I+Q since the folded FIR, 2026-10), each restarting its decimation phase on the
+multiplies per channel; 24 DSPs for I+Q with the folded FIR), each restarting its decimation phase on the
 chirp-leg tag, so every chirp parameter stays free and each leg yields `SWEEP_LEN // 8` IF
 samples; 0.03 dB droop, -51.4 dB worst alias. `OP_RANGE_FACTOR` is replaced by `MAX_RANGE_M`
 plus a derived effective range. Two routes were rejected and should not be re-proposed: the
@@ -34,12 +34,12 @@ uniform decimation grid, so a per-leg phase restart must also clear its integrat
 state - miss that and the output runs away past the 24-bit range, and it only shows when
 `SWEEP_LEN mod 4 != 0`; plus 2.2 dB of droop). Reclaiming the two unused ADI FIR blocks
 (44 DSPs) is deferred until the FFT work needs DSPs.
-Part G (antennas, first radiated RF) passed in software mode in 2026-08. **Next: Part K**
+Part G (antennas, first radiated RF) passed in software mode. **Next: Part K**
 (`docs/AntSDR_Phase6_Tracking_Antennas_Angle_Guide.md`): software tracking, an RF bench lane
 (VNA, soldering), own patch antennas, **2T1R angle through a fabric-switched TX** (time-division
 MIMO), and fabric mode on real RF on the first field day. Fabric FFT/CFAR sits behind a decision
 gate (guide Section 11). Part H (PA/LNA/BPF) deferred. Part J (synthetic wideband) blocks
-nothing. K0 (2R2T boot check) passed 2026-09-28, but **2R2T caps FS at 30.72 MSPS** on this
+nothing. K0 (2R2T boot check) passed, but **2R2T caps FS at 30.72 MSPS** on this
 board (~6 m bins, see "2R2T mode" below), which is why angle moved from 2R1T to 2T1R. The user's
 goal is to learn RF engineering, so Part K favours hands-on RF work over more FPGA work.
 
@@ -107,7 +107,7 @@ vhdl_ls.toml       # rust_hdl LSP config, points at firmware/.../projects/e200
 pypkgs.txt         # numpy, matplotlib, pylibiio, scipy, PySide6, pyqtgraph, vunit_hdl
 ```
 
-`src/python/README.md` is a short map of the package (rewritten 2026-09-30); this file stays
+`src/python/README.md` is a short map of the package; this file stays
 the authority on conventions. `src/python/run_tests.py` runs every `*/test_*.py` suite as
 `python -m`, one process each, failing on a non-zero exit.
 
@@ -139,7 +139,7 @@ not `.venv`: see `scripts/antenna_design/README.md`.
   triangle-aware via `T_rep`), and so are the I5 rate properties `FS_IF`, `SWEEP_LEN`
   (rounded down to a multiple of 8 when decimating), `T_EFF = SWEEP_LEN / FS`, `N_IF`,
   `EFFECTIVE_RANGE`, with `MAX_RANGE = min(MAX_RANGE_M, EFFECTIVE_RANGE)`. Range and velocity
-  axes (incl. `MAX_VELOCITY`, since 2026-10-31) use `T_EFF`, the real chirp period, never
+  axes (incl. `MAX_VELOCITY`) use `T_EFF`, the real chirp period, never
   `CHIRP_DUR_S` — do NOT turn them back into class attributes; RE-CONFIGURE
   builds fresh instances. The parameter banner is `describe()`, called by the entry points,
   never at import. Configs are **immutable by convention**: never mutate a live instance,
@@ -209,7 +209,7 @@ GUI spectrogram needs it).
 | SDR_RX_GAIN_MODE / SDR_RX_GAIN_DB | manual / 40.0 |
 | SDR_RX_MARGIN_PERIODS | 1 (software frame sync needs >= 1; `start()` refuses 0 there) |
 | SDR_LOOPBACK_EN / SDR_LOOPBACK_NOISE_SNR_DB | True / 1.0 |
-| FABRIC_DECHIRP_EN / FABRIC_DECHIRP_DELAY | False / **61** (pure path delay, non-loopback). **34** is the digital-loopback constant (measured 2026-09-10), kept commented out in `config.py` - swap when `SDR_LOOPBACK_EN` flips. Both are at 56.6 MSPS: the delay is in samples and scales with FS (loopback **20** at 30.72 MSPS) |
+| FABRIC_DECHIRP_EN / FABRIC_DECHIRP_DELAY | False / **61** (pure path delay, non-loopback). **34** is the digital-loopback constant, kept commented out in `config.py` - swap when `SDR_LOOPBACK_EN` flips. Both are at 56.6 MSPS: the delay is in samples and scales with FS (loopback **20** at 30.72 MSPS) |
 | FABRIC_DECIM_EN / FABRIC_FRAME_TRIM | True / 0 (only active with `FABRIC_DECHIRP_EN`; ratio fixed at `FABRIC_DECIMATE_RATIO` = 8 → FS_IF 7.075 MSPS, SWEEP_LEN 5656, N_IF 707) |
 
 Noise figure is a `run_simulation` argument (`a_noise_figure_db`), not a config field.
@@ -228,7 +228,7 @@ velocity = −v_true. The minus matches the stop-and-hop model where slow-time f
 ### dtype discipline
 numpy silently upcasts complex64 to complex128 (`np.exp` phasors, `randn` noise), so
 `apply_doppler_shift` / `apply_noise` cast back to the input dtype. Keep that.
-**Never build a full-length `np.exp` phasor** (2026-10-31): a Doppler phase splits into a
+**Never build a full-length `np.exp` phasor**: a Doppler phase splits into a
 per-block and a per-sample part (`exp(a+b) = exp(a)·exp(b)`), so `apply_doppler_shift` uses
 two short exps and an outer product (1024-sample blocks), and `apply_if` folds beat, Doppler
 and TDM phase into one per-row x per-sample outer product. Same numbers to float32 rounding,
@@ -264,7 +264,7 @@ it drops valid pairings whose up cell isn't the avg_pwr local max. `both` range/
 cross-pairing distinct targets.
 
 ### Sub-bin interpolation
-Parabolic fit on **log power** (Gaussian interpolation, since 2026-10-31):
+Parabolic fit on **log power** (Gaussian interpolation):
 `δ = 0.5*(l_m - l_p) / (l_m + l_p - 2*l_0)`, `l = ln(power)`. Valid only when denominator < 0
 (concave-down peak). Applied along each axis independently after CFAR+NMS. With the Blackman
 window it reads within 0.007 bin; on linear power it read up to 0.09 bin low (S-shaped bias).
@@ -309,14 +309,14 @@ gain ≈ +59 dB at 128 reps on ±1-normalized RX).
 ```
 
 **CA-CFAR noise estimate** = (19x19 box sum - 9x9 guard box sum) / 280 via `dsp.box_sum`:
-direct separable `correlate1d` sums in float64, cast back to float32 (2026-10-30, replaced a
+direct separable `correlate1d` sums in float64, cast back to float32 (replaced a
 19x19 `convolve`, ~8x faster, detections identical). Do not swap in `uniform_filter`: its
 running sum carries a strong peak's rounding error along the whole row/column (0.4 % noise
 error at 145 dB peak/floor, false alarms at ~165 dB) and spreads a NaN to the map's end. Do
 not do the subtraction in float32: it cancels next to a strong target (false detections in
 its guard ring).
 
-**The Doppler axis (axis 0) is circular, the range axis is not** (2026-10-31). `box_sum`
+**The Doppler axis (axis 0) is circular, the range axis is not**. `box_sum`
 (axis-0 pass), `nms` (`mode=("wrap", "nearest")`), `subbin_refine` rows and the triangle
 pairing dilation (`dilate_doppler`) all wrap it, and `wrap_velocity` folds a refined v back
 into [-vmax, vmax). With "nearest" edges a target at +-vmax was reported twice (rows
@@ -379,8 +379,8 @@ threshold.
   `fabric_up` must catch, `disable()`, then re-raise - otherwise `fabric_on` stays False on a
   live fabric. No ssh inside the capture loop: enable costs ~2 round trips, only at
   start/reconfigure.
-- TX gain is **clamped** in `start()` to `SDR_TX_GAIN_MAX_DB` (warns, does not raise). Since
-  2026-09-13 the clamp is **0.0 dB**, i.e. full TX power (~+6.5 dBm at 5.8 GHz) is reachable:
+- TX gain is **clamped** in `start()` to `SDR_TX_GAIN_MAX_DB` (warns, does not raise). The
+  clamp is **0.0 dB**, i.e. full TX power (~+6.5 dBm at 5.8 GHz) is reachable:
   with physical attenuators on the bench the software ceiling was only getting in the way.
   The consequence is that **the EIRP guard is now the operator and the pads, not the code** -
   read the regulatory section before radiating, and set `SDR_TX_GAIN_DB` by hand.
@@ -390,8 +390,7 @@ threshold.
 
 ## libiio / `pylibiio` API notes (online path)
 
-Verified against the v0.x binding source (vendored copy reviewed 2026-07; the pip package's
-`iio.py`). **v0.x API only — libiio v1.x is incompatible (blocks/streams), don't upgrade.**
+Verified against the v0.x binding source (the pip package's `iio.py`). **v0.x API only — libiio v1.x is incompatible (blocks/streams), don't upgrade.**
 
 - `iio.Buffer(dev, samples_count)`: `samples_count` is in device **samples** (one I/Q pair
   = 4 bytes with both int16 channels enabled), not int16 words. Byte size is computed from
@@ -409,8 +408,7 @@ Verified against the v0.x binding source (vendored copy reviewed 2026-07; the pi
   second (the default /8 sawtooth hits it: 129 x 707 = 91203, seen as 1 mismatch per block in
   the ramp check). TX, cyclic: an odd chirp loses its last sample every loop, so TX repeats
   every P-1 (software sawtooth with an odd `SWEEP_LEN`, e.g. T = 99.99 us). `sdr.start()`
-  rounds RX up to even and writes two copies of an odd chirp. Both verified on hardware
-  2026-10.
+  rounds RX up to even and writes two copies of an odd chirp. Both verified on hardware.
 - No explicit buffer destroy; the kernel DMA buffer is freed on GC (`__del__`). To
   recreate (restart), `cancel()` + drop references first, else EBUSY (one buffer/device).
 - `find_device()` / `find_channel()` return `None` silently on a bad name — guard.
@@ -419,7 +417,7 @@ Verified against the v0.x binding source (vendored copy reviewed 2026-07; the pi
 - `dev.set_kernel_buffers_count(n)` (default 4) trades RX staleness vs dropped data.
 - Throughput: RX buffer = `(CHIRP_REPS + margin) * N_IF * 4 B` = 2.9 MB per CPI at 128 reps
   at full rate (software or fabric /1), a few frames per second over ~118 MB/s GbE. Fabric /8
-  cuts it to 365 kB: measured **up to ~30 CPIs/s in the GUI** (I5 exit, 2026-09-26), falling
+  cuts it to 365 kB: measured **up to ~30 CPIs/s in the GUI** (I5 exit), falling
   as detections increase, so the bound is host processing, not the link.
 
 ## Firmware / HDL track
@@ -446,12 +444,12 @@ antsdr-fmcw-radar -> firmware/ -> plutosdr-fw/ -> hdl/ (+ linux/, u-boot, buildr
   `Makefile` `M_DEPS` is manual and must list every source *and* init file, or `make` will not
   notice an edit. AXI-Lite slave at **0x43C10000**; MAGIC bumps on every register-map change
   (`RXT1` -> `FMC1` -> `FMC3` -> `FMC4` -> `FMC5`), mirrored in `common/fabric_regs.py` and must
-  match `C_MAGIC` in the VHDL. **FMC5 `0x464D4335` is what is on hardware** (K7, 2026-10-19).
+  match `C_MAGIC` in the VHDL. **FMC5 `0x464D4335` is what is on hardware** (K7).
 - **The Vivado IP cache can ship a stale `fmcw_core`.** The ADI scripts enable a shared cache
   at `hdl/ipcache` (OOC synthesis is on by default), which `make clean` / `clean-all` never
   touch. `fmcw_core` is a BD module reference, and its cache key follows its generics and
-  `fmcw_core.vhd` only, not the files below it. The 2026-09-28 build rebuilt the project but
-  reused the 2026-09-23 netlist, which predated the halfband DSP fix. Since 2026-10-04,
+  `fmcw_core.vhd` only, not the files below it. One build rebuilt the project but
+  reused an older netlist from before the halfband DSP fix. Now
   `system_bd.tcl` md5s every `src/**/*.vhd` and `*.txt` into the unused generic `G_SRC_HASH`
   (logged as `fmcw_core G_SRC_HASH = ...`), so any edit gets a new key. After a build, check
   that `e200.runs/system_fmcw_core_0_0_synth_1/system_fmcw_core_0_0.vds` does *not* say
@@ -466,7 +464,7 @@ antsdr-fmcw-radar -> firmware/ -> plutosdr-fw/ -> hdl/ (+ linux/, u-boot, buildr
 - Cutover to the fabric path waited for Parts F+G on real RF; both passed in software mode,
   so it is unblocked. The rule stands: never debug new RF and new HDL at the same time.
 
-### fmcw_core register map (FMC5) - hardware-proven (I4 2026-09-10, I5 2026-09-26, K7 2026-10-19)
+### fmcw_core register map (FMC5) - hardware-proven (I4, I5, K7)
 
 | Offset | Name | Access | Function |
 |---|---|---|---|
@@ -514,7 +512,7 @@ Rules learned on hardware (all of them cost a hang or a wrong map once):
   register later it opened a whole IF sample late at /8). That is only safe because
   `mixer_dechirp` gates its tag with its valid - ungated, the tag rides `delay_line`'s held
   valid level and rises a cycle early. Measured: with an even RX buffer the capture starts on
-  the tagged sample, trim 0 on every `start()` (2R2T 2026-09-28, folded FIR 2026-10). The
+  the tagged sample, trim 0 on every `start()` (2R2T, folded FIR). The
   0-or-1 trim seen in I5 step 8 came with the odd RX buffer (see the libiio notes) and went
   away with it. `FABRIC_FRAME_TRIM` stays 0. Dechirp alignment is unaffected (DECHIRP_DELAY
   is pre-DMA).
@@ -528,7 +526,7 @@ Rules learned on hardware (all of them cost a hang or a wrong map once):
   differs (loopback taps inside the AD9361 chain): 61 on cable, still to be confirmed with
   the antennas (Part G ran in software mode).
 
-### Stock RX FIR decimator - how it is controlled (investigated 2026-09-10)
+### Stock RX FIR decimator - how it is controlled
 
 `rx_fir_decimator` is ADI's `ad_add_decimation_filter` hierarchy (Xilinx `fir_compiler`,
 fixed decimate-by-8, 128-tap `coefile_int.coe`) sitting **upstream** of `fmcw_core` in the RX
@@ -550,7 +548,7 @@ DSPs) is deferred until the FFT work needs DSPs (guide 4.2 has the reviewed reci
 property is removed, the lpc `sampling_frequency` write is **not** rejected: it falls through
 to `clk_set_rate(RX_SAMPL_CLK)` on the AD9361.
 
-### I5 decimation - conclusions (closed 2026-09-26)
+### I5 decimation - conclusions
 
 Spec: `docs/archive/AntSDR_Phase5_IF_Decimation_Guide.md`. What outlives the part:
 
@@ -575,8 +573,8 @@ Spec: `docs/archive/AntSDR_Phase5_IF_Decimation_Guide.md`. What outlives the par
   lane one stage late is exactly the "samples per leg drifting" symptom. Any leg of N inputs
   yields `N // 8` outputs.
 - **The decimator costs 24 DSPs since the folded FIR** (`hdl` `feature/folded-fir`, on
-  hardware 2026-10; totals 99/220 DSPs = 27 core + 28 `axi_ad9361` + 44 ADI FIRs). The first
-  build (2026-09-23) cost 48, twice the design: `halfband_decimate_stage` is a transposed FIR
+  hardware; totals 99/220 DSPs = 27 core + 28 `axi_ad9361` + 44 ADI FIRs). The first
+  build cost 48, twice the design: `halfband_decimate_stage` is a transposed FIR
   that folds *after* the multiplier - each of the U/2 products feeds two chain adders (`tap`,
   `high - tap`). A DSP48E1 has no M output and one post-adder, so Vivado mapped every chain
   add+register onto its own slice (P = PCIN + M cascade) and duplicated the multiplier: U
@@ -644,7 +642,7 @@ triangle without a hang; up to ~30 CPIs/s in the GUI, dropping as detections inc
   an absolute level), times a Doppler phasor `exp(+2j*pi*f_d*t)` - the **opposite** sign of
   `dsp.apply_doppler_shift`, which is calibrated for the pre-mix RX domain where
   `mix_signal`'s `conj(RX)` flips it; `apply_if` writes into the IF domain and must flip it
-  itself (found on hardware 2026-09-13: unflipped gave v = -v_true). Since 2026-10-31 it is
+  itself (found on hardware: unflipped gave v = -v_true). It is
   built inline as one outer product per target (no `apply_doppler_shift` call; blocks must
   hold whole chirp legs). Fast time runs at `FS_IF` over `N_IF` samples, and
   targets with `|f_b| >= FS_IF/2` are skipped (logged once). Kinematics shared with `apply()`
@@ -656,7 +654,7 @@ triangle without a hang; up to ~30 CPIs/s in the GUI, dropping as detections inc
 - `sdr.start()` pins the `cf-ad9361-lpc` channel `sampling_frequency` to FS (I4b-2) so the
   stock `rx_fir_decimator` stays at factor 1.
 
-### 2R2T mode (K0, 2026-09-28)
+### 2R2T mode (K0)
 
 - **The switch is one dtb property.** `zynq-e200.dts` already sets `adi,2rx-2tx-mode-enable`
   and the ad9361 DDS compatible; only the phy's `compatible = "adi,ad9364"` keeps 1R1T, because
@@ -685,13 +683,13 @@ triangle without a hang; up to ~30 CPIs/s in the GUI, dropping as detections inc
   a real signal is still open (not needed for the 2T1R plan).
 - **RX2 and TX2 are IPEX (U.FL) connectors**, not SMA (MicroPhase docs: "SMA:1T1R IPEX:1T1R").
 
-### E200 GPIO header J30 (verified 2026-09-28, schematic `docs/datasheets/ANT-E200_Public.pdf` p.10)
+### E200 GPIO header J30 (schematic `docs/datasheets/ANT-E200_Public.pdf` p.10)
 
 10-pin **2.0 mm pitch** footprint, **not fitted** on this board: pin 1 VCC_3V3, pin 2 GND, pins 3-10
 GPIO_00-07 (ESD diodes). HDL `GPIOB[7:0]` (bank 13, LVCMOS33, XDC order V5, U7, V7, T9, U10,
 Y7, Y6, Y9), routed to the PS through `ad_iobuf` as EMIO 35-42 = Linux sysfs gpio 995-1002.
 Upstream MicroPhase constraints reuse Y9/Y6 as a UART; this project maps all eight to `GPIOB`.
-Pin map measured 2026-10-13 (multimeter, sysfs): all eight match the schematic.
+Pin map measured (multimeter, sysfs): all eight match the schematic.
 Since FMC5, pin 3 (`GPIOB[0]`) is `tx_sel` from `fmcw_core` (0 = A, 1 = B; gpio 995 reads it
 back). The switch module draws ~60 mA: power it from pin 1, not a GPIO pin.
 
@@ -730,12 +728,12 @@ Typical values, Table 1 of the AD9361 datasheet (nearest characterized band is 5
   `quadrature_tracking_en`. Defaults are right. **Quadrature error shows up as a mirrored ghost
   target in the RD map** — recognize it before chasing it as a DSP bug.
 
-### Measured on the bench (K4 VNA, 2026-10-10)
+### Measured on the bench (K4 VNA)
 
 Full table: `hardware/bench_measurements.md`. LiteVNA-64, SOL on port 1, thru = port-2 test
 cable, 5.0-6.3 GHz, 201 points.
 
-## Regulatory constraints (Sweden, PTS) — researched 2026-08
+## Regulatory constraints (Sweden, PTS)
 
 Applies the moment anything is radiated. Cable/attenuator work (Part F) is unregulated.
 
@@ -781,7 +779,7 @@ processing gain turns into ~57 dB / ~32 dB post-processing SNR. **Antennas befor
 NF buys SNR linearly. The real ceiling on a monostatic 100%-duty FMCW system is TX/RX isolation,
 not the PA and not the law.
 
-**Confirmed in the Part G field test** (2026-08, software mode, every setting at its default,
+**Confirmed in the Part G field test** (software mode, every setting at its default,
 no PA): cars, people on foot and bikes detected, with the TX sector and RX grid ~1.5 m apart.
 That spacing was enough isolation; no septum was needed. Only video was recorded, no IQ.
 
