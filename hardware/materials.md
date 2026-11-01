@@ -119,7 +119,7 @@ Sourcing (2026-07: Amazon prices for these are not competitive - skip it):
 ### Tx antenna: sector, ~19 dBi 120 deg (~600-1000 SEK)
 - **BOUGHT: Ubiquiti AM-5G16-120** (not the 19 dBi): 16 dBi, 5.10-5.85 GHz, azimuth
   120 deg (V) / 137 deg (H), elevation 8 deg, 4 deg electrical downtilt. SRD port limit
-  with it: see `CLAUDE.md` "Regulatory constraints".
+  with it: see `CLAUDE.md` "RF safety".
 - Planned: Ubiquiti AM-5G19-120: used ~$100 / EUR 89 on eBay, new $129-139
   ([eBay listings](https://www.ebay.com/itm/284762727987),
   [UI store](https://store.ui.com/us/en/products/am-5g2)). Plentiful used WISP

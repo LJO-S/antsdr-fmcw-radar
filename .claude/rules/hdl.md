@@ -93,7 +93,7 @@ model the fabric output is verified against sample-for-sample. Specs: `docs/arch
   because `mixer_dechirp` gates its tag with its valid; ungated, the tag rides `delay_line`'s
   held valid level and rises a cycle early. Result: with an even RX buffer the capture starts on
   the tagged sample, trim 0 on every `start()` (measured in 2R2T and on the folded FIR); the
-  0-or-1 trim seen in I5 came from the odd buffer. `FABRIC_FRAME_TRIM` stays 0. DECHIRP_DELAY
+  0-or-1 trim seen in I5 came from the odd buffer (even DMA buffers: `.claude/rules/sdr.md`). `FABRIC_FRAME_TRIM` stays 0. DECHIRP_DELAY
   is pre-DMA, so dechirp alignment is unaffected.
 - One sync per `refill()`: the DMA holds off until the first sync-tagged beat, then free-runs
   for the programmed length.

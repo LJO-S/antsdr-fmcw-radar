@@ -53,7 +53,7 @@ from online.fabric_ctl import SshDevmem, FabricCtl
 from online.sdr import AntSDR
 from online.target_sim import TargetSim
 
-# Digital-loopback TX->RX latency (measured 2026-09-10, CLAUDE.md). The config
+# Digital-loopback TX->RX latency (.claude/rules/hdl.md). The config
 # default (61) is the cable value.
 LOOPBACK_DECHIRP_DELAY = 34
 

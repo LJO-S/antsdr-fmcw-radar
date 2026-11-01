@@ -84,7 +84,7 @@ paths:
   DMA transfer start on a chirp boundary), slices `rx[TRIM : TRIM + rows * N_IF]`
   (`FABRIC_FRAME_TRIM`) and runs `TargetSim.apply_if` on it; `process_rx_data` skips
   `mix_signal`. `sdr.start()` sizes the RX buffer from `N_IF` (rounded up to an even sample
-  count, see the libiio notes) and warns if the phy's
+  count, see `.claude/rules/sdr.md`) and warns if the phy's
   `sampling_frequency` reads back different from FS.
 - Signals tab in fabric mode: the RX spectrogram *is* the IF, so the worker emits `if_spec =
   None` and the GUI hides the IF plot and relabels the remaining one. The Configuration tab's

@@ -2,7 +2,7 @@
 
 Guide Sections 5.2 (K4) and 8.2 (K7). For each row: prediction first (datasheet or hand
 calculation), then measure, then explain the difference. K4 closed 2026-10-10; conclusions in
-`CLAUDE.md` ("Measured on the bench (K4 VNA)").
+`docs/rf_and_regulatory.md` ("Measured on the bench (K4 VNA)").
 
 ## Setup
 

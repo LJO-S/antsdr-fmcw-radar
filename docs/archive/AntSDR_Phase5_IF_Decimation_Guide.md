@@ -5,7 +5,7 @@
 > 7.5 up to ~30 fps, falling as detections increase. As built, against this spec:
 > 48 DSPs, not 24 (2.2); the host flag is the bool `FABRIC_DECIM_EN` (Section 6);
 > STATUS bit1 skipped (3.3); the standalone `tb_halfband_decimate` was not built
-> (3.4). Conclusions live in `CLAUDE.md`; Section 4.2 is the deferred reclaim.
+> (3.4). Conclusions live in `.claude/rules/hdl.md`; Section 4.2 is the deferred reclaim.
 
 Follows Phase 4 (archived). Assumes I4 and I4b are done: fabric NCO transmits,
 `mixer_dechirp` runs inside `fmcw_core`, IF_SEL=1 puts the IF on the capture path,
@@ -14,7 +14,7 @@ and `fabric_ctl.py` brings the core up from the app. MAGIC is FMC3.
 
 Same contract: this guide specifies, you write the code. Exact text where a typo
 costs a synthesis run. The register map, sequencing rules and hardware gotchas
-from Phase 4 live in `CLAUDE.md` ("Firmware / HDL track"); this guide only states
+from Phase 4 live in `.claude/rules/hdl.md`; this guide only states
 what changes.
 
 ## 1. What we are doing and why
@@ -674,7 +674,7 @@ beyond the effective range disappears, one inside stays.
 **7.5 Exit.** CPIs per second in the GUI for a minute at ratio 8. Expect the
 worker bound by `process_cpi` + Qt, not `refill()`; above ~10 fps is the exit.
 Record the number in `TODO.md`. Then gitlink bump, I5 to one line, conclusions
-into `CLAUDE.md`. I5 closes here; Section 4.2's reclaim is deferred.
+into `CLAUDE.md` (now `.claude/rules/hdl.md`). I5 closes here; Section 4.2's reclaim is deferred.
 
 ---
 

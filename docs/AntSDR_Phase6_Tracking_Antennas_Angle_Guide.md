@@ -6,7 +6,7 @@ fps); Part G passed in software mode with the COTS antennas (sector + grid, ~1.5
 apart, all defaults). The fabric path has not yet seen real RF.
 
 Same contract as before: this guide specifies, you write the code. Register map,
-sequencing rules and conventions live in `CLAUDE.md`; this guide only states what
+sequencing rules and conventions live in `CLAUDE.md` and `.claude/rules/`; this guide only states what
 is new.
 
 Rewritten 2026-09-28. Angle now comes from two switched TX antennas (2T1R), not two
@@ -811,7 +811,7 @@ To buy, in the order the steps need it:
 
 ## Appendix B - 2R2T fallback (K0 results, 2026-09-28)
 
-K0 passed on the board; the procedure and details are in `CLAUDE.md` ("2R2T mode").
+K0 passed on the board; the procedure and details are in `.claude/rules/hdl.md` ("2R2T mode").
 In short:
 
 - **Switch**: one dtb property on the SD card,

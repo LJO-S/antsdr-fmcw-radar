@@ -28,7 +28,7 @@ Part G (antennas, first radiated RF) passed in software mode. **Next: Part K**
 MIMO), and fabric mode on real RF on the first field day. Fabric FFT/CFAR sits behind a decision
 gate (guide Section 11). Part H (PA/LNA/BPF) deferred. Part J (synthetic wideband) blocks
 nothing. K0 (2R2T boot check) passed, but **2R2T caps FS at 30.72 MSPS** on this
-board (~6 m bins, see "2R2T mode" below), which is why angle moved from 2R1T to 2T1R. The user's
+board (~6 m bins, see `.claude/rules/hdl.md` "2R2T mode"), which is why angle moved from 2R1T to 2T1R. The user's
 goal is to learn RF engineering, so Part K favours hands-on RF work over more FPGA work.
 
 ## Project structure
@@ -65,7 +65,8 @@ src/python/                 # import root
                    #   prepare_block(): TargetSim.apply -> frame_sync_linear
                    #   (fabric mode: FABRIC_FRAME_TRIM slice -> TargetSim.apply_if, no sync)
     recorder.py    # K2 Recorder: session dir = session.json, blocks.bin, index.csv,
-                   #   detections.jsonl (Phase 6 guide Section 3)
+                   #   detections.jsonl (Phase 6 guide Section 3); written to
+                   #   data/sessions/<timestamp>/ (Record checkbox in the Radar tab)
     target_sim.py  # FakeTarget / TargetSim — moving fake targets: apply() on raw RX (roll delay),
                    #   apply_if() on the fabric IF stream (beat-tone synthesis)
     processing.py  # process_rx_data(): stateless mix_signal + process_cpi wrapper
@@ -74,6 +75,7 @@ src/python/                 # import root
     app.py         # RadarWorker (QThread) + main(); owns (config, ctx, sdr)
     fabric_ctl.py  # FabricCtl (enable/disable/set_calib_delay sequencing) + SshDevmem transport
     test_fabric_ctl.py, test_target_sim.py, test_recorder.py  # board-free, run as __main__
+  image.png, image-1.png  # screenshots of other radar GUIs, kept as reference
 docs/              # AntSDR_Phase6_Tracking_Antennas_Angle_Guide.md (Part K spec, active),
                    #   tracking_algorithms.md (K3/K11 research + reading),
                    #   firmware-branch-workflow.md,
@@ -82,7 +84,7 @@ docs/              # AntSDR_Phase6_Tracking_Antennas_Angle_Guide.md (Part K spec
                    #   guides;
 hardware/          # materials.md (phased buy list), bench_measurements.md (K4 predict /
                    #   measure / explain tables), fmcw_58ghz_block_diagram.svg
-firmware/          # submodule stack (see below), branch e200-custom
+firmware/          # submodule stack (see `.claude/rules/hdl.md`), branch e200-custom
 scripts/bringup/   # hardware bringup references (reference.py, trx_loopback.py, pluto_sdr_ref.py)
                    #   + dechirp_verify.py (sw vs fabric RD map at --decimate 1|8; --ab fabric
                    #   /1 vs /8 with fake targets; --rate S headless CPIs/s; --sweep delay)
@@ -95,8 +97,7 @@ vhdl_ls.toml       # rust_hdl LSP config, points at firmware/.../projects/e200
 pypkgs.txt         # numpy, matplotlib, pylibiio, scipy, PySide6, pyqtgraph, vunit_hdl
 ```
 
-`src/python/README.md` is a short map of the package; this file stays
-the authority on conventions. `src/python/run_tests.py` runs every `*/test_*.py` suite as
+`src/python/run_tests.py` runs every `*/test_*.py` suite as
 `python -m`, one process each, failing on a non-zero exit.
 
 ## Running
@@ -190,7 +191,7 @@ Applies the moment anything is radiated. Cable/attenuator work (Part F) is unreg
   clamp is **0.0 dB**, i.e. full TX power (~+6.5 dBm at 5.8 GHz) is reachable:
   with physical attenuators on the bench the software ceiling was only getting in the way.
   The consequence is that **the EIRP guard is now the operator and the pads, not the code** -
-  read the regulatory section before radiating, and set `SDR_TX_GAIN_DB` by hand.
+  read `docs/rf_and_regulatory.md` before radiating, and set `SDR_TX_GAIN_DB` by hand.
 - SRD route, with the **16 dBi TX sector** (Ubiquiti AM-5G16-120, the one used in Part G):
   EIRP = port - losses + 16 dBi <= 14 dBm. Ignoring losses, the port must be **<= -2 dBm**:
   `SDR_TX_GAIN_DB` ~ **-9 dB** (full power is ~+6.5 dBm). Counting the Part G TX chain (2 m

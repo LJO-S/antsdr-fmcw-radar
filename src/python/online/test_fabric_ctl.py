@@ -155,8 +155,9 @@ def test_enable_triangle_bit():
     # triangle_en is NOT quasi-static despite its own synchronizer: it only
     # takes effect on a COMMIT, so it must be written in the PRE-COMMIT CTRL
     # word too, not just carried into the post-COMMIT one. This is the rule
-    # that cost a hardware debugging session (CLAUDE.md) - assert it directly
-    # instead of trusting the pre-COMMIT "nothing else" check to catch it.
+    # that cost a hardware debugging session (.claude/rules/hdl.md) - assert
+    # it directly instead of trusting the pre-COMMIT "nothing else" check to
+    # catch it.
     cfg = fabric_cfg(a_triangle_en=True)
     transport, image = run_enable(cfg)
     pre_ctrl, post_ctrl = check_enable_order(transport, image)

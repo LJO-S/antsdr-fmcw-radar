@@ -45,7 +45,7 @@ on weather. Part H stays deferred. Part J blocks nothing and can run in parallel
   I3 skipped (the capture jitter was in the RX/DMA path), fabric dechirp with
   loopback delay 34 (I4), `fabric_ctl.py` + worker wiring (I4b), fake targets on the
   IF stream (I4c), /8 halfband decimation (I5), no frame sync in the fabric path (I6).
-  Conclusions in `CLAUDE.md` ("Firmware / HDL track"), guides in `docs/archive/`.
+  Conclusions in `.claude/rules/hdl.md`, guides in `docs/archive/`.
 
 ## Open small items
 
@@ -75,7 +75,7 @@ on weather. Part H stays deferred. Part J blocks nothing and can run in parallel
             guard, direct `correlate1d` sums in float64, cast back). ~22 -> ~3 ms per
             map, triangle + TDM `process_cpi` 70 -> 34 ms. Identical detections in
             650 noise maps, tones 20-160 dB, 300 `process_cpi` blocks (all modes);
-            replay-safe. Why not `uniform_filter`: see `CLAUDE.md` "Detection pipeline".
+            replay-safe. Why not `uniform_filter`: see `.claude/rules/dsp.md` "Detection pipeline".
       
       - [x] 2. Doppler wrap (2026-10-31): `nms`, `box_sum` (axis 0), `subbin_refine`
             rows and the triangle pairing (`dsp.dilate_doppler`) wrap the Doppler
@@ -139,7 +139,7 @@ Fabric FFT/CFAR is not planned - decision gate in G11.
 
 - [x] K0 - 2R2T boot check (2026-09-28): boots, fabric transparent, FS capped at
       30.72 MSPS, which moved the angle plan to 2T1R. Fallback in G App. B,
-      details in `CLAUDE.md` "2R2T mode".
+      details in `.claude/rules/hdl.md` "2R2T mode".
 - [X] K1 - profile the host (G2), `offline/profile_cpi.py` (2026-09-28, fabric /8,
       sawtooth): `process_cpi` ~25 ms whatever the fake-target count K (CFAR 19 ms of
       it); `apply_if` ~2.5 ms per fake target (7 ms at K 0, 131 at K 50), so ~30 CPI/s
@@ -315,6 +315,3 @@ Too many markdown files. Fold or delete; git history keeps everything. Update th
       when K3 starts, then delete.
 - [ ] `scripts/antenna_design/eps_r_sweep.md`: generated; let `sweep_eps_r.py` print the
       table and keep only the PNG.
-- [ ] `src/python/README.md`: duplicates the `CLAUDE.md` project map; delete.
-- [ ] `docs/archive/` Phases 1-3: conclusions are in `CLAUDE.md`; delete. Phases 4-5 stay
-      until I5b (the FIR reclaim recipe is Phase 5 Section 4.2).
