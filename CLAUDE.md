@@ -183,4 +183,4 @@ Applies the moment anything is radiated. Cable/attenuator work (Part F) is unreg
 - 880–960 MHz (the old 900 MHz carrier) is cellular uplink/downlink — never radiate there.
 
 ## Rules
-Be short and concise. To the point. No extra jargong and over-explaining unless asked for.
+Be short, concise and to the point in your answers. No extra jargong and over-explaining unless necessary to convey a vital point.
