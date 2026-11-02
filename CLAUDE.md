@@ -3,10 +3,10 @@
 FMCW radar at **5.8 GHz** on an ANTSDR E200 (Zynq + AD9361). Two tracks run in parallel:
 
 1. **Python radar** — a reusable `common` DSP/GUI core, an `offline` simulation, and an
-   `online` (live SDR) path. Working end to end.
-2. **PL fabric offload** — custom HDL in the forked firmware stack moving chirp generation
-   and dechirp into the FPGA. Done in digital loopback (`TODO.md` Part I); next is running
-   it on real RF, then making it the default.
+   `online` (live SDR) path.
+2. **PL fabric offload** — custom HDL in the forked firmware stack moving chirp generation,
+   dechirp and decimation into the FPGA (fabric mode, `FABRIC_DECHIRP_EN`); the goal is to
+   make it the default.
 
 **Terminology:** *offline* = simulation / soft model. *online* = real-time hardware.
 
@@ -14,22 +14,8 @@ FMCW radar at **5.8 GHz** on an ANTSDR E200 (Zynq + AD9361). Two tracks run in p
 It tracks **unfinished work only**: closed parts are one line each and their
 design conclusions live *here* instead. When a part closes, summarize it there and move
 anything worth keeping into this file — don't let narrative grow back in `TODO.md`.
-Short version: Parts A–G done (offline model, online app, GUI, target sim, DSP
-hardening, cable loopback, antenna field test), with a handful of small open items still listed.
-**Part I (HDL offload) is done** in digital loopback, only I5b (the ADI FIR reclaim) deferred:
-fabric NCO + fabric dechirp (I4), the app drives the fabric through
-`online/fabric_ctl.py` (I4b), fake targets work on the IF stream (I4c), and **I5, decimation
-to IF rate** (MAGIC FMC4; spec
-`docs/archive/AntSDR_Phase5_IF_Decimation_Guide.md`). I6 closed with it (the fabric path
-needs no frame sync). I5 design and rejected routes: `.claude/rules/hdl.md`.
-Part G (antennas, first radiated RF) passed in software mode. **Next: Part K**
-(`docs/AntSDR_Phase6_Tracking_Antennas_Angle_Guide.md`): software tracking, an RF bench lane
-(VNA, soldering), own patch antennas, **2T1R angle through a fabric-switched TX** (time-division
-MIMO), and fabric mode on real RF on the first field day. Fabric FFT/CFAR sits behind a decision
-gate (guide Section 11). Part H (PA/LNA/BPF) deferred. Part J (synthetic wideband) blocks
-nothing. K0 (2R2T boot check) passed, but **2R2T caps FS at 30.72 MSPS** on this
-board (~6 m bins, see `.claude/rules/hdl.md` "2R2T mode"), which is why angle moved from 2R1T to 2T1R. The user's
-goal is to learn RF engineering, so Part K favours hands-on RF work over more FPGA work.
+The user's goal is to learn RF engineering, so Part K favours hands-on RF work over more FPGA
+work.
 
 ## Project structure
 
@@ -78,11 +64,10 @@ src/python/                 # import root
   image.png, image-1.png  # screenshots of other radar GUIs, kept as reference
 docs/              # AntSDR_Phase6_Tracking_Antennas_Angle_Guide.md (Part K spec, active),
                    #   tracking_algorithms.md (K3/K11 research + reading),
-                   #   firmware-branch-workflow.md,
+                   #   firmware-branch-workflow.md, rf_and_regulatory.md,
                    #   rf-power-and-spectrum-sweden.pdf, fmcw_fabric_architecture.svg,
-                   #   datasheets/, archive/ (Phase 1-5
-                   #   guides;
-hardware/          # materials.md (phased buy list), bench_measurements.md (K4 predict /
+                   #   datasheets/, archive/ (Phase 1-5 guides)
+hardware/          # materials.md (phased buy list), bench_measurements.md (K4/K7 predict /
                    #   measure / explain tables), fmcw_58ghz_block_diagram.svg
 firmware/          # submodule stack (see `.claude/rules/hdl.md`), branch e200-custom
 scripts/bringup/   # hardware bringup references (reference.py, trx_loopback.py, pluto_sdr_ref.py)
@@ -90,6 +75,7 @@ scripts/bringup/   # hardware bringup references (reference.py, trx_loopback.py,
                    #   /1 vs /8 with fake targets; --rate S headless CPIs/s; --sweep delay)
                    #   + decim_ramp_check.py (ramp through the decimator, bit-exact vs
                    #   decimate_golden; --sync measures the frame trim)
+scripts/angle/     # K10 TDM angle exercise (tdm_exercise.py)
 scripts/antenna_design/  # K8 openEMS patch sim + eps_r sweep + KiCad (patch, line-pair); own README
                    #   (runs in the openEMS venv, not .venv)
 data/info.txt      # iio_info dump of the board
@@ -121,7 +107,7 @@ not `.venv`: see `scripts/antenna_design/README.md`.
 ## Key classes / functions
 
 - **`RadarConfig`** (`common/config.py`) — dataclass holding every parameter. **Authoritative
-  source for parameter values**; this file's table below is a convenience copy, keep it in sync.
+  source for parameter values**; `describe()` prints them with the derived values.
   Fields carry `metadata` (`label`/`unit`/`scale`/`group`, optional `readonly`) that the GUI
   config tab auto-generates its form from — adding a tagged field adds a GUI row for free.
   `MAX_RANGE` / `MAX_VELOCITY` are `@property` (recomputed per access; `MAX_VELOCITY` is
@@ -134,30 +120,6 @@ not `.venv`: see `scripts/antenna_design/README.md`.
   never at import. Configs are **immutable by convention**: never mutate a live instance,
   construct a new one and swap the reference. (The one deliberate exception is
   `config.MTI_EN`, written per-CPI by the worker so the live checkbox survives config swaps.)
-
-## Parameters (`common/config.py` — source of truth)
-
-| Parameter | Value |
-|-----------|-------|
-| fc (CHIRP_FC_HZ) | **5.8 GHz** |
-| BW (CHIRP_BW_HZ) | 50 MHz |
-| T (CHIRP_DUR_S) | 100 µs |
-| chirp_reps (CHIRP_REPS) | **128** |
-| TRIANGLE_EN / MTI_EN | False / False |
-| fs (FS) | 56.6 MHz (AD9361 caps: FS 2.083–61.44 MSPS, rf_bandwidth 0.2–56 MHz; **30.72 MSPS max in 2R2T**) |
-| CFAR guard / training / pfa / mask_N | 4 / 5 / 1e-6 / 5 |
-| MAX_RANGE_M | 800 m → MAX_RANGE 800 m (effective range 848 m at /8, 50 MHz / 100 µs) |
-| Derived | range res 3.0 m, velocity res 2.02 m/s, MAX_VELOCITY 129 m/s, proc gain 58.6 dB |
-| Soft-model only | TX_PWR_DBM 10, TX_GAIN_DB 13, RX_GAIN_DB 14, ISOLATION_DB 40, DC/IQ errors 0 |
-| SDR_IP | 192.168.5.10 |
-| SDR_TX_GAIN_DB / SDR_TX_GAIN_MAX_DB | −60.0 / **0.0** (AD9361 hardwaregain = attenuation) |
-| SDR_RX_GAIN_MODE / SDR_RX_GAIN_DB | manual / 40.0 |
-| SDR_RX_MARGIN_PERIODS | 1 (software frame sync needs >= 1; `start()` refuses 0 there) |
-| SDR_LOOPBACK_EN / SDR_LOOPBACK_NOISE_SNR_DB | True / 1.0 |
-| FABRIC_DECHIRP_EN / FABRIC_DECHIRP_DELAY | False / **61** (pure path delay, non-loopback). **34** is the digital-loopback constant, kept commented out in `config.py` - swap when `SDR_LOOPBACK_EN` flips. Both are at 56.6 MSPS: the delay is in samples and scales with FS (loopback **20** at 30.72 MSPS) |
-| FABRIC_DECIM_EN / FABRIC_FRAME_TRIM | True / 0 (only active with `FABRIC_DECHIRP_EN`; ratio fixed at `FABRIC_DECIMATE_RATIO` = 8 → FS_IF 7.075 MSPS, SWEEP_LEN 5656, N_IF 707) |
-
-Noise figure is a `run_simulation` argument (`a_noise_figure_db`), not a config field.
 
 ## Signal processing conventions — do not change these
 

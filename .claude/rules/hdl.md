@@ -81,7 +81,8 @@ model the fabric output is verified against sample-for-sample. Specs: `docs/arch
   the AD9361 chain); not yet confirmed with antennas (Part G ran in software mode). Measure with
   `dechirp_verify.py --sweep` (leakage peak into range bin 0) at every FS, starting at 0: above
   the true delay the beat goes negative, off the positive range axis, and the sweep just
-  reports bin 0. Ignore the first sweep row (a stale block).
+  reports bin 0. Ignore the first sweep row (a stale block). `config.py` defaults to 61 (pure
+  path delay, non-loopback) with 34 commented out: swap them when `SDR_LOOPBACK_EN` flips.
 - **DMA sync is a level, not a pulse.** `axi_dmac` SYNC_TRANSFER_START clears only on a beat
   *accepted* with sync high in the same cycle, and cpack packs 2 samples per 64-bit beat, so a 1-sample pulse hit
   a beat only by luck of pack phase (re-rolled every `start()` and by the IF_SEL switch).

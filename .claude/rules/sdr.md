@@ -16,6 +16,10 @@ paths:
   `sdr.py` still tests an absolute `>= 0.01`.
 - `sdr.start()` pins the `cf-ad9361-lpc` channel `sampling_frequency` to FS (I4b-2) so the
   stock `rx_fir_decimator` stays at factor 1.
+- AD9361 limits: FS 2.083-61.44 MSPS (30.72 in 2R2T, see `hdl.md`), `rf_bandwidth`
+  0.2-56 MHz. `SDR_TX_GAIN_DB` is the AD9361 `hardwaregain`, i.e. attenuation.
+- `SDR_RX_MARGIN_PERIODS` (default 1): software frame sync needs >= 1; `start()` refuses 0
+  there.
 
 ## libiio / `pylibiio` API notes (online path)
 

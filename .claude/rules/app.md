@@ -20,7 +20,8 @@ paths:
   `pending_targets` (the worker calls `TargetSim.set_targets` between CPIs, so a block never
   mixes two target sets) and `mti_signal_changed` -> `_mti_en` need **no radio restart**.
   No locks: single-reference / bool assignment is atomic under CPython.
-- **Recording (K2) is worker-owned too**: `Recorder` is built in `run()`; `record_changed(on)`
+- **Recording (K2) is worker-owned too** (session format: Phase 6 guide Section 3): `Recorder`
+  is built in `run()`; `record_changed(on)`
   and `record_notes_changed(text)` (every edit) only set fields, and `rec_sync()`
   opens/closes sessions between CPIs. One session = one config and one fake-target set, so
   RE-CONFIGURE (incl. the revert) and a target edit start a new session. The detections line
@@ -46,7 +47,8 @@ paths:
   backwards is cheap: `Player.render` restores the fake-target snapshot and runs
   `TargetSim.advance()` (kinematics only) up to the block. MTI follows the recording or is
   forced on/off from the bar. The display's config form and fake-target table are
-  read-only there (`set_playback_mode`).
+  read-only there (`set_playback_mode`). `offline/replay.py` never imports `online.sdr` (no
+  libiio needed); `Player` gives random access to any block, `replay()` walks them in order.
 - Spectrogram emits are **throttled to ~2 Hz** (`_last_spec_update`) and cover only 2 chirps.
 - Cleanup: `radio = None` before `try`, `finally: if radio is not None: set_loopback(False);
   close()`. `stop()` (GUI thread) flips `_running` then `wait(5000)`s — never `terminate()`.

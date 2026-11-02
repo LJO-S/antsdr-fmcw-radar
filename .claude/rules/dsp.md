@@ -12,9 +12,13 @@ paths:
 
 - **`common/dsp.py`** — pure functions. `process_cpi(if_signal, config, ctx)` is the pipeline;
   `build_cpi_context(config)` precomputes chirp, axes and windows once (`CPIContext`).
+  `offline/profile_cpi.py` is a staged mirror of `process_cpi`, asserted equal to it: change
+  both together.
 - **`SoftFMCWModel`** (`offline/soft_model.py`) — simulation only: `add_delay`/`add_amplitude`
   build the echo, `add_imperfections` injects TX leakage / DC / IQ imbalance,
-  `simulate_received_signal` adds thermal noise, `run_simulation` runs the full chain.
+  `simulate_received_signal` adds thermal noise, `run_simulation` runs the full chain. The
+  config's "Software" block (`TX_PWR_DBM`, `TX_GAIN_DB`, `RX_GAIN_DB`, `ISOLATION_DB`,
+  `DC_I`/`DC_Q`, `IQ_*`) is soft-model only.
 - **`TargetSim`** (`online/target_sim.py`) — injects moving fake targets. `apply()` runs on the
   RAW `read_block()` output **before** frame sync, so `estimate_chirp_offset` sees a realistic
   composite. Ungated by `SDR_LOOPBACK_EN` (only the added noise is gated), so it doubles as a
@@ -58,7 +62,8 @@ internally: `10**(G_dB/10)`. TX power: `10**((P_dBm-30)/10)`.
 ### Noise model
 Thermal noise: `N = k_b * T0 * fs * F` where F = noise figure (linear), fs = sampling rate.
 Complex noise: `noise_std * (randn + j*randn)`, `noise_std = sqrt(N/2)`. The parameter is
-`a_noise_figure_db` — not SNR, not noise power.
+`a_noise_figure_db` — not SNR, not noise power. It is a `run_simulation` argument, not a config
+field.
 
 ### Triangle mode
 **Half the chirps per RD map.** The waveform interleaves `CHIRP_REPS` up-chirps and `CHIRP_REPS`
