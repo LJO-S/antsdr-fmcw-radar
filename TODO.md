@@ -19,8 +19,9 @@ Ludvig's DO-NOT-FORGET:
 Roadmap for the FMCW radar.
 
 **This file tracks unfinished work only.** Completed parts get one line each and
-their design conclusions move to `CLAUDE.md`, which is the maintained map - don't
-grow narrative back in here as parts close.
+their design conclusions move to `.claude/rules/` (area rules) or `CLAUDE.md`
+(project-wide), per the close-out rule in `CLAUDE.md` - don't grow narrative back in
+here as parts close.
 
 Current state (2026-10-26): Parts A-G and I are done. **Part K (Phase 6) is active**:
 K0-K2, K4, K5, K7 and K8 done. FMC5 (TDM + `tx_sel` on J30) is on hardware, and fabric /8

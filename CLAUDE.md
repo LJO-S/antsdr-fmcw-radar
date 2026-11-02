@@ -11,11 +11,26 @@ FMCW radar at **5.8 GHz** on an ANTSDR E200 (Zynq + AD9361). Two tracks run in p
 **Terminology:** *offline* = simulation / soft model. *online* = real-time hardware.
 
 **`TODO.md` is the roadmap and the authority on status** — read it before planning work.
-It tracks **unfinished work only**: closed parts are one line each and their
-design conclusions live *here* instead. When a part closes, summarize it there and move
-anything worth keeping into this file — don't let narrative grow back in `TODO.md`.
+It tracks **unfinished work only**: a closed part becomes one line there. Its conclusions go
+where they get loaded: each rule with a one-line reason into the area's rule file (this file
+if project-wide), measurements and history into `docs/` or the commit message. Don't let
+narrative grow back in `TODO.md`.
 The user's goal is to learn RF engineering, so Part K favours hands-on RF work over more FPGA
 work.
+
+## Where knowledge lives
+
+| File | Covers | Loads |
+|---|---|---|
+| `CLAUDE.md` | Project-wide: sign conventions, config, firmware stack, RF safety | Always |
+| `.claude/rules/dsp.md` | DSP conventions, detection pipeline, TargetSim / `apply_if`, soft model | `dsp.py`, `target_sim.py`, `processing.py`, `offline/` soft model + profiler, `scripts/angle/` |
+| `.claude/rules/app.md` | Worker invariants, recording, playback, GUI | `app.py`, `capture.py`, `recorder.py`, `gui.py`, `replay.py`, `playback.py` |
+| `.claude/rules/sdr.md` | AntSDR lifecycle, libiio, real-board behaviour | `sdr.py`, `capture.py` |
+| `.claude/rules/hdl.md` | Firmware/HDL, register map, hardware rules, fabric control, decimator, 2R2T, J30 | `firmware/**`, `scripts/bringup/`, `fabric_regs.py`, `fabric_ctl.py` |
+| `docs/rf_and_regulatory.md` | AD9361 RF numbers, bench and field results, PTS/EMF rules, link budget | On demand |
+| `docs/*Guide*.md` | Phase specs (Phase 6 active, 1-5 in `archive/`) | On demand |
+
+**Before discussing or planning in an area, read its rule file**, even when no code is opened.
 
 ## Project structure
 
