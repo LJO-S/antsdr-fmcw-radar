@@ -147,6 +147,11 @@ not `.venv`: see `scripts/antenna_design/README.md`.
 velocity = −v_true. The minus matches the stop-and-hop model where slow-time frequency =
 +f_d for an approaching target.
 
+### Angle sign (TDM)
+A longer B path raises `psi` (`angle(X_B * conj(X_A))`) and lowers `theta`, so theta > 0 means
+towards antenna B (`FakeTarget.theta0` uses the same). Opposite to the textbook because
+`IF = TX * conj(RX)` conjugates the echo phase.
+
 ## Firmware stack
 
 - A parent repo records only a gitlink SHA. Commit **inside** the repo where files live, then
@@ -183,4 +188,5 @@ Applies the moment anything is radiated. Cable/attenuator work (Part F) is unreg
 - 880–960 MHz (the old 900 MHz carrier) is cellular uplink/downlink — never radiate there.
 
 ## Rules
-Be short, concise and to the point in your answers. No extra jargong and over-explaining unless necessary to convey a vital point.
+- Be short, concise and to the point in your answers. No extra jargong and over-explaining unless necessary to convey a vital point.
+- The user commits/pushes, never the agent.

@@ -145,6 +145,14 @@ into [-vmax, vmax). With "nearest" edges a target at +-vmax was reported twice (
 `REPS-1` and 0), and the edge row was copied into its own CFAR window, which raised its
 threshold.
 
+**The range FFT is not padded**: at /8, 707 -> 720 saves only 0.9 ms per map and moves
+the bins to 2.95 m. It pays in software or fabric /1 (5660 -> 5670: 33 -> 18 ms per map);
+then pad to `scipy.fft.next_fast_len(N_IF)` and build the axis from the padded length.
+
+**Real-RF recordings carry four fixed spurs** (56, 168, 337, 360 m, fixed r with nonzero
+v): not targets, see `docs/rf_and_regulatory.md` "Spurs riding the chirp". Exclude them
+when comparing detections with truth.
+
 ## Fake targets on the fabric IF stream
 
 - **`apply_if` conventions** (fake targets on the dechirped stream - software, downstream of
@@ -160,3 +168,22 @@ threshold.
   hold whole chirp legs). Fast time runs at `FS_IF` over `N_IF` samples, and
   targets with `|f_b| >= FS_IF/2` are skipped (logged once). Kinematics shared with `apply()`
   via `_kinematics()`.
+- **TDM in `apply_if`**: B rows (`row % LEGS_PER_PERIOD >= LEGS_PER_PERIOD // 2`) get
+  `exp(-1j*2*pi*d*sin(theta0)/lambda)` with the estimator's `d` and `lambda`: `pi*sin(theta)`
+  leaves 0.07 deg at 30 deg, since d is not exactly lambda/2. The continuous Doppler phasor
+  already gives B its motion phase; adding a motion term counts it twice.
+
+## TDM angle (2T1R)
+
+- B rows go through the same steps as A (fast-time mean, MTI, window, FFT, close-in mask).
+  CFAR and the displayed map run on `|X_A|^2 + |X_B|^2`; `cfar_ca_2d` squares its input, so
+  pass the root-sum-square.
+- `psi = wrap(angle(X_B * conj(X_A)) - pi*k_d/REPS - psi0)`, `theta = asin(-psi*lambda/(2*pi*d))`
+  (sign in `CLAUDE.md`). `k_d` must be the sub-bin refined bin wrapped into [-REPS/2, REPS/2):
+  unwrapped, a target at +63.8 bins reads -64.2 and psi is off by pi. Without the gap term
+  20 m/s reads ~9 deg off (`test_tdm_doppler_term_is_live`). Past `MAX_VELOCITY` the gap term
+  takes the wrong alias and the angle mirrors.
+- Triangle + TDM: "both" sums the up and down phasors (sigma / sqrt(2)) and removes psi0
+  after the sum, so one psi0 calibrates both ramps.
+- `theta` is in the target dicts only with `TDM_EN`, so non-TDM replays stay exact. x and y
+  are the GUI's; K11's EKF works on (r, theta, v_r).

@@ -26,6 +26,37 @@ Typical values, Table 1 of the AD9361 datasheet (nearest characterized band is 5
 Full table: `hardware/bench_measurements.md`. LiteVNA-64, SOL on port 1, thru = port-2 test
 cable, 5.0-6.3 GHz, 201 points.
 
+### Spurs riding the chirp (reference sessions)
+
+Every real-RF recording (TX1 -> cable -> 30 dB pad -> RX1; software mode and fabric /8,
+sawtooth, triangle, TDM) has four fixed detections that are not targets
+(`data/sessions/20261102-19*`):
+
+| Range [m] | Offset df [kHz] | Level [dBc] | Family |
+|---|---|---|---|
+| 56 | 187.3 | -37 | f0 ~187.4 kHz |
+| 168 | 562.1 | -50 | 3 f0 (near threshold, ~40 % of CPIs) |
+| 337 | 1124.2 | -48 | 6 f0 |
+| 360 | 1203.0 | -44 | a second source |
+
+dBc against the cable-path signal (yardstick: a fake target at amp 0.1 = -20 dBc); the
+RD map floor is ~-63 dBc.
+
+- **Mechanism**: a sideband at a fixed offset df from the carrier follows the chirp, so
+  after dechirp it is a constant IF tone at df, read as range `df*c/(2S)`. Its phase keeps
+  running from chirp to chirp (`df*T` per chirp), so it also reads a Doppler: df wrapped
+  into the velocity span. Same range in every mode, a different nonzero v in each; MTI
+  does not touch it, and the TDM phase step gives it a meaningless theta (~60-75 deg).
+- **Check**: one cable residual fits all five sessions: the path's sub-sample delay,
+  -0.068 samples (~-600 Hz of beat), which shifts the measured range but adds no Doppler.
+  With it, the predicted Doppler lands within ~1-2 bins.
+- **Not baseband**: a fixed tone added after the mixer would smear across all ranges in
+  software mode, where the dechirp runs on the host. These stay sharp, so the modulation
+  sits on the RF or LO path. Switching regulators are the likely source (unverified).
+- **Consequences**: they ride on whatever is strongest, so in the field expect them on
+  the antenna leakage at about the same dBc. Range fixed with v nonzero contradicts
+  `dr/dt = v`: a tracker using both should never confirm them (K3).
+
 ## Regulatory constraints (Sweden, PTS)
 
 **5.8 GHz was a good choice: the 50 MHz chirp at fc = 5.8 GHz spans 5.775–5.825 GHz, which sits
