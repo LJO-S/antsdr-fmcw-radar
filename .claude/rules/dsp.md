@@ -186,4 +186,4 @@ when comparing detections with truth.
 - Triangle + TDM: "both" sums the up and down phasors (sigma / sqrt(2)) and removes psi0
   after the sum, so one psi0 calibrates both ramps.
 - `theta` is in the target dicts only with `TDM_EN`, so non-TDM replays stay exact. x and y
-  are the GUI's; K11's EKF works on (r, theta, v_r).
+  are the GUI's; the (x, y) tracker's EKF (Phase 7, L5) works on (r, theta, v_r).

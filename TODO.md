@@ -23,10 +23,12 @@ their design conclusions move to `.claude/rules/` (area rules) or `CLAUDE.md`
 (project-wide), per the close-out rule in `CLAUDE.md` - don't grow narrative back in
 here as parts close.
 
-Current state (2026-11-03): Parts A-G and I are done. **Part K (Phase 6) is active**:
+Current state (2026-11-05): Parts A-G and I are done. **Parts K (Phase 6) and L
+(Phase 7, tracking) are active**:
 K0-K2, K4, K5, K7, K8 and K10 done. FMC5 (TDM + `tx_sel` on J30) is on hardware, and fabric
 /8 has run on cable RF (K7 bench, K10 cable test) but not yet on air (K6). K9 boards
-ordered (due ~2026-11-06..12). Next: K3 (tracker) while they ship; K6 waits on weather.
+ordered (due ~2026-11-06..12). Next: Part L (Phase 7, tracking) while they ship; K6
+waits on weather.
 Part H stays deferred. Part J blocks nothing and can run in parallel.
 
 ---
@@ -73,14 +75,15 @@ Part H stays deferred. Part J blocks nothing and can run in parallel.
 
 ---
 
-## Part K - Phase 6: tracking, RF bench, patch antennas, 2T1R angle (active)
+## Part K - Phase 6: RF bench, patch antennas, 2T1R angle (active)
 
 Spec: `docs/AntSDR_Phase6_Tracking_Antennas_Angle_Guide.md` ("G" = its sections).
 Rewritten 2026-09-28: angle from two switched TX antennas (2T1R TDM), not two
 receivers - 2R2T caps the E200 at 30.72 MSPS = ~6 m bins (G1.2). The phase is for
 learning RF: VNA, soldering, an RF component, antennas. Software lane first; order
 the RF kit (K4, K5) while it runs. Each lane starts with its reading in G13.
-Fabric FFT/CFAR is not planned - decision gate in G11.
+Fabric FFT/CFAR is not planned - decision gate in G11. Tracking (K3, the K11 tracker)
+moved to Part L on 2026-11-05.
 
 - [x] K0 - 2R2T boot check (2026-09-28): boots, fabric transparent, FS capped at
       30.72 MSPS, which moved the angle plan to 2T1R. Fallback in G App. B,
@@ -93,9 +96,7 @@ Fabric FFT/CFAR is not planned - decision gate in G11.
       at 20 detections, in the GUI thread).
 - [X] K2 - recorder + replay (G3, 2026-09-29): `online/recorder.py`, `offline/replay.py`
       (`--check` exact on a 60 s loopback session), `offline/playback.py`.
-- [ ] K3 - tracker in (r, v) (G4): CV Kalman, GNN, M-of-N; tests (a)-(e), live
-      fake targets tracked. The reference sessions' four spurs (fixed r, v != 0, so
-      `dr/dt != v`) must never confirm.
+- K3 - tracker in (r, v): moved to Part L (L1-L4), 2026-11-05.
 - [x] K4 - VNA basics (G5), LiteVNA-64: owned gear predicted, measured.
 - [X] K5 - soldering + J30 header (G6): fitted, GPIO_00-07 = sysfs 995-1002 (2026-10-13).
 - [ ] K6 - field day 1 (G7, needs K2, weather): COTS only; delay sweep (expect
@@ -139,9 +140,28 @@ Fabric FFT/CFAR is not planned - decision gate in G11.
       no A/B offset; the saver step read 19 deg over its bare VNA phase, in-rig VNA and
       step 0 skipped. Rules in `.claude/rules/dsp.md`.
 
-- [ ] K11 - tracker in (x, y) + field day 2 (G10.2): EKF on (r, theta, v_r);
-      patches on air, one change at a time. psi0 first, from the walked corner
-      reflector (K9).
+- [ ] K11 - field day 2 (G10.2): patches on air, one change at a time. psi0 first,
+      from the walked corner reflector (K9). Records the sessions L6b validates on;
+      the (x, y) tracker itself moved to Part L (L5).
+
+---
+
+## Part L - Phase 7: tracking (active, in parallel with Part K)
+
+Spec: `docs/AntSDR_Phase7_Tracking_Guide.md` ("G7" = its sections). Split out of
+Phase 6 on 2026-11-05. Done on synthetic and real targets, so L6 waits on K6 and
+K11's field day 2; everything before it runs now. The `20261102-19*` reference
+sessions (spur test, L1 check) are on the laptop, not the desktop.
+
+- [ ] L0 - reading + exercises (G7 4): Labbe done 2026-11-05; gtrack PDF; NIS,
+      measured-v and EKF-vs-UKF NEES exercises.
+- [ ] L1 - `snr_db` per detection (G7 5); `replay --check` on the recorded keys only.
+- [ ] L2 - tracker in (r, v) (G7 6): KF, two-stage GNN, M-of-N + dr/dt check, tests
+      (a)-(k).
+- [ ] L3 - worker, playback, `replay --tracks` (G7 7).
+- [ ] L4 - GUI layout A (G7 8): PPI-first Radar tab, track list, RD maps to Signals.
+- [ ] L5 - tracker in (x, y) (G7 9): EKF, tests (l)-(o).
+- [ ] L6 - real targets (G7 12): L6a on K6's recordings, L6b on field day 2's.
 
 ---
 
@@ -165,7 +185,5 @@ linearly, TX power buys range^(1/4)).
 Too many markdown files. Fold or delete; git history keeps everything. Update the
 `CLAUDE.md` project map in the same change.
 
-- [ ] `docs/tracking_algorithms.md`: fold the verdict and reading into Sections 4 / 13.3
-      when K3 starts, then delete.
 - [ ] `scripts/antenna_design/eps_r_sweep.md`: generated; let `sweep_eps_r.py` print the
       table and keep only the PNG.

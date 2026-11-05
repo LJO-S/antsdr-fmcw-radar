@@ -55,7 +55,8 @@ RD map floor is ~-63 dBc.
   sits on the RF or LO path. Switching regulators are the likely source (unverified).
 - **Consequences**: they ride on whatever is strongest, so in the field expect them on
   the antenna leakage at about the same dBc. Range fixed with v nonzero contradicts
-  `dr/dt = v`: a tracker using both should never confirm them (K3).
+  `dr/dt = v`: the tracker's kinematic check keeps them from confirming (Phase 7
+  guide, 6.5).
 
 ## Regulatory constraints (Sweden, PTS)
 

@@ -28,7 +28,7 @@ work.
 | `.claude/rules/sdr.md` | AntSDR lifecycle, libiio, real-board behaviour | `sdr.py`, `capture.py` |
 | `.claude/rules/hdl.md` | Firmware/HDL, register map, hardware rules, fabric control, decimator, 2R2T, J30 | `firmware/**`, `scripts/bringup/`, `fabric_regs.py`, `fabric_ctl.py` |
 | `docs/rf_and_regulatory.md` | AD9361 RF numbers, bench and field results, PTS/EMF rules, link budget | On demand |
-| `docs/*Guide*.md` | Phase specs (Phase 6 active, 1-5 in `archive/`) | On demand |
+| `docs/*Guide*.md` | Phase specs (Phases 6 and 7 active, 1-5 in `archive/`) | On demand |
 
 **Before discussing or planning in an area, read its rule file**, even when no code is opened.
 
@@ -78,7 +78,7 @@ src/python/                 # import root
     test_fabric_ctl.py, test_target_sim.py, test_recorder.py  # board-free, run as __main__
   image.png, image-1.png  # screenshots of other radar GUIs, kept as reference
 docs/              # AntSDR_Phase6_Tracking_Antennas_Angle_Guide.md (Part K spec, active),
-                   #   tracking_algorithms.md (K3/K11 research + reading),
+                   #   AntSDR_Phase7_Tracking_Guide.md (Part L spec, tracking, active),
                    #   firmware-branch-workflow.md, rf_and_regulatory.md,
                    #   rf-power-and-spectrum-sweden.pdf, fmcw_fabric_architecture.svg,
                    #   datasheets/, archive/ (Phase 1-5 guides)

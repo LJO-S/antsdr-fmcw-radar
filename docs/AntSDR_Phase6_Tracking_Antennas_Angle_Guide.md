@@ -1,4 +1,4 @@
-# AntSDR E200 - Phase 6: tracking, RF bench, patch antennas, 2T1R angle (Part K)
+# AntSDR E200 - Phase 6: RF bench, patch antennas, 2T1R angle (Part K)
 
 Follows Phase 5 (archived). Assumes: Parts A-G and I done. The fabric chirp NCO,
 dechirp and /8 decimation are proven in digital loopback (MAGIC FMC4, up to ~30
@@ -13,33 +13,37 @@ Rewritten 2026-09-28. Angle now comes from two switched TX antennas (2T1R), not 
 receivers, and the phase gained an RF bench lane (VNA, soldering). Section 1.2 says
 why. K0 (the 2R2T boot check) is done; its results are Appendix B.
 
+Tracking moved to its own guide: K3 and the tracker half of K11 are
+Part L, `docs/AntSDR_Phase7_Tracking_Guide.md`. Section numbers here are kept;
+Sections 4 and 13.3 are stubs.
+
 ## 1. What and why
 
 This phase is where the project turns from software and FPGA work into RF
 engineering: a VNA, soldering, an RF component chosen and measured, antennas
-designed and characterized. Tracking runs first because it needs nothing new and
-turns detections into tracks.
+designed and characterized. The software lane (host profile, recorder) ran first
+because it needed nothing new.
 
 | Work | Payoff | Gated by |
 |---|---|---|
-| Tracking (K1-K3) | Stable IDs, smoothed v, fewer one-CPI false alarms | Nothing |
+| Host profile, recorder (K1, K2) | Known host limits, replayable field data | Nothing |
 | Field day 1 (K6) | Fabric mode on real RF, first IQ recordings | K2, weather |
 | RF bench (K4, K5) | VNA, S-parameters, soldering: the tools every later step uses | A VNA and a soldering kit |
 | TX switch (K7) | An RF component chosen, measured and integrated; the 2T1R hardware | K4, K5 |
 | Patch antennas (K8, K9) | Antenna design, simulation and measurement; a compact rig | K4, K5, PCB lead time |
-| Angle and x-y tracking (K10, K11) | Targets on a map | K7, K9 |
+| Angle and field day 2 (K10, K11) | Targets on a map | K7, K9 |
 | Fabric FFT/CFAR | Latency, detections-only link | Decision gate (Section 11) |
 
 ```
-software lane:  K1 profile -> K2 recorder -> K3 tracker (r, v)
+software lane:  K1 profile -> K2 recorder   (tracker: Phase 7)
                                   \-> K6 field day 1 (COTS antennas)
 RF lane:        K4 VNA on owned gear -> K5 soldering + J30 header -> K7 TX switch
                                                      \-> K8 single patch -> K9 columns
-then:           K10 angle on host -> K11 tracker (x, y) + field day 2
+then:           K10 angle on host -> K11 field day 2
 gate:           Section 11, fabric FFT/CFAR
 ```
 
-Order the kit (K4, K5) while K1-K3 run: shipping takes weeks. Order the patch PCBs
+Order the kit (K4, K5) while K1-K2 run: shipping takes weeks. Order the patch PCBs
 (K8) as soon as the simulation is done, and do K7 while they ship. Each lane opens
 with its reading in Section 13.
 
@@ -132,7 +136,7 @@ per-CPI work on top of it.
 ## 3. K2 - recorder and replay (no board)
 
 Part G produced video only, so nothing from it can be replayed. From now on every
-field day records IQ. The recordings drive the tracker (K3) and the angle work (K10)
+field day records IQ. The recordings drive the tracker (Phase 7) and the angle work (K10)
 at a desk, against real clutter.
 
 **Format**, one directory per session:
@@ -170,84 +174,9 @@ random) replays to the identical per-CPI detection list stored in
 
 ---
 
-## 4. K3 - tracker in range and velocity (no board)
+## 4. K3 - tracker in range and velocity: moved to Phase 7
 
-Read first: 13.3.
-
-### 4.1 Conventions - check these before writing F
-
-- **Sign**: `TargetSim` moves `r = r0 + v0*t`, and `test_target_sim.py` asserts
-  that `process_cpi` reports `v0` with that sign. So **v > 0 is receding**, and
-  `dr/dt = +v`. Confirm on the first real recording: an approaching car must read
-  v < 0.
-- **Time**: `dt` comes from the CPI timestamps (monotonic, at capture return),
-  never from a nominal frame period. The frame rate varies with detection count.
-
-### 4.2 Model
-
-Constant-velocity Kalman filter per track. State `x = [r, v]`, measurement
-`z = [r, v]`: the radar measures both directly, so `H = I`.
-
-```
-F = [[1, dt], [0, 1]]
-Q = sa^2 * [[dt^4/4, dt^3/2], [dt^3/2, dt^2]]      # white-noise acceleration
-R = diag(sr^2, sv^2)
-```
-
-Defaults, all config fields: `sa` = 3 m/s^2, `sr` = 0.7 m (sub-bin refined, bins
-are 3.0 m), `sv` = 0.5 m/s (bins are 2.02 m/s).
-
-Because v is measured, a track can start from a single detection with `P0 = R`. No
-two-point initialization is needed.
-
-### 4.3 Association and track management
-
-- Gate: Mahalanobis `d^2 = y' S^-1 y < 9.21` (chi-square, 2 dof, 99 %).
-- Global nearest neighbour: `scipy.optimize.linear_sum_assignment` on `d^2`, with
-  out-of-gate pairs set to a large cost. Unassigned detections start tentative
-  tracks.
-- Confirm after M of N CPIs (default 3 of 4). Delete by **time**, not by CPI count:
-  a confirmed track after 0.5 s without an update, a tentative one after 2 misses.
-- `TRACK_MIN_SPEED` (default 0 = off): minimum |v| to start a track, for scenes
-  full of parked cars when MTI is off.
-- Velocity ambiguity is not an issue: `MAX_VELOCITY` is 129 m/s (64 m/s in
-  triangle or TDM). Triangle and TDM together give 32 m/s, where a fast car aliases.
-- Triangle mode: accept every `kind`. Weighting `R` by kind is a later refinement.
-
-### 4.4 Placement
-
-- `common/tracking.py`: pure numpy/scipy, no Qt. `Tracker(cfg).update(detections,
-  t) -> list[Track]`. `Track` = id, state, covariance, status, hits, misses, and a
-  short history of `(t, r)`.
-- **Keep the motion/measurement model behind one small interface** (predict,
-  predicted measurement, Jacobian, R). K11 swaps in a 2D model with a nonlinear
-  measurement; association and track management must not change.
-- The worker owns the tracker (state across CPIs), calls it right after
-  `process_rx_data`, and rebuilds it on RE-CONFIGURE. Tracks go to the GUI on a new
-  `tracks` signal, so `results` stays unchanged.
-- GUI: tracks on the existing detections scatter, as labelled markers with a short
-  tail.
-- Config: `TRACK_EN`, `TRACK_SIGMA_A`, `TRACK_SIGMA_R`, `TRACK_SIGMA_V`,
-  `TRACK_CONFIRM_M/N`, `TRACK_DELETE_S`, `TRACK_MIN_SPEED`, group `tracking`. The
-  GUI rows come for free.
-
-### 4.5 Tests (`common/test_tracking.py`, `__main__` asserts)
-
-Synthesize detection streams from ground-truth kinematics: measurement noise at
-(`sr`, `sv`), Pd = 0.9, ~2 false alarms per CPI uniform over the map, `dt` jittered
-over 20-50 ms.
-
-- (a) One target: one confirmed track, same ID for 20 s, RMS range error below `sr`.
-- (b) Two targets crossing in range with different v: IDs do not swap.
-- (c) False alarms only: no confirmed track, or fewer than one per minute.
-- (d) Target vanishes: its track is deleted within `TRACK_DELETE_S`.
-- (e) Fixed vs jittered `dt`: same tracks.
-
-Then live: loopback fake targets give one stable track each. Then the K6
-recordings.
-
-Done when (a)-(e) pass, fake targets track in the live app, and the fps cost is
-measured against the K1 table.
+Now Part L, steps L1-L4, in `docs/AntSDR_Phase7_Tracking_Guide.md` (2026-11-05).
 
 ---
 
@@ -262,7 +191,7 @@ Start on gear you already own, where datasheets give you something to check agai
 
 - A VNA covering >= 6 GHz (LiteVNA-64 class; a NanoVNA-H4 stops at 1.5 GHz), with
   its SMA calibration standards.
-- The soldering kit for K5 (Appendix A). Order both while K1-K3 run.
+- The soldering kit for K5 (Appendix A). Order both while K1-K2 run.
 
 ### 5.2 Measurements on owned gear
 
@@ -552,7 +481,7 @@ of switch gives -0.6; use -2 for margin. Put the same value into
 
 ---
 
-## 10. K10 - angle on the host; K11 - tracker in (x, y)
+## 10. K10 - angle on the host; K11 - field day 2
 
 ### 10.1 K10 - angle (TDM)
 
@@ -594,18 +523,18 @@ Done when fake targets at +-30 deg come back within 1 deg at 0 and +-20 m/s (the
 Doppler correction at work), and on the field a person walking a known line traces
 it.
 
-### 10.2 K11 - tracker in (x, y), field day 2
+### 10.2 K11 - field day 2
 
-- State `[x, y, vx, vy]`, constant velocity. Measurement `(r, theta, v_r)` is
-  nonlinear, so use an EKF with
-  `h(x) = [sqrt(x^2 + y^2), atan2(x, y), (x vx + y vy) / r]`. `sigma_theta` comes
-  from the detection's SNR, or a fixed ~2 deg to start.
-- Association and management are unchanged. The gate becomes 11.34 (3 dof, 99 %).
-- Field day 2, one change at a time: the RX column in place of the grid (COTS sector
-  still TX), then the TX board through the switch with TDM on. Set the TX gain per
-  9.6. Then a person walking a known path, a car along a road. Record everything.
+The (x, y) tracker moved to Phase 7 (L5); this step records what it validates on (L6b).
 
-Done when the tracks follow the known paths on the x-y plot.
+- psi0 first, from a corner reflector carried radially along boresight (K9 in
+  `TODO.md`).
+- One change at a time: the RX column in place of the grid (COTS sector still TX),
+  then the TX board through the switch with TDM on. Set the TX gain per 9.6.
+- Then a person walking a known path and a car along a road. Record everything.
+
+Done when psi0 is set, a person walking a known line traces it on the PPI (K10's
+field check), and the recordings exist for Phase 7's L6b.
 
 ---
 
@@ -643,16 +572,14 @@ Design notes for when it comes:
   wrong sign (10.1).
 - **Angles mirrored** -> the conj convention or A and B swapped (10.1). Fix by
   experiment, then write it down.
-- **Track IDs swap on crossings** -> gate too wide or `sa` too large. v normally
-  separates crossing targets.
 - **RX saturates with the patches close together** -> isolation: more spacing, a
   metal fence between the boards, or lower RX gain. Check against the 9.5 S21
   numbers.
 
 ## 13. Reading - before each lane
 
-Phase 6 is mostly new ground: RF measurement, antennas, estimation and tracking,
-array signal processing. For each lane: the concepts worth owning before building,
+Phase 6 is mostly new ground: RF measurement, antennas, array signal processing
+(tracking reading: Phase 7, Section 4). For each lane: the concepts worth owning before building,
 what to read, and a small exercise that makes them stick. Read the lane's list
 before its first step; the exercises are an hour or two each, in numpy, openEMS or
 on paper.
@@ -723,43 +650,9 @@ Exercises:
 - Plot array factors in numpy: 8 elements at 0.55 lambda (the column in
   elevation), two elements at lambda/2 and at 2.8 lambda (9.2's ambiguity table).
 
-### 13.3 Tracking (before K3)
+### 13.3 Tracking: moved to Phase 7
 
-Concepts:
-- The Kalman filter: predict and update, covariance, innovation, Kalman gain, and
-  why Q and R are the only real tuning knobs.
-- Kinematic models: constant velocity with discretized white-noise acceleration
-  (the Q in 4.2), constant acceleration, and how `sa` trades lag vs noise.
-- Filter consistency: NEES and NIS tests. Tune `sa`, `sr`, `sv` with these, not by
-  eye.
-- Data association: gating (Mahalanobis distance, chi-square), global nearest
-  neighbour as an assignment problem (Hungarian algorithm), and the heavier
-  alternatives (JPDA, MHT) - and why GNN is enough at these target densities.
-- Track management: M-of-N confirmation, deletion, and the sequential track-score
-  (SPRT) alternative.
-- Nonlinear measurements for K11: the EKF and its Jacobians, the
-  converted-measurement alternative, the UKF.
-- The radar-specific advantage: a measured radial velocity makes initiation
-  single-shot and association much easier than with position-only sensors.
-
-Read:
-- Labbe, *Kalman and Bayesian Filters in Python* (free, GitHub
-  `rlabbe/Kalman-and-Bayesian-Filters-in-Python`): start here. g-h filter, KF,
-  multivariate KF, EKF, all runnable.
-- Bar-Shalom, Li, Kirubarajan, *Estimation with Applications to Tracking and
-  Navigation* (Wiley): the reference for kinematic models, NEES/NIS consistency
-  and the EKF. Read after Labbe.
-- Blackman and Popoli, *Design and Analysis of Modern Tracking Systems* (Artech
-  House): gating, assignment, initiation, confirmation and deletion as fielded
-  radars do them.
-- `scipy.optimize.linear_sum_assignment` documentation.
-
-Exercises:
-- A 1D constant-velocity KF on a synthetic target: plot the NIS over time and
-  check its mean is ~2 (the measurement dimension). Mis-tune `sa` by 10x each way
-  and watch the NIS and the lag.
-- Two crossing targets with and without the v measurement: see how much the
-  measured velocity buys in association.
+Section 4 of `docs/AntSDR_Phase7_Tracking_Guide.md` (2026-11-05).
 
 ### 13.4 Angle estimation and TDM-MIMO (before K7 and K10)
 
