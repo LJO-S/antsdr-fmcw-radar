@@ -20,3 +20,4 @@ scripts/antenna_design/antenna.pretty/*.png
 **/gerbers/
 local/
 docs/datasheets
+.superpowers

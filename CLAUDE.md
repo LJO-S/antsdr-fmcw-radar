@@ -77,7 +77,7 @@ src/python/                 # import root
     fabric_ctl.py  # FabricCtl (enable/disable/set_calib_delay sequencing) + SshDevmem transport
     test_fabric_ctl.py, test_target_sim.py, test_recorder.py  # board-free, run as __main__
   image.png, image-1.png  # screenshots of other radar GUIs, kept as reference
-docs/              # AntSDR_Phase6_Tracking_Antennas_Angle_Guide.md (Part K spec, active),
+docs/              # AntSDR_Phase6_Antennas_Angle_Guide.md (Part K spec, active),
                    #   AntSDR_Phase7_Tracking_Guide.md (Part L spec, tracking, active),
                    #   firmware-branch-workflow.md, rf_and_regulatory.md,
                    #   rf-power-and-spectrum-sweden.pdf, fmcw_fabric_architecture.svg,

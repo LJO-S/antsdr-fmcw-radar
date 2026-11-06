@@ -77,7 +77,7 @@ Part H stays deferred. Part J blocks nothing and can run in parallel.
 
 ## Part K - Phase 6: RF bench, patch antennas, 2T1R angle (active)
 
-Spec: `docs/AntSDR_Phase6_Tracking_Antennas_Angle_Guide.md` ("G" = its sections).
+Spec: `docs/AntSDR_Phase6_Antennas_Angle_Guide.md` ("G" = its sections).
 Rewritten 2026-09-28: angle from two switched TX antennas (2T1R TDM), not two
 receivers - 2R2T caps the E200 at 30.72 MSPS = ~6 m bins (G1.2). The phase is for
 learning RF: VNA, soldering, an RF component, antennas. Software lane first; order
@@ -149,19 +149,49 @@ moved to Part L on 2026-11-05.
 ## Part L - Phase 7: tracking (active, in parallel with Part K)
 
 Spec: `docs/AntSDR_Phase7_Tracking_Guide.md` ("G7" = its sections). Split out of
-Phase 6 on 2026-11-05. Done on synthetic and real targets, so L6 waits on K6 and
-K11's field day 2; everything before it runs now. The `20261102-19*` reference
-sessions (spur test, L1 check) are on the laptop, not the desktop.
+Phase 6 on 2026-11-05. L0-L5 run now; L6 waits on K6 and K11. The `20261102-19*`
+reference sessions (spur test, L1 check) are on the laptop, not the desktop.
 
-- [ ] L0 - reading + exercises (G7 4): Labbe done 2026-11-05; gtrack PDF; NIS,
-      measured-v and EKF-vs-UKF NEES exercises.
-- [ ] L1 - `snr_db` per detection (G7 5); `replay --check` on the recorded keys only.
-- [ ] L2 - tracker in (r, v) (G7 6): KF, two-stage GNN, M-of-N + dr/dt check, tests
-      (a)-(k).
-- [ ] L3 - worker, playback, `replay --tracks` (G7 7).
-- [ ] L4 - GUI layout A (G7 8): PPI-first Radar tab, track list, RD maps to Signals.
-- [ ] L5 - tracker in (x, y) (G7 9): EKF, tests (l)-(o).
-- [ ] L6 - real targets (G7 12): L6a on K6's recordings, L6b on field day 2's.
+- [ ] L0 - reading + exercises (G7 4)
+  - [x] Labbe (2026-11-05), gtrack PDF (2026-11-06)
+  - [ ] Ex 1, NIS: CV KF, r and v measured; mean NIS ~2; mistune `sa` 10x each way
+  - [ ] Ex 2: two crossing targets, with and without measured v
+  - [ ] Ex 3: EKF vs UKF at 300 m, 13 and 20 dB; mean NEES ~4 decides the UKF for L5
+  - Bar-Shalom, Blackman: look-ups only (DWNA Q, NIS/NEES bounds, SPRT)
+- [ ] L1 - `snr_db` per detection (G7 5)
+  - Cell power over the CFAR noise estimate, in dB: "both" on `avg_pwr`, up/down-only
+    on their own map, TDM on `|X_A|^2 + |X_B|^2`
+  - Mirror it in `profile_cpi.py`
+  - `replay --check`: compare only the keys the recorded line has
+  - Done: old sessions pass, a new session passes, +20 dB per decade of `amp`
+- [ ] L2 - tracker in (r, v), `common/tracking.py` (G7 6)
+  - `TrackFilter`: `init`, `predict`, `innovation`, `update` (6.2)
+  - KF: DWNA Q, `sa` 5, `sr` 0.7, `sv` 0.5; H per `kind`; wrap the v innovation (6.3)
+  - Two-stage GNN, gate 9.21: confirmed tracks, then tentative, then births outside
+    confirmed gates (6.4)
+  - Confirm on 3-of-4 + the dr/dt = v check; delete by time (0.5 s, 5 s in the MTI
+    notch); merge duplicates; cap 100 (6.5)
+  - `TRACK_*` config group (6.7)
+  - Done: `common/test_tracking.py` (a)-(k) + the confirmation delay pass
+- [ ] L3 - app, playback, replay (G7 7)
+  - Worker owns the tracker, emits `tracks` snapshots, rebuilds on RE-CONFIGURE
+  - `PlaybackWorker` owns its own tracker, resets on seek
+  - `replay --tracks <file.jsonl>`, NIS included
+  - Done: one stable track per loopback fake target; `--tracks` deterministic; fps
+    cost vs K1
+- [ ] L4 - GUI layout A (G7 8)
+  - Toolbar row; PPI left ~60 % (r-v plot there with TDM off); r-v plot + track list
+    right
+  - Tracks: ID + ~2 s tail, coasting dimmed, tentative toggle, click to select
+  - RD maps to Signals; track lines in History
+  - Done: live and playback in loopback; GUI slot re-measured
+- [ ] L5 - tracker in (x, y) (G7 9)
+  - EKF `[x, y, vx, vy]` on (r, theta, v_r); R per detection from `snr_db`; gate 11.34
+  - Done: tests (l)-(o) pass or are resolved via G7 10; `theta0` fake targets on the PPI
+- [ ] L6 - real targets (G7 12)
+  - L6a, K6 recordings: approaching car v < 0; tune `sa`, `sr`, `sv` by NIS per class;
+    spurs never confirm
+  - L6b, K11 recordings: walked line and a car traced on the PPI; NEES/NIS sane
 
 ---
 

@@ -29,7 +29,9 @@ tests, data association.
 
 ```
 L0 reading -> L1 SNR -> L2 tracker (r, v) -> L3 app/replay -> L4 GUI
-                                 \-> L5 tracker (x, y), fake targets with theta0
+                                 \
+                                  \
+                                  --> L5 tracker (x, y), fake targets with theta0
 Phase 6 K6, field day 1 ----------------------------------> L6a validate (r, v)
 Phase 6 field day 2 (patches + TDM on air, psi0 set) -----> L6b validate (x, y)
 ```
@@ -48,7 +50,9 @@ regenerates them); tracking in the fabric.
   (1.8 deg at 20 dB SNR, 4 deg at 13 dB, worse off boresight; G6 10.1); SNR from L1.
 - **Targets**: cars at 0-80 km/h (<= 22 m/s), people on foot, bikes. Accelerations: cars
   2-3 m/s^2, ~8 in hard braking; people and bikes 1-3. Every mode's `MAX_VELOCITY` is above
-  22 m/s (lowest: 32 m/s in triangle + TDM), so nothing aliases short of ~115 km/h.
+  22 m/s (lowest: 32 m/s in triangle + TDM), so nothing aliases short of ~115 km/h. A
+  target first seen above it can't be tracked: its aliased v predicts the wrong range
+  (gtrack resolves this by unrolling Doppler; out of scope).
 - **Detections per target**: Part G showed mostly one dot per car, person or bike,
   sometimes two for walkers. NMS (`nsize` 3, a 7x7 window, `dsp.py` `nms`) already acts
   as a rough cluster: +-3 range bins (+-9 m) and +-3 velocity bins.
@@ -129,37 +133,48 @@ Constant-velocity filter, steady state under 8 m/s^2 braking, 25 CPI/s, `sr` 0.7
 ## 4. L0 - reading and exercises (no board)
 
 Read:
-- Labbe, *Kalman and Bayesian Filters in Python*: **done** (2026-11-05).
-- TI, *Tracking radar targets with multiple reflection points* (gtrack,
+- [x] Labbe, *Kalman and Bayesian Filters in Python*: 
+    - fundamentals
+    - EKF, UKF, particle filters, IMM
+- [x] TI, *Tracking radar targets with multiple reflection points* (gtrack,
   [PDF](https://e2e.ti.com/cfs-file/__key/communityserver-discussions-components-files/1023/Tracking-radar-targets-with-multiple-reflection-points.pdf)):
-  the L5 blueprint, covering the EKF on (r, theta, v_r), gating, scoring and allocation.
-- Bar-Shalom, Li, Kirubarajan, *Estimation with Applications to Tracking and Navigation*:
-  look things up, don't read cover to cover. The kinematic-models chapter (discretized
-  white-noise acceleration, the Q in 6.3) when writing Q; consistency of state estimators
-  (NEES/NIS and their chi-square bounds) when tuning; the IMM only if Section 10 calls
-  for it.
-- Blackman, Popoli, *Design and Analysis of Modern Tracking Systems*: look up the SPRT track
+    - the L5 blueprint
+    - EKF on (r, theta, v_r)
+    - Tracking via gating + scoring +allocation
+- [ ] Bar-Shalom, Li, Kirubarajan, *Estimation with Applications to Tracking and Navigation*:
+  (look things up, don't read cover to cover) 
+  - Kinematic-models chapter (discrete white-noise acceleration, DWNA: the Q in 6.3, not the continuous CWNA) when writing Q 
+  - Consistency of state estimators (NEES/NIS and their chi-square bounds) when tuning 
+  - IMM only if Section 10 deems it necessary
+- [ ] Blackman, Popoli, *Design and Analysis of Modern Tracking Systems*: look up the SPRT track
   score if false tracks appear.
-- Optional: *Systematic Analysis of the PMBM, PHD, JPDA and GNN Multi-Target Tracking
-  Filters* ([IEEE](https://ieeexplore.ieee.org/document/9011349/)), the four families side
-  by side; *A Survey of Manoeuvring Target Tracking Methods*
-  ([arXiv 1503.07828](https://arxiv.org/pdf/1503.07828)), motion models and IMM.
+- Optional: 
+  - [ ] *Systematic Analysis of the PMBM, PHD, JPDA and GNN Multi-Target Tracking Filters* ([IEEE](https://ieeexplore.ieee.org/document/9011349/)), the four families side by side; 
+  - [ ] *A Survey of Manoeuvring Target Tracking Methods* ([arXiv 1503.07828](https://arxiv.org/pdf/1503.07828)), motion models and IMM.
 
-Tools: FilterPy for the exercises (not in `common/tracking.py`). Stone Soup
-([docs](https://stonesoup.readthedocs.io/)) as a reference: run its JPDA on replayed
-detections and compare with your GNN. Metrics: NIS/NEES to tune, OSPA/GOSPA to compare
-trackers.
+Tools: 
+- FilterPy: 
+  - for the exercises 
+  - don't use in `common/tracking.py`
+- Stone Soup: 
+  - ([docs](https://stonesoup.readthedocs.io/)) 
+  - Use as a reference: run its JPDA on replayed detections and compare with your GNN. 
+  - Metrics: NIS/NEES to tune, OSPA/GOSPA to compare trackers.
 
 Exercises (numpy, an evening each):
-1. **NIS**: a constant-velocity KF on one synthetic target, r and v measured. Plot the
-   NIS over time and check its mean is ~2 (the measurement dimension). Mistune `sa` by 10x
-   each way and watch the NIS and the lag.
-2. **Measured v in association**: two crossing targets, tracked with and without the v
-   measurement. See how much v buys.
-3. **EKF vs UKF**: a constant-velocity target at 300 m in (x, y), measured as
-   (r, theta, v_r) at 13 and 20 dB SNR (sigma_theta from G6 10.1). Run both filters over
-   Monte Carlo runs and compare the mean NEES (4 for a 4-state filter). This settles
-   whether L5 needs the UKF at long range.
+1. [ ] **NIS**: 
+      - constant-velocity KF on one synthetic target
+      - r and v measured 
+      - Plot NIS over time and check mean is ~2 (the measurement dimension) 
+      - Mistune `sa` by 10x each way and watch the NIS and lag
+2. [ ] **Measured v in association**: 
+      - two crossing targets 
+      - tracked with and without the v measurement (to see how much v buys)
+3. [ ] **EKF vs UKF**: 
+      - constant-velocity target at 300 m in (x, y) 
+      - measure as (r, theta, v_r) at 13 and 20 dB SNR (sigma_theta from G6 10.1)
+      - Run both filters over Monte Carlo runs and compare the mean NEES (4 for a 4-state filter)
+      - This settles whether L5 needs the UKF at long range
 
 Done when the three exercises are run and their results noted.
 
@@ -167,18 +182,20 @@ Done when the three exercises are run and their results noted.
 
 ## 5. L1 - SNR per detection (no board)
 
-- Every target dict gains `snr_db`: the detection cell's power over the CFAR noise
-  estimate (the same cell-averaging estimate the threshold uses), in dB. Triangle "both":
-  on `avg_pwr`; up-only and down-only on their own ramp's map. TDM: on `|X_A|^2 + |X_B|^2`, which is 3 dB above the per-channel SNR that
-  the angle-noise formula wants (9.1).
+- Every target dict gains `snr_db`: 
+  - the detection cell's power over the CFAR noise estimate (the same cell-averaging estimate the threshold uses), in dB. 
+  - Triangle "both": on `avg_pwr`
+  - up-only and down-only on their own ramp's map. 
+  - TDM: on `|X_A|^2 + |X_B|^2`, which is 3 dB above the per-channel SNR that the angle-noise formula wants (9.1).
 - `offline/profile_cpi.py` mirrors `process_cpi` and asserts it equal: change both.
-- `replay --check` compares whole dicts (`offline/replay.py`, `check()` and
-  `Player`'s per-CPI check), so a new key fails every older session. Compare only the keys
-  the recorded line has: older sessions keep checking exact, and new sessions record
-  `snr_db` and check it too.
+- `replay --check` compares whole dicts (`offline/replay.py`, `check()` and `Player`'s per-CPI check): 
+  - Problem: A new key fails every older session. 
+  - Solution: Compare only the keys the recorded line has: older sessions keep checking exact, and new sessions record `snr_db` and check it too.
 
-Done when the reference sessions still pass `replay --check`, a fresh session with
-`snr_db` passes it, and a fake target's `snr_db` moves 20 dB per decade of `amp`.
+Done when:
+  - the old reference sessions still pass `replay --check` 
+  - a fresh session with `snr_db` passes, 
+  - a fake target's `snr_db` moves 20 dB per decade of `amp`.
 
 ---
 
@@ -206,27 +223,66 @@ class TrackFilter:                 # one instance per track
     state, cov                     # for the GUI and the tests
 ```
 
-The model is chosen once from the config: `TDM_EN` gives L5's EKF, otherwise the (r, v)
-KF. One session has one config, so nothing switches mid-run. Until L5 exists, `TDM_EN`
-also gets the (r, v) KF and theta is ignored.
+The model is chosen once from the config: 
+- `TDM_EN` = True -> EKF (or UKF) 
+- `TDM_EN` = False -> KF 
+
+One session has one config, so nothing switches mid-run. Until L5 exists, `TDM_EN` also gets the (r, v) KF and theta is ignored.
 
 ### 6.3 The (r, v) Kalman filter
 
 ```
+# state variable
 x = [r, v]
-F = [[1, dt], [0, 1]]
-Q = sa^2 * [[dt^4/4, dt^3/2], [dt^3/2, dt^2]]      # discretized white-noise acceleration
-z = [r, v],  R = diag(sr^2, sv^2),  P0 = R          # a track starts from one detection
-H by kind:  "up"   [[1,  k], [0, 1]]                 # sawtooth detections are "up"
-            "down" [[1, -k], [0, 1]]                 # triangle down-only
-            "both" I                                 # triangle cancels the coupling
-k = CHIRP_FC_HZ * T_EFF / CHIRP_BW_HZ               # ~0.012 s, dsp.md "Range-Doppler coupling"
+
+# process model
+F = [[1, dt], 
+     [0, 1]]
+
+# discrete white-noise acceleration (DWNA, piecewise constant; "Why DWNA" below)
+Q = sa^2 * [[dt^4/4, dt^3/2], 
+            [dt^3/2, dt^2]]
+
+# measurement 
+z = [r, v]  
+R = diag(sr^2, sv^2),  
+
+# a track starts from one detection
+P0 = R          
+
+# kind: sawtooth detections are all "up"; triangle gives "both" (the coupling
+# cancels) plus up-only ("up") and down-only ("down")
+H by kind:  "up"   [[1,  k], 
+                    [0, 1]]                 
+            "down" [[1, -k], 
+                    [0, 1]]                 
+            "both" I 
+where k = CHIRP_FC_HZ * T_EFF / CHIRP_BW_HZ   # ~0.012 s, dsp.md "Range-Doppler coupling"
 ```
 
 - The v innovation is wrapped into [-`MAX_VELOCITY`, `MAX_VELOCITY`): the Doppler axis is
   circular (`dsp.md`). It only matters near the edge.
-- Defaults: `sa` 5 m/s^2 (3.3), `sr` 0.7 m (sub-bin refined, bins are 3.0 m), `sv` 0.5 m/s.
-  Fixed R to start; scaling it per detection from `snr_db` is an upgrade (Section 10).
+- Defaults: 
+    - `sr` = 0.7 m (sub-bin refined, bins are 3.0 m)
+    - `sv` = 0.5 m/s
+    - `sa` = 5 m/s^2 (3.3)
+    - Fixed R to start; scaling it per detection from `snr_db` is an upgrade (Section 10).
+    - `sr` and `sv` cover measurement noise only. On a car the strongest reflection wanders
+      over the body (gtrack sizes its car gate for +-4 m, +-2 m/s), so expect L6a to need a
+      larger `sr` for cars (Section 10).
+- **Why DWNA**: Labbe and gtrack (2.3) recommend the continuous model (CWNA,
+  `Q = q * [[dt^3/3, dt^2/2], [dt^2/2, dt]]`) for irregular dt. Measured 2026-11-06, 8 m/s^2
+  braking, CWNA's `q` matched to `sa` 5 at 25 CPI/s, mean NIS:
+
+  | CPI rate | DWNA | CWNA |
+  |---|---|---|
+  | 25/s | 4.4 | 4.4 |
+  | 6/s | 3.9 | 12.3 |
+  | 20-50 ms jitter | 4.2 | 4.1 |
+
+  A manoeuvre's prediction error grows as `a*dt`, and so does DWNA's noise (`sa*dt`); CWNA's
+  grows as `sqrt(dt)` and falls behind at low CPI rates. CWNA fits white-noise truth, not
+  sustained braking or turns.
 
 ### 6.4 Association
 
@@ -248,25 +304,25 @@ k = CHIRP_FC_HZ * T_EFF / CHIRP_BW_HZ               # ~0.012 s, dsp.md "Range-Do
 
 ### 6.5 Track management
 
-- **Confirm** when M of N CPIs hit (3 of 4) **and** the kinematic check has passed. Tentative
-  tracks are not shown (L4 has a toggle).
-- **Kinematic check (`dr/dt = v`)**, the spur filter. Over the track's history (up to the
-  last ~3 s), fit the slope of r against t and compare it with the mean measured v over the
-  same window. Both are the window's mean velocity, so manoeuvres do not upset it.
-  - *Decisive* once the slope's uncertainty `sigma_slope` (from the fit; roughly
-    `sr * sqrt(12 / (N T^2))` for N updates over T seconds) is below `|v_mean| / k`, with
-    k = `TRACK_CHECK_K` (3). A track with |v_mean| under `TRACK_CHECK_VMIN` (0.7 m/s) is
-    decisive at once: a stationary target has nothing to check, and a slower target would
-    need more than the window to decide.
-  - *Pass* when `|slope - v_mean| < k * sqrt(sigma_slope^2 + sigma_vmean^2)`, with
-    `sigma_vmean = sv / sqrt(N)`; *fail* deletes the track.
+- **Confirm**:
+  - M of N CPIs hit (3 of 4) **and** the kinematic check has passed. 
+  - Tentative tracks are not shown (L4 has a toggle).
+- **Kinematic check (`dr/dt = v`)**, i.e. the spur filter: it rejects any detection stream
+  whose range does not move with its v (only spurs are tested, (i)):
+  - During track's history (<= ~3 s) fit slope of 'r' vs 't' 
+  - Compare with the mean measured v over the same window, unrolled to the track (6.6). Both are the window's mean velocity, so manoeuvres do not upset it.
+  - Three stages:
+    - *Decisive*: `sigma_slope < |v_mean| / k`, where `k = TRACK_CHECK_K` (3) & `sigma_slope ~= sr * sqrt(12 / (N T^2))` for N updates over T seconds 
+    - *Pass*: `|slope - v_mean| < k * sqrt(sigma_slope^2 + sigma_vmean^2)`, where `sigma_vmean = sv / sqrt(N)`
+    - *fail*: delete track
+    - Note: A track with `|v_mean| < TRACK_CHECK_VMIN` (0.7 m/s) is immediately 'decisive' since semi-/stationary target has nothing to check
   - So the confirmation delay scales with speed by itself (25 CPI/s, k 3): a car at 15 m/s
     ~0.2 s, a bike at 5 m/s ~0.4 s, a walker at 1.5 m/s ~1 s, a stationary target at once.
     A spur (fixed r, v != 0) fails the moment the check becomes decisive, so it **never
     confirms**.
   - It keeps running on confirmed tracks over the sliding window: a confirmed track that
     drifts onto a spur and fails is deleted.
-  - A spur with |v| under `TRACK_CHECK_VMIN` passes as stationary; with MTI on, one near
+  - A spur with `|v| < TRACK_CHECK_VMIN` passes as stationary; with MTI on, one near
     v = 0 sits in the notch and is removed before detection anyway.
 - **Delete by time**, not by CPI count:
   - a tentative track after 2 consecutive misses, until it has met M of N;
@@ -294,14 +350,22 @@ k = CHIRP_FC_HZ * T_EFF / CHIRP_BW_HZ               # ~0.012 s, dsp.md "Range-Do
 
 ### 6.6 Placement
 
-- `common/tracking.py`: pure numpy/scipy, no Qt.
-  `Tracker(cfg).update(detections, t, mti_en) -> list[Track]`, all tracks; the GUI filters
-  by status.
-- `Track`: id, status (tentative / confirmed), filter (state, covariance), hits, misses,
+- `common/tracking.py`: 
+  - pure numpy/scipy, no Qt.
+  - `Tracker(cfg).update(detections, t, mti_en) -> list[Track]`, all tracks; 
+  - the GUI filters by status.
+  - no FilterPy
+- `Track`: 
+  - Content: id, status (tentative / confirmed), filter (state, covariance), hits, misses,
   time of the last update, age, the last detection's `snr_db` (for the track list), a ~3 s
   history of `(t, r, v)` (plus `x, y` in L5) for the kinematic check and the ~2 s tails,
-  and the NIS of each update (for tuning, written by L3's `replay --tracks`).
+  with v unrolled to the track (predicted v + wrapped innovation, so a track that speeds
+  past `MAX_VELOCITY` keeps passing the check), and the last update's NIS (written each CPI
+  by L3's `replay --tracks`).
   "Coasting" = confirmed and not updated this CPI.
+  - Size: the history is a `deque(maxlen=...)`, ~19 kB per track as Python tuples (90
+    entries of 5 floats, measured), ~2 MB at `TRACK_MAX`. Nothing grows with track age.
+
 
 ### 6.7 Config (group `tracking`; the GUI rows come for free)
 
@@ -351,8 +415,9 @@ dt jittered over 20-50 ms.
   reference sessions (`data/sessions/20261102-19*`, real RF, all four spurs) through
   the tracker: no track at a spur range ever confirms. They live on the laptop, so this
   part skips with a message where they are absent.
-- (j) Consistency: one target whose truth has white acceleration at `sa`: mean NIS inside
-  the 95 % chi-square band for 2 dof.
+- (j) Consistency: one target whose truth has a random acceleration drawn from
+  N(0, `sa`^2) each CPI and held over it (the DWNA model): mean NIS inside the 95 %
+  chi-square band for 2 dof.
 - (k) Triangle kinds: a mix of "up", "down" and "both" from one target: one track, and its
   range has no `k*v` bias.
 - Confirmation delay: a walker at 1.5 m/s confirms within ~1.5 s and a car at 15 m/s within
@@ -385,8 +450,6 @@ table in `TODO.md`.
 ---
 
 ## 8. L4 - GUI (layout A)
-
-Chosen on 2026-11-05 from three mockups.
 
 **Radar tab**
 - One toolbar row: MTI, Detections, Tentative, Up/Down, Record and the notes field. It
@@ -449,7 +512,7 @@ Done when live and playback show the layout with fake targets tracked in loopbac
 
 - (l) A straight-line target at 100 m, 20 dB: mean NEES ~4 over Monte Carlo runs.
 - (m) **Turn**: a car at 15 m/s turning 90 deg at 100 m. Report the sideways lag and the
-  NIS through the turn. This test decides adaptive Q or an IMM (Section 10).
+  NIS through the turn. This test decides adaptive Q, a CA model or an IMM (Section 10).
 - (n) **Long range**: 300 m at 13 dB, NEES. If inconsistent, the UKF (L0 exercise 3)
   replaces the EKF behind the interface.
 - (o) A target crossing the beam at 30 m: one track, no ID loss.
@@ -463,12 +526,14 @@ and loopback fake targets with `theta0` track live on the PPI.
 
 | Symptom (tests or recordings) | Add |
 |---|---|
-| NIS spikes at manoeuvres, tracks lag (test m, recordings) | Adaptive Q (Labbe's continuous adjustment: scale Q up when the NIS passes ~4-5, well under the gate) or an IMM (a quiet CV model plus an agile one) |
+| NIS spikes at manoeuvres, tracks lag (test m, recordings) | Adaptive Q (Labbe's continuous adjustment: scale Q up when the NIS passes ~4-5, well under the gate) or an IMM (a quiet CV model plus an agile one), or a constant-acceleration (CA) state `[x, y, vx, vy, ax, ay]` (gtrack's default) |
 | EKF NEES inconsistent at long range or low SNR | UKF behind the same interface |
 | NIS depends on SNR | R scaled per detection from `snr_db` |
+| NIS high on cars, normal on walkers (L6a) | A target-extent term in R (gtrack's dispersion `C_D`, estimated per track) |
+| L5 tentative tracks (sideways sigma 10 m/s) grab clutter | Cap the gate's size in metres (gtrack's `DepthLimit`, `WidthLimit`) |
 | Duplicate tracks on one car or person | NMS Doppler window in m/s instead of bins (TDM doubles micro-Doppler in bins; this changes detections, so `replay --check` on older sessions needs the old setting), then clustering (DBSCAN in (r, v), or gtrack's centroid) |
 | Tracks swap when targets crowd | JPDA |
-| Many false tracks | SPRT track score (Blackman) |
+| Many false tracks | SPRT track score (Blackman), or a minimum `snr_db` to start a track (gtrack's `setSNRThre`) |
 | Weak far targets never confirm | Track-before-detect (research topic, skip) |
 
 Adaptive Q must trigger before the gate rejects the detection, or the track is lost with
@@ -496,7 +561,8 @@ Q unchanged. Clutter associated to a track looks like a manoeuvre and can trigge
 - **L6a, (r, v), on K6's recordings** (Phase 6 field day 1: cars, people, bikes, a quiet
   stretch; software mode and fabric /8):
   - an approaching car reads v < 0;
-  - tune `sa`, `sr`, `sv` by NIS (`replay --tracks`): mean NIS ~2 on steady targets;
+  - tune `sa`, `sr`, `sv` by NIS (`replay --tracks`): mean NIS ~2 on steady targets, per
+    class (cars likely need a larger `sr`, 6.3);
   - count detections per target (one dot or several) against the Section 10 rows;
   - the spurs, and any multipath ghosts, never confirm;
   - IDs hold in normal traffic; slow crossings lose IDs only as documented in 6.5.
