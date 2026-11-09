@@ -155,7 +155,9 @@ reference sessions (spur test, L1 check) are on the laptop, not the desktop.
 - [ ] L0 - reading + exercises (G7 4)
   - [x] Labbe (2026-11-05), gtrack PDF (2026-11-06)
   - [x] Ex 1, NIS: CV KF, r and v measured; mean NIS ~2; mistune `sa` 10x each way
-  - [ ] Ex 2: two crossing targets, with and without measured v
+  - [x] Ex 2: two crossing targets, with and without measured v; with v no swaps from
+        dv 2 m/s at `sa` 5, r-only bounces up to 6-8 (2-3 at matched `sa`): v buys
+        crossings and braking at one `sa`; NMS merges first, GNN is enough
   - [ ] Ex 3: EKF vs UKF at 300 m, 13 and 20 dB; mean NEES ~4 decides the UKF for L5
   - Bar-Shalom, Blackman: look-ups only (DWNA Q, NIS/NEES bounds, SPRT)
 - [ ] L1 - `snr_db` per detection (G7 5)

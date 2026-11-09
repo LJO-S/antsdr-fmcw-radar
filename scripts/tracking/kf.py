@@ -31,70 +31,85 @@ class Radar:
         return np.array([target.r, target.v]) + self.rng.normal(0, self.sigma)
 
 
+def d2(y, S):
+    """Squared Mahalanobis distance of innovation y: the gate test, and the NIS once z is used."""
+    return y @ np.linalg.solve(S, y)
+
+
 class CvKalmanFilter:
-    def __init__(self, dt, process_noise_std, sr, sv):
-        self.sr = sr
-        self.sv = sv
+    """
+    Constant-velocity Kalman filter on [r, v], DWNA process noise.
+    Interface as TrackFilter (Phase 7 guide 6.2): init, predict(dt), innovation, update.
+    z is always the radar's [r, v]; with measure_v False the filter uses only z[0].
+    """
+
+    def __init__(self, sa, sr, sv, measure_v=True):
+        # Process noise: std of the random acceleration [m/s^2]
+        self.sa = sa
 
         # State vector [r, v] and its covariance; set by init()
         self.x = None
         self.P = None
 
+        # Measurement matrix and noise covariance: (r, v) or r only
+        if measure_v:
+            self.H = np.eye(2)
+            self.R = np.diag([sr**2, sv**2])
+        else:
+            self.H = np.array([[1.0, 0.0]])
+            self.R = np.array([[sr**2]])
+        self.dim_z = self.H.shape[0]
+
+    def init(self, z, sv0=10.0):
+        """
+        Initialize the filter with the first measurement z.
+        r only: v starts at 0 with std sv0 [m/s] (unknown).
+        """
+        z = np.asarray(z, dtype=float)
+        if self.dim_z == 2:
+            self.x = z.copy()
+            self.P = self.R.copy()
+        else:
+            self.x = np.array([z[0], 0.0])
+            self.P = np.diag([self.R[0, 0], sv0**2])
+
+    def predict(self, dt):
+        """
+        Predict the state and covariance dt seconds ahead (dt may change every call)
+        """
         # State transition matrix
-        self.F = np.array([[1, dt], [0, 1]])
+        F = np.array([[1.0, dt], [0.0, 1.0]])
+        # DWNA: acceleration a held over dt moves the state by G*a, so Q = sa^2 G G'
+        G = np.array([dt**2 / 2, dt])
+        Q = self.sa**2 * np.outer(G, G)
+        # Predict the state and its covariance
+        self.x = F @ self.x
+        self.P = F @ self.P @ F.T + Q
 
-        # Process noise covariance matrix
-        # Note: Q is derived from the Piecewise-constant white noise acceleration model
-        q = process_noise_std**2
-        self.Q = q * np.array(
-            [
-                [dt**4 / 4, dt**3 / 2],
-                [dt**3 / 2, dt**2],
-            ]
-        )
-
-        # Measurement matrix
-        self.H = np.array([[1, 0], [0, 1]])
-
-        # Measurement noise covariance matrix
-        self.R = np.array([[self.sr**2, 0], [0, self.sv**2]])
-
-    def predict(self):
+    def innovation(self, z):
         """
-        Predict the next state and covariance
+        Residual y and its covariance S for measurement z, without updating (for gating)
         """
-        # Predict the state
-        self.x = self.F @ self.x
-        # Predict the state covariance
-        self.P = self.F @ self.P @ self.F.T + self.Q
+        z = np.asarray(z, dtype=float)[: self.dim_z]
+        # Measurement residual
+        y = z - self.H @ self.x
+        # Residual covariance
+        S = self.H @ self.P @ self.H.T + self.R
+        return y, S
 
     def update(self, z):
         """
-        Update the state with a new measurement z
+        Update the state with measurement z; returns the NIS of this update
         """
-        # Measurement residual
-        y = z - self.H @ self.x
-        assert y.shape == (2,), f"y shape is {y.shape}, expected (2,)"
-        # Residual covariance
-        S = self.H @ self.P @ self.H.T + self.R
-        # Kalman gain
-        K = (self.P @ self.H.T) @ np.linalg.inv(S)
+        y, S = self.innovation(z)
+        # Kalman gain K = P H' S^-1, solved instead of inverted (S, P symmetric: K' = S^-1 H P)
+        K = np.linalg.solve(S, self.H @ self.P).T
         # A-posteriori state estimate
-        self.x += K @ y
-        # A-posteriori covariance estimate
-        I = np.eye(self.P.shape[0])
-        self.P = (I - K @ self.H) @ self.P
-
-        # Return the NIS for this update
-        nis = y @ np.linalg.solve(S, y)
-        return nis
-
-    def init(self, z):
-        """
-        Initialize the filter with the first measurement z
-        """
-        self.x = z.copy()
-        self.P = self.R.copy()
+        self.x = self.x + K @ y
+        # A-posteriori covariance, Joseph form: stays symmetric and positive under rounding
+        I_KH = np.eye(2) - K @ self.H
+        self.P = I_KH @ self.P @ I_KH.T + K @ self.R @ K.T
+        return d2(y, S)
 
 
 def cross_check(dt, sa_filter, sr, sv, sa_true, num_steps, seed):
@@ -109,7 +124,7 @@ def cross_check(dt, sa_filter, sr, sv, sa_true, num_steps, seed):
     radar = Radar(sr=sr, sv=sv, rng=rng)
     target = Target(r=50.0, v=-3.0, sa=sa_true, rng=rng)
 
-    ours = CvKalmanFilter(dt=dt, process_noise_std=sa_filter, sr=sr, sv=sv)
+    ours = CvKalmanFilter(sa=sa_filter, sr=sr, sv=sv)
     ref = KalmanFilter(dim_x=2, dim_z=2)
     ref.F = np.array([[1.0, dt], [0.0, 1.0]])
     ref.H = np.eye(2)
@@ -125,7 +140,7 @@ def cross_check(dt, sa_filter, sr, sv, sa_true, num_steps, seed):
     for _ in range(num_steps):
         target.update(dt)
         z = radar.measure(target)
-        ours.predict()
+        ours.predict(dt)
         nis = ours.update(z)
         ref.predict()
         ref.update(z)

@@ -24,7 +24,7 @@ def run(sa_filter, seed=SEED):
     radar = Radar(sr=SR, sv=SV, rng=rng)
     target = Target(r=500.0, v=-3.0, sa=SA_TRUE, rng=rng)
     # Initialize the filter with the first measurement
-    kf = CvKalmanFilter(dt=DT, process_noise_std=sa_filter, sr=SR, sv=SV)
+    kf = CvKalmanFilter(sa=sa_filter, sr=SR, sv=SV)
     kf.init(radar.measure(target))
 
     num_steps = round(TOTAL_TIME / DT)
@@ -47,7 +47,7 @@ def run(sa_filter, seed=SEED):
         measurements.append(measurement)
 
         # Predict the next state
-        kf.predict()
+        kf.predict(DT)
 
         # Update the filter with the new measurement and compute NIS
         nis = kf.update(measurement)
