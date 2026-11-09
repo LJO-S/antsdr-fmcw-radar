@@ -116,7 +116,7 @@ SOL + thru + isolation, NanoVNA-Saver. Raw `.s1p/.s2p` kept locally, not in the 
   (`sma_launch_sim.py --kind pair --length 25 --eps-r 4.85 --omit vias` matches 5.0-5.7 GHz;
   the top pads become a quarter-wave stub at 5.75 GHz), but the boards have the
   footprint's two plated holes per SMA (checked 2026-10-24). With them the sim gives -30
-  to -40 dB. `TODO.md`, K9 step 0.
+  to -40 dB. Cause open; K9 kept the footprint.
 - **LiteVNA port 2 is not corrected** (1.5-port): its match, seen through the port-2 cable,
   puts a ~0.3 GHz ripple on the two-port S11 (0.1-0.15 off the load-terminated S11) and on
   S21 (+-0.5 dB). With the load-terminated S11 swapped in: line eps_eff 3.81-3.83, patch
