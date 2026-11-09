@@ -19,7 +19,7 @@ openEMS FDTD simulations of the 5.8 GHz inset-fed patch on FR4.
 | `column/` | Its per-run data (local, git-ignored) |
 | `sma_launch_sim.py`, `sma_launch/` | The Molex edge SMA in openEMS: its bias on the K8 readings (data local) |
 | `make_footprints.py` | Simulated copper -> KiCad 10 footprints in `antenna.pretty/` (K9 column, K8 witness patch); `test_make_footprints.py` |
-| `k9_turntable.md` | K9 turntable recipe on the LiteVNA: pattern, gain, A-B phase curve |
+| `k9_turntable.md` | K9 bench recipe on the LiteVNA: solder, witness eps_r, S11, coupling, isolation, pattern, gain, A-B phase curve |
 
 ## Run
 

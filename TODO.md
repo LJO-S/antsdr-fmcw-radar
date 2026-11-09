@@ -152,14 +152,8 @@ Spec: `docs/AntSDR_Phase7_Tracking_Guide.md` ("G7" = its sections). Split out of
 Phase 6 on 2026-11-05. L0-L5 run now; L6 waits on K6 and K11. The `20261102-19*`
 reference sessions (spur test, L1 check) are on the laptop, not the desktop.
 
-- [ ] L0 - reading + exercises (G7 4)
-  - [x] Labbe (2026-11-05), gtrack PDF (2026-11-06)
-  - [x] Ex 1, NIS: CV KF, r and v measured; mean NIS ~2; mistune `sa` 10x each way
-  - [x] Ex 2: two crossing targets, with and without measured v; with v no swaps from
-        dv 2 m/s at `sa` 5, r-only bounces up to 6-8 (2-3 at matched `sa`): v buys
-        crossings and braking at one `sa`; NMS merges first, GNN is enough
-  - [ ] Ex 3: EKF vs UKF at 300 m, 13 and 20 dB; mean NEES ~4 decides the UKF for L5
-  - Bar-Shalom, Blackman: look-ups only (DWNA Q, NIS/NEES bounds, SPRT)
+- [x] L0 - reading + exercises (G7 4, 2026-11-09): `scripts/tracking/`. GNN is enough;
+      EKF for L5 with `sa` 10. Results in G7 4.
 - [ ] L1 - `snr_db` per detection (G7 5)
   - Cell power over the CFAR noise estimate, in dB: "both" on `avg_pwr`, up/down-only
     on their own map, TDM on `|X_A|^2 + |X_B|^2`
@@ -188,7 +182,8 @@ reference sessions (spur test, L1 check) are on the laptop, not the desktop.
   - RD maps to Signals; track lines in History
   - Done: live and playback in loopback; GUI slot re-measured
 - [ ] L5 - tracker in (x, y) (G7 9)
-  - EKF `[x, y, vx, vy]` on (r, theta, v_r); R per detection from `snr_db`; gate 11.34
+  - EKF `[x, y, vx, vy]` on (r, theta, v_r), `sa` 10; R per detection from `snr_db`;
+    gate 11.34
   - Done: tests (l)-(o) pass or are resolved via G7 10; `theta0` fake targets on the PPI
 - [ ] L6 - real targets (G7 12)
   - L6a, K6 recordings: approaching car v < 0; tune `sa`, `sr`, `sv` by NIS per class;

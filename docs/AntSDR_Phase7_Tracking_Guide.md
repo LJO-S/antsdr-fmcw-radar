@@ -120,9 +120,12 @@ Constant-velocity filter, steady state under 8 m/s^2 braking, 25 CPI/s, `sr` 0.7
   | 20 dB SNR (sigma_theta 1.8 deg) | 0.14 | 0.43 |
   | 13 dB SNR (sigma_theta 4 deg) | 0.7 | 2.2 |
 
-  L0 exercise 3 and test (n) decide whether the UKF is needed.
+  L0 exercise 3 (300 m, 13 dB): the UKF lowers the NEES ~30 %, not enough to switch. The
+  EKF stays, with a larger `sa` (9.1).
 - **Track start**: v_r gives only the radial part of the velocity; the sideways part starts
-  with a large variance.
+  with a large variance. And `v_r = (x vx + y vy) / r` reads (x, vx) and (-x, -vx) alike
+  while x is uncertain: near boresight at 300 m and 13 dB a few tracks start on the wrong
+  sideways sign and take seconds to recover. No Gaussian filter, EKF or UKF, fixes that.
 - The same geometry shows up in (r, v) as apparent radial acceleration: a target at speed
   s passing at distance d has `d2r/dt2 = s^2 d^2 / r^3`, up to `s^2 / r` at closest
   approach (11 m/s^2 for 15 m/s at 20 m). In (r, v) `sa` must absorb it; the Cartesian state
@@ -162,19 +165,24 @@ Tools:
   - Metrics: NIS/NEES to tune, OSPA/GOSPA to compare trackers.
 
 Exercises (numpy, an evening each):
-1. [ ] **NIS**: 
+1. [x] **NIS**: 
       - constant-velocity KF on one synthetic target
       - r and v measured 
       - Plot NIS over time and check mean is ~2 (the measurement dimension) 
       - Mistune `sa` by 10x each way and watch the NIS and lag
-2. [ ] **Measured v in association**: 
+2. [x] **Measured v in association**: 
       - two crossing targets 
       - tracked with and without the v measurement (to see how much v buys)
-3. [ ] **EKF vs UKF**: 
+      - Result: with v no swaps from dv 2 m/s at `sa` 5; r only swaps up to 6-8 times
+        (2-3 at matched `sa`). NMS merges first; GNN is enough.
+3. [x] **EKF vs UKF**: 
       - constant-velocity target at 300 m in (x, y) 
       - measure as (r, theta, v_r) at 13 and 20 dB SNR (sigma_theta from G6 10.1)
       - Run both filters over Monte Carlo runs and compare the mean NEES (4 for a 4-state filter)
       - This settles whether L5 needs the UKF at long range
+      - Result (`ex3_ekf_ukf.py`, random heading): 20 dB both consistent. 13 dB neither in
+        the first 5 s (wrong-sign start, 3.4); UKF ~30 % lower NEES, alpha flat; `sa` 10
+        consistent after that, with lower RMS. EKF for L5.
 
 Done when the three exercises are run and their results noted.
 
@@ -373,6 +381,7 @@ where k = CHIRP_FC_HZ * T_EFF / CHIRP_BW_HZ   # ~0.012 s, dsp.md "Range-Doppler 
 |---|---|---|
 | `TRACK_EN` | True | |
 | `TRACK_SIGMA_A` | 5 | m/s^2 |
+| `TRACK_SIGMA_A_XY` | 10 | m/s^2 |
 | `TRACK_SIGMA_R` | 0.7 | m |
 | `TRACK_SIGMA_V` | 0.5 | m/s |
 | `TRACK_CONFIRM_M` / `TRACK_CONFIRM_N` | 3 / 4 | CPIs |
@@ -487,7 +496,8 @@ Done when live and playback show the layout with fake targets tracked in loopbac
 
 - State `[x, y, vx, vy]`, constant velocity. `x = r sin(theta)`, `y = r cos(theta)`: the
   radar at the origin, y along boresight, theta > 0 towards antenna B (`CLAUDE.md`).
-- Q: the 6.3 block with `sa`, on (x, vx) and on (y, vy).
+- Q: the 6.3 block on (x, vx) and on (y, vy), with `TRACK_SIGMA_A_XY` (10): twice the
+  (r, v) value, to cover linearization error (L0 exercise 3).
 - Measurement and Jacobian:
 
   ```
@@ -510,11 +520,12 @@ Done when live and playback show the layout with fake targets tracked in loopbac
 
 ### 9.2 Tests (same file)
 
-- (l) A straight-line target at 100 m, 20 dB: mean NEES ~4 over Monte Carlo runs.
+- (l) A straight-line target at 100 m, 20 dB: mean NEES <= ~4 over Monte Carlo runs
+  (under 4 is the price of `sa` 10).
 - (m) **Turn**: a car at 15 m/s turning 90 deg at 100 m. Report the sideways lag and the
   NIS through the turn. This test decides adaptive Q, a CA model or an IMM (Section 10).
-- (n) **Long range**: 300 m at 13 dB, NEES. If inconsistent, the UKF (L0 exercise 3)
-  replaces the EKF behind the interface.
+- (n) **Long range**: 300 m at 13 dB, random heading (`ex3_ekf_ukf.py` is the template):
+  mean NEES in the 95 % band after the first 5 s. The start-up bump is expected (3.4).
 - (o) A target crossing the beam at 30 m: one track, no ID loss.
 
 Done when (l)-(o) pass, or their failures are understood and resolved through Section 10,
@@ -527,7 +538,7 @@ and loopback fake targets with `theta0` track live on the PPI.
 | Symptom (tests or recordings) | Add |
 |---|---|
 | NIS spikes at manoeuvres, tracks lag (test m, recordings) | Adaptive Q (Labbe's continuous adjustment: scale Q up when the NIS passes ~4-5, well under the gate) or an IMM (a quiet CV model plus an agile one), or a constant-acceleration (CA) state `[x, y, vx, vy, ax, ay]` (gtrack's default) |
-| EKF NEES inconsistent at long range or low SNR | UKF behind the same interface |
+| EKF NEES inconsistent after track start (test n, L6b) | UKF behind the same interface (~30 % lower NEES at 300 m, 13 dB) |
 | NIS depends on SNR | R scaled per detection from `snr_db` |
 | NIS high on cars, normal on walkers (L6a) | A target-extent term in R (gtrack's dispersion `C_D`, estimated per track) |
 | L5 tentative tracks (sideways sigma 10 m/s) grab clutter | Cap the gate's size in metres (gtrack's `DepthLimit`, `WidthLimit`) |
