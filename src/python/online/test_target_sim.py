@@ -207,6 +207,34 @@ def test_triangle_pairing():
     ), detections
 
 
+def snr_per_decade(a_cfg, a_detect, a_r, a_v, a_kind):
+    """snr_db of one target at amp 0.05 and 0.5, a decade apart."""
+    snr = []
+    for amp in (0.05, 0.5):
+        tgt = [{"r0": a_r, "v0": a_v, "a0": 0.0, "amp": amp, "duration": 100.0}]
+        det = find_match(a_detect(a_cfg, tgt), a_r, a_v, a_cfg, a_kind=a_kind)
+        assert det is not None, (amp, a_kind)
+        snr.append(det["snr_db"])
+    return snr[1] - snr[0]
+
+
+def test_snr_db_20_db_per_decade():
+    # Sawtooth, triangle "both" and down-only, and TDM. Loopback noise off: it scales
+    # with the block RMS, so a strong target raises its own noise and compresses the slope.
+    saw = dataclasses.replace(config.RadarConfig(), SDR_LOOPBACK_EN=False)
+    tri = dataclasses.replace(saw, TRIANGLE_EN=True)
+    tdm = dataclasses.replace(tdm_config(), SDR_LOOPBACK_EN=False)
+    cases = [
+        (saw, detect, "up"),
+        (tri, detect, "both"),
+        (tri, detect_down_only, "down"),
+        (tdm, detect, "up"),
+    ]
+    for cfg, fn, kind in cases:
+        d = snr_per_decade(cfg, fn, 400.0, 10.0, kind)
+        assert abs(d - 20.0) < 1.0, (kind, cfg.TDM_EN, d)
+
+
 if __name__ == "__main__":
     tests = [
         test_stationary_target,
@@ -217,6 +245,7 @@ if __name__ == "__main__":
         test_tdm_triangle_down_only_angle,
         test_tdm_doppler_term_is_live,
         test_triangle_pairing,
+        test_snr_db_20_db_per_decade,
     ]
     failures = 0
     for t in tests:

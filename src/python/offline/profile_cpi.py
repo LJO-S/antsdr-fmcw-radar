@@ -2,8 +2,6 @@
 Profiling for the CPI (Part K1, Phase 6 guide Section 2).
 Noted that FPS drops when target detections increases, so we need to profile the CPI to find the bottleneck.
 
-Hypothesis: Both FFT and CFAR run on fixed-size arrays, so probably the subbin-refinement.
-
 Synthesizes a fabric /8 IF block with K fake targets (TargetSim.apply_if) and times
 each stage of process_cpi, median over --runs. The stages come from a mirror of
 process_cpi that is checked against the real one before timing, so a stale mirror
@@ -119,8 +117,9 @@ def staged_process_cpi(a_if_signal, a_config, a_ctx, a_lap):
     cfars = [dsp.cfar_ca_2d(mag, a_config, a_apply_nms=False) for mag in mags]
     a_lap("CFAR")
     # nsize=3 matches the hardcoded value inside cfar_ca_2d
-    dets = [dsp.nms(det, pwr, a_nsize=3) for det, pwr in cfars]
-    pwrs = [pwr for _, pwr in cfars]
+    dets = [dsp.nms(det, pwr, a_nsize=3) for det, pwr, _ in cfars]
+    pwrs = [pwr for _, pwr, _ in cfars]
+    noises = [noise for _, _, noise in cfars]
     a_lap("NMS")
 
     rng_bw = rng[1] - rng[0]
@@ -131,6 +130,9 @@ def staged_process_cpi(a_if_signal, a_config, a_ctx, a_lap):
         down_mask_full = dsp.align_down_doppler(dets[1])[:, pos]
         down_pwr_pos = dsp.align_down_doppler(pwrs[1])[:, pos]
         avg_pwr = (up_pwr_pos + down_pwr_pos) / 2
+        up_noise_pos = noises[0][:, pos]
+        down_noise_pos = dsp.align_down_doppler(noises[1])[:, pos]
+        avg_noise = (up_noise_pos + down_noise_pos) / 2
         PAIR_TOL = 2
         both_mask = up_mask_full & dsp.dilate_doppler(down_mask_full, PAIR_TOL)
         both_dil = dsp.dilate_doppler(both_mask, PAIR_TOL)
@@ -138,19 +140,20 @@ def staged_process_cpi(a_if_signal, a_config, a_ctx, a_lap):
         down_mask = down_mask_full & ~both_dil
         a_lap("pairing")
         groups = [
-            ("both", avg_pwr, both_mask),
-            ("up", up_pwr_pos, up_mask),
-            ("down", down_pwr_pos, down_mask),
+            ("both", avg_pwr, avg_noise, both_mask),
+            ("up", up_pwr_pos, up_noise_pos, up_mask),
+            ("down", down_pwr_pos, down_noise_pos, down_mask),
         ]
     else:
-        groups = [("up", pwrs[0][:, pos], dets[0][:, pos])]
+        groups = [("up", pwrs[0][:, pos], noises[0][:, pos], dets[0][:, pos])]
 
     refined = []
-    for kind, pwr, mask in groups:
+    for kind, pwr, noise, mask in groups:
         dop, rbin = np.where(mask)
+        snr = dsp.snr_db(pwr[dop, rbin], noise[dop, rbin])
         row_off, col_off = dsp.subbin_refine(pwr, dop, rbin)
         vs = dsp.wrap_velocity(vel, dop, row_off)
-        refined.append((kind, dop, rbin, rng[rbin] + col_off * rng_bw, vs))
+        refined.append((kind, dop, rbin, rng[rbin] + col_off * rng_bw, vs, snr))
     a_lap("sub-bin refine")
 
     # Angle per detection: up maps rds[0] (A) / rds[n_ramps] (B); triangle down maps
@@ -160,7 +163,7 @@ def staged_process_cpi(a_if_signal, a_config, a_ctx, a_lap):
         reps = a_config.CHIRP_REPS
         up = (rds[0][:, pos], rds[n_ramps][:, pos], mags[0][:, pos])
         down = (rds[1][:, pos], rds[3][:, pos], mags[1][:, pos]) if tri else None
-        for kind, dop, rbin, _, _ in refined:
+        for kind, dop, rbin, _, _, _ in refined:
             p = 0
             if kind != "down":
                 p = p + dsp.tdm_phasor(a_config, *up, dop, rbin)
@@ -173,8 +176,8 @@ def staged_process_cpi(a_if_signal, a_config, a_ctx, a_lap):
 
     targets = [
         t
-        for kind, _, _, rs, vs in refined
-        for t in dsp.target_dicts(kind, rs, vs, thetas.get(kind))
+        for kind, _, _, rs, vs, snr in refined
+        for t in dsp.target_dicts(kind, rs, vs, snr, thetas.get(kind))
     ]
     a_lap("target dicts")
 
@@ -192,6 +195,7 @@ def check_mirror(a_if, a_cfg, a_ctx):
     for a, b in zip(targets, m_targets):
         assert a["kind"] == b["kind"], msg
         assert np.isclose(a["r"], b["r"]) and np.isclose(a["v"], b["v"]), msg
+        assert np.isclose(a["snr_db"], b["snr_db"]), msg
         assert ("theta" in a) == ("theta" in b), msg
         if "theta" in a:
             assert np.isclose(a["theta"], b["theta"]), msg

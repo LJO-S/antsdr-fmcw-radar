@@ -237,13 +237,26 @@ def estimate_angle(a_config: RadarConfig, a_phasor: np.ndarray):
 
 
 # ===================================================================================
-def target_dicts(a_kind, a_r, a_v, a_theta=None):
-    """Target dicts for one kind; theta only when given (TDM)."""
+def snr_db(a_pwr, a_noise):
+    """
+    Cell power in dB over the CFAR noise estimate
+    """
+    return 10 * np.log10((a_pwr + 1e-30) / (a_noise + 1e-30))
+
+
+# ===================================================================================
+def target_dicts(a_kind, a_r, a_v, a_snr_db, a_theta=None):
+    """
+    Target dicts for one kind; theta only when given (TDM)
+    """
     if a_theta is None:
-        return [{"r": r, "v": v, "kind": a_kind} for r, v in zip(a_r, a_v)]
+        return [
+            {"r": r, "v": v, "kind": a_kind, "snr_db": s}
+            for r, v, s in zip(a_r, a_v, a_snr_db)
+        ]
     return [
-        {"r": r, "v": v, "theta": t, "kind": a_kind}
-        for r, v, t in zip(a_r, a_v, a_theta)
+        {"r": r, "v": v, "theta": t, "kind": a_kind, "snr_db": s}
+        for r, v, t, s in zip(a_r, a_v, a_theta, a_snr_db)
     ]
 
 
@@ -315,7 +328,7 @@ def cfar_ca_2d(
             a_detections=detected, a_rd_matrix_pwr=rd_matrix_power, a_nsize=3
         )
 
-    return detected, rd_matrix_power
+    return detected, rd_matrix_power, noise_level
 
 
 # ===================================================================================
@@ -545,14 +558,14 @@ def process_cpi(a_if_signal: np.ndarray, a_config: RadarConfig, a_ctx: CPIContex
     # ---------------------------------------------
     if a_config.TRIANGLE_EN:
         # NMS each ramp independently so every target is a single clean peak before pairing
-        up_detections, up_pwr = cfar_ca_2d(
+        up_detections, up_pwr, up_noise = cfar_ca_2d(
             a_rd_matrix=up_rss, a_config=a_config, a_apply_nms=True
         )
-        down_detections, down_pwr = cfar_ca_2d(
+        down_detections, down_pwr, down_noise = cfar_ca_2d(
             a_rd_matrix=down_rss, a_config=a_config, a_apply_nms=True
         )
     else:
-        up_detections, up_pwr = cfar_ca_2d(
+        up_detections, up_pwr, up_noise = cfar_ca_2d(
             a_rd_matrix=up_rss, a_config=a_config, a_apply_nms=True
         )
 
@@ -567,6 +580,11 @@ def process_cpi(a_if_signal: np.ndarray, a_config: RadarConfig, a_ctx: CPIContex
         down_mask_full = align_down_doppler(down_detections)[:, pos]
         down_pwr_pos = align_down_doppler(down_pwr)[:, pos]
         avg_pwr = (up_pwr_pos + down_pwr_pos) / 2
+
+        # Fetch noise
+        up_noise_pos = up_noise[:, pos]
+        down_noise_pos = align_down_doppler(down_noise)[:, pos]
+        avg_noise = (up_noise_pos + down_noise_pos) / 2
 
         # A target confirmed in BOTH ramps is "both". Pairing gate is +-PAIR_TOL bins:
         # the up/down peaks coincide for a clean target (range-Doppler coupling k*v is
@@ -604,16 +622,25 @@ def process_cpi(a_if_signal: np.ndarray, a_config: RadarConfig, a_ctx: CPIContex
         # Refine "both" detections using the average power of up and down chirp.
         # col_off[i] and row_off[i] are fractional bin shifts for detection i.
         # Multiplying by bin width converts the shift to physical units.
+        both_snr = snr_db(avg_pwr[both_dop, both_rng], avg_noise[both_dop, both_rng])
         row_off, col_off = subbin_refine(avg_pwr, both_dop, both_rng)
         both_rng_r = rng[both_rng] + col_off * rng_bw
         both_dop_r = wrap_velocity(vel, both_dop, row_off)
 
         # Refine up-only detections using the up-chirp power (range-masked)
+        up_snr = snr_db(
+            up_pwr_pos[up_only_dop, up_only_rng],
+            up_noise_pos[up_only_dop, up_only_rng],
+        )
         row_off, col_off = subbin_refine(up_pwr_pos, up_only_dop, up_only_rng)
         up_rng_r = rng[up_only_rng] + col_off * rng_bw
         up_dop_r = wrap_velocity(vel, up_only_dop, row_off)
 
         # Refine down-only detections using the Doppler-aligned down-chirp power.
+        down_snr = snr_db(
+            down_pwr_pos[down_only_dop, down_only_rng],
+            down_noise_pos[down_only_dop, down_only_rng],
+        )
         row_off, col_off = subbin_refine(down_pwr_pos, down_only_dop, down_only_rng)
         down_rng_r = rng[down_only_rng] + col_off * rng_bw
         down_dop_r = wrap_velocity(vel, down_only_dop, row_off)
@@ -662,14 +689,18 @@ def process_cpi(a_if_signal: np.ndarray, a_config: RadarConfig, a_ctx: CPIContex
             )
 
         targets = (
-            target_dicts("both", both_rng_r, both_dop_r, theta_both)
-            + target_dicts("up", up_rng_r, up_dop_r, theta_up)
-            + target_dicts("down", down_rng_r, down_dop_r, theta_down)
+            target_dicts("both", both_rng_r, both_dop_r, both_snr, theta_both)
+            + target_dicts("up", up_rng_r, up_dop_r, up_snr, theta_up)
+            + target_dicts("down", down_rng_r, down_dop_r, down_snr, theta_down)
         )
     else:
         up_det_dop, up_det_rng = np.where(up_detections[:, pos])
 
-        row_off, col_off = subbin_refine(up_pwr[:, pos], up_det_dop, up_det_rng)
+        up_pwr_pos = up_pwr[:, pos]
+        up_snr = snr_db(
+            up_pwr_pos[up_det_dop, up_det_rng], up_noise[:, pos][up_det_dop, up_det_rng]
+        )
+        row_off, col_off = subbin_refine(up_pwr_pos, up_det_dop, up_det_rng)
         up_rng_r = rng[up_det_rng] + col_off * rng_bw
         up_dop_r = wrap_velocity(vel, up_det_dop, row_off)
 
@@ -679,7 +710,7 @@ def process_cpi(a_if_signal: np.ndarray, a_config: RadarConfig, a_ctx: CPIContex
                 tdm_phasor(a_config, X_A, X_B, rss, up_det_dop, up_det_rng),
             )
 
-        targets = target_dicts("up", up_rng_r, up_dop_r, theta)
+        targets = target_dicts("up", up_rng_r, up_dop_r, up_snr, theta)
 
     down_db = magnitude_db_rd_down if a_config.TRIANGLE_EN else None
     return magnitude_db_rd_up, down_db, targets, rng, vel

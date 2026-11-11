@@ -39,7 +39,15 @@ paths:
 ### `process_cpi` return order
 `(rd_map_db_up, rd_map_db_down, targets, ranges, velocities)`
 - `rd_map_db_down` is `None` in sawtooth (non-triangle) mode.
-- `targets` is a list of dicts: `{"r": float, "v": float, "kind": "both"|"up"|"down"}`.
+- `targets` is a list of dicts: `{"r": float, "v": float, "kind": "both"|"up"|"down",
+  "snr_db": float}`, plus `"theta"` with `TDM_EN` only (so non-TDM replays stay exact).
+  `snr_db` = the detected (integer) cell's power over the CFAR noise estimate (the one the
+  threshold uses), in dB. "both" uses `avg_pwr` over the average of the up and aligned down
+  noise; up-only and down-only use their own ramp. With TDM it is on `|X_A|^2 + |X_B|^2`
+  (CFAR's input): signal and noise both double, so it is the per-channel SNR (guide 9.1),
+  not +3 dB. Loopback noise scales with the block RMS and caps fake targets near 55 dB:
+  test SNR slopes with `SDR_LOOPBACK_EN` off. `replay --check` compares only the keys a recorded line has, so older
+  sessions without `snr_db` still check exact.
 
 `online/processing.process_rx_data` wraps it and appends `if_signal` as a 6th element (the
 GUI spectrogram needs it).

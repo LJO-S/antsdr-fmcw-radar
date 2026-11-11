@@ -119,6 +119,15 @@ def _as_json(a_targets: list[dict]) -> list[dict]:
 
 
 # ===================================================================================
+def _same(a_got: list[dict], a_rec: list[dict]) -> bool:
+    """
+    Equal on the keys the recorded line has (older sessions lack newer keys)
+    """
+    return len(a_got) == len(a_rec) and all(
+        all(g[k] == v for k, v in r.items()) for g, r in zip(a_got, a_rec)
+    )
+
+
 @dataclasses.dataclass
 class Frame:
     """One replayed CPI."""
@@ -139,7 +148,7 @@ class Frame:
         """Replayed detections identical to the recorded ones; None if unrecorded."""
         if self.recorded is None:
             return None
-        return _as_json(self.targets) == self.recorded["targets"]
+        return _same(_as_json(self.targets), self.recorded["targets"])
 
 
 class Player:
@@ -235,7 +244,7 @@ def check(a_dir: Path) -> bool:
         # Exact equality: json round-trips float64 exactly, and both sides go
         # through the same serialization
         got = _as_json(targets)
-        if got != line["targets"]:
+        if not _same(got, line["targets"]):
             print(f"MISMATCH at block {block_no} (t = {t:.6f})")
             print(f"  recorded: {line['targets']}")
             print(f"  replayed: {got}")

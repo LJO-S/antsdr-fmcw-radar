@@ -192,9 +192,9 @@ Done when the three exercises are run and their results noted.
 
 - Every target dict gains `snr_db`: 
   - the detection cell's power over the CFAR noise estimate (the same cell-averaging estimate the threshold uses), in dB. 
-  - Triangle "both": on `avg_pwr`
+  - Triangle "both": `avg_pwr` over the mean of the two ramps' noise estimates (the down one Doppler-aligned like `avg_pwr`)
   - up-only and down-only on their own ramp's map. 
-  - TDM: on `|X_A|^2 + |X_B|^2`, which is 3 dB above the per-channel SNR that the angle-noise formula wants (9.1).
+  - TDM: on `|X_A|^2 + |X_B|^2`. Signal and noise estimate both double, so this is the per-channel SNR the angle-noise formula wants (9.1), not 3 dB above it (Monte Carlo on `cfar_ca_2d`, 2026-11-11).
 - `offline/profile_cpi.py` mirrors `process_cpi` and asserts it equal: change both.
 - `replay --check` compares whole dicts (`offline/replay.py`, `check()` and `Player`'s per-CPI check): 
   - Problem: A new key fails every older session. 
@@ -509,7 +509,8 @@ Done when live and playback show the layout with fake targets tracked in loopbac
 
 - R per detection: `diag(sr^2, sigma_theta^2, sv^2)`, with
   `sigma_theta = 1 / (pi cos(theta) sqrt(SNR_ch))` rad (G6 10.1) and
-  `SNR_ch` = `snr_db` - 3 dB (5), floored at ~0.5 deg for calibration error.
+  `SNR_ch` = `snr_db` (5). Triangle + TDM "both" sums two looks (up and down phasors):
+  sigma_theta / sqrt(2). Floor sigma_theta at ~0.5 deg for calibration error.
 - Innovations: theta wrapped to [-pi, pi), v_r wrapped as in 6.3. The range row carries
   the per-kind coupling of 6.3 (`r + k v_r` for "up").
 - Start from one detection: position from (r, theta); velocity = v_r along the line of
