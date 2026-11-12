@@ -1,8 +1,9 @@
 ---
 paths:
-  - "src/python/common/{dsp,test_dsp}.py"
-  - "src/python/online/{target_sim,test_target_sim,processing}.py"
-  - "src/python/offline/{soft_model,test_soft_model,profile_cpi}.py"
+  - "src/python/common/dsp.py"
+  - "src/python/online/{target_sim,processing}.py"
+  - "src/python/offline/{soft_model,profile_cpi}.py"
+  - "src/python/tests/test_{dsp,target_sim,soft_model,tracking}.py"
   - "scripts/angle/**"
 ---
 

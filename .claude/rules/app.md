@@ -1,7 +1,8 @@
 ---
 paths:
-  - "src/python/online/{app,capture,recorder,test_recorder}.py"
+  - "src/python/online/{app,capture,recorder}.py"
   - "src/python/common/gui.py"
+  - "src/python/tests/test_recorder.py"
   - "src/python/offline/{replay,playback}.py"
 ---
 

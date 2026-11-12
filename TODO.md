@@ -23,11 +23,11 @@ their design conclusions move to `.claude/rules/` (area rules) or `CLAUDE.md`
 (project-wide), per the close-out rule in `CLAUDE.md` - don't grow narrative back in
 here as parts close.
 
-Current state (2026-11-05): Parts A-G and I are done. **Parts K (Phase 6) and L
+Current state (2026-11-11): Parts A-G and I are done. **Parts K (Phase 6) and L
 (Phase 7, tracking) are active**:
-K0-K2, K4, K5, K7, K8 and K10 done. FMC5 (TDM + `tx_sel` on J30) is on hardware, and fabric
+K0-K2, K4, K5, K7, K8, K10 and L0 done; L1 in progress. FMC5 (TDM + `tx_sel` on J30) is on hardware, and fabric
 /8 has run on cable RF (K7 bench, K10 cable test) but not yet on air (K6). K9 boards
-ordered (due ~2026-11-06..12). Next: Part L (Phase 7, tracking) while they ship; K6
+ordered (due ~2026-11-06..12). Next: finish L1, then L2, while they ship; K6
 waits on weather.
 Part H stays deferred. Part J blocks nothing and can run in parallel.
 
@@ -168,7 +168,7 @@ reference sessions (spur test, L1 check) are on the laptop, not the desktop.
   - Confirm on 3-of-4 + the dr/dt = v check; delete by time (0.5 s, 5 s in the MTI
     notch); merge duplicates; cap 100 (6.5)
   - `TRACK_*` config group (6.7)
-  - Done: `common/test_tracking.py` (a)-(k) + the confirmation delay pass
+  - Done: `tests/test_tracking.py` (a)-(k) + the confirmation delay pass
 - [ ] L3 - app, playback, replay (G7 7)
   - Worker owns the tracker, emits `tracks` snapshots, rebuilds on RE-CONFIGURE
   - `PlaybackWorker` owns its own tracker, resets on seek

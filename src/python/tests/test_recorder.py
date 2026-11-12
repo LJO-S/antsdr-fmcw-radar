@@ -1,5 +1,5 @@
 """
-online/test_recorder.py
+tests/test_recorder.py
 
 No-board round trip: Recorder writes a session into a temp dir, offline.replay
 reads it back. Run as __main__.

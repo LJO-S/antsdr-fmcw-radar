@@ -3,7 +3,8 @@ paths:
   - "firmware/**"
   - "scripts/bringup/**"
   - "src/python/common/fabric_regs.py"
-  - "src/python/online/{fabric_ctl,test_fabric_ctl}.py"
+  - "src/python/online/fabric_ctl.py"
+  - "src/python/tests/test_fabric_ctl.py"
   - "vhdl_ls.toml"
 ---
 
@@ -112,7 +113,7 @@ model the fabric output is verified against sample-for-sample. Specs: `docs/arch
   proven order above, STATUS as a separate round trip (also the settle margin the first
   `refill()` needs); `set_calib_delay()` = DECHIRP_DELAY + COMMIT; `check_magic()`; refuses an
   image with `ramp_en`. Write order unit-tested through a recording transport
-  (`online/test_fabric_ctl.py`). `dechirp_verify.py` uses the same module.
+  (`tests/test_fabric_ctl.py`). `dechirp_verify.py` uses the same module.
 - Transport `SshDevmem`: one ssh call per sequence (`devmem` at base+offset, `&&`-chained),
   BatchMode so a missing key fails fast instead of hanging the worker on a password prompt.
   Once: `ssh-copy-id root@<ip>`.

@@ -3,7 +3,7 @@ Run every board-free Python test suite and report one line each.
 
     cd src/python && python run_tests.py [-v] [name ...]
 
-Finds */test_*.py (common, offline, online) and runs each as `python -m`, the way
+Finds tests/test_*.py and runs each as `python -m`, the way
 they are written to run, in its own process: the suites seed global RNGs and
 mutate configs, so they must not share one. A suite fails on a non-zero exit;
 its full output is printed then (always with -v). Names filter by substring,
@@ -25,7 +25,7 @@ ROOT = Path(__file__).resolve().parent  # the import root
 def find_suites() -> list[str]:
     return sorted(
         ".".join(p.relative_to(ROOT).with_suffix("").parts)
-        for p in ROOT.glob("*/test_*.py")
+        for p in ROOT.glob("tests/test_*.py")
     )
 
 
@@ -51,7 +51,7 @@ def main() -> int:
         seconds = time.monotonic() - started
         ok = r.returncode == 0
         last = r.stdout.strip().splitlines()[-1] if r.stdout.strip() else ""
-        print(f"{'PASS' if ok else 'FAIL'}  {suite:28s} {seconds:5.1f} s  {last}")
+        print(f"{'PASS' if ok else 'FAIL'}  {suite:30s} {seconds:5.1f} s  {last}")
         if not ok or args.verbose:
             print(r.stdout + r.stderr)
         if not ok:

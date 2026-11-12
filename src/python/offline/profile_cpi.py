@@ -116,8 +116,7 @@ def staged_process_cpi(a_if_signal, a_config, a_ctx, a_lap):
 
     cfars = [dsp.cfar_ca_2d(mag, a_config, a_apply_nms=False) for mag in mags]
     a_lap("CFAR")
-    # nsize=3 matches the hardcoded value inside cfar_ca_2d
-    dets = [dsp.nms(det, pwr, a_nsize=3) for det, pwr, _ in cfars]
+    dets = [dsp.nms(det, pwr, a_nsize=dsp.NMS_SIZE) for det, pwr, _ in cfars]
     pwrs = [pwr for _, pwr, _ in cfars]
     noises = [noise for _, _, noise in cfars]
     a_lap("NMS")

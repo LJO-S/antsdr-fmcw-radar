@@ -1,12 +1,12 @@
 """
-online/test_target_sim.py
+tests/test_target_sim.py
 
 No-radio tests for TargetSim.apply_if() - synthesizing fake targets directly
 onto an already-dechirped IF stream. Each test builds a
 low-level noise-floor IF block, injects one target via apply_if(), and checks
 dsp.process_cpi() recovers it within tolerance.
 
-Deliberately NOT offline/test_soft_model.py's match_detections(): that helper
+Deliberately NOT tests/test_soft_model.py's match_detections(): that helper
 fails on any unmatched leftover detection, which is the right bar for its
 realistic multi-target physical simulation but not for a bare i.i.d. Gaussian
 noise floor here - CA-CFAR at pfa=1e-6 over ~N_chirp_samples*CHIRP_REPS cells

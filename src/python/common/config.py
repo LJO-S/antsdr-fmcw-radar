@@ -43,6 +43,9 @@ class RadarConfig:
         },
     )
 
+    # --------------------------------
+    # MTI
+    # --------------------------------
     MTI_EN: bool = False
 
     # Fabric IF mode: fabric NCO transmits, fabric dechirps pre-DMA and ships the IF stream
@@ -60,6 +63,10 @@ class RadarConfig:
             "group": "fabric",
         },
     )
+
+    # --------------------------------
+    # TDM
+    # --------------------------------
     # 2T1R TDM: chirps alternate TX A, B (needs FABRIC_DECHIRP_EN).
     # With TRIANGLE_EN: A-up, A-down, B-up, B-down
     TDM_EN: bool = field(
@@ -86,6 +93,10 @@ class RadarConfig:
             "group": "angle",
         },
     )
+
+    # --------------------------------
+    # FABRIC
+    # --------------------------------
     # TX->RX digital loopback latency in samples
     FABRIC_DECHIRP_DELAY: int = field(
         default=61,
@@ -107,18 +118,10 @@ class RadarConfig:
             "group": "fabric",
         },
     )
-    # Sampling
-    FS: float = field(
-        default=56.6e6,
-        metadata={
-            "label": "Sampling Frequency",
-            "unit": "MHz",
-            "scale": 1e6,
-            "group": "sdr",
-        },
-    )
 
+    # --------------------------------
     # CFAR
+    # --------------------------------
     CFAR_GUARD_LEN: int = field(
         default=4,
         metadata={
@@ -195,6 +198,18 @@ class RadarConfig:
             "readonly": True,
         },
     )
+
+    # Sampling
+    FS: float = field(
+        default=56.6e6,
+        metadata={
+            "label": "Sampling Frequency",
+            "unit": "MHz",
+            "scale": 1e6,
+            "group": "sdr",
+        },
+    )
+
     # Start at -15 dB (~9dB under limit)
     SDR_TX_GAIN_DB: float = field(
         default=-60.0,
@@ -237,6 +252,145 @@ class RadarConfig:
             "unit": "dB",
             "scale": 1,
             "group": "loopback",
+        },
+    )
+
+    # --------------------------------
+    # TRACKER
+    # --------------------------------
+    # Enable tracker
+    TRACK_EN: bool = field(
+        default=False,
+        metadata={
+            "label": "Tracker",
+            "unit": "",
+            "scale": 1,
+            "group": "tracking",
+        },
+    )
+    # Confirm track if hits in M-of-N CPIs
+    TRACK_CONFIRM_M: int = field(
+        default=3,
+        metadata={
+            "label": "Confirm M(-of-N)",
+            "unit": "",
+            "scale": 1,
+            "group": "tracking",
+        },
+    )
+    # Confirm track if hits in M-of-N CPIs
+    TRACK_CONFIRM_N: int = field(
+        default=4,
+        metadata={
+            "label": "Confirm (M-of)-N",
+            "unit": "",
+            "scale": 1,
+            "group": "tracking",
+        },
+    )
+    # "Newtonian Physics Rule Enforcement"
+    # How many sigma a track's range slope may differ from its measured velocity before rejection
+    # Higher k: fewer spurs + slower confirmation
+    # Lower k: more spurs + faster confirmation
+    TRACK_KINEMATIC_SIGMA: float = field(
+        default=3.0,
+        metadata={
+            "label": "Kinematic Sigma",
+            "unit": "sigma",
+            "scale": 1,
+            "group": "tracking",
+        },
+    )
+    # History the kinematic check fits:
+    # Longer: slower targets decided, slow spurs stay tentative longer.
+    # Shorter: slow targets tentative, slow spurs stay tentative shorter.
+    TRACK_KINEMATIC_WINDOW_S: float = field(
+        default=3.0,
+        metadata={
+            "label": "Kinematic Window",
+            "unit": "s",
+            "scale": 1,
+            "group": "tracking",
+        },
+    )
+    # Confirmed track with no update for this long is deleted
+    TRACK_DELETE_S: float = field(
+        default=0.5,
+        metadata={
+            "label": "Delete After",
+            "unit": "s",
+            "scale": 1,
+            "group": "tracking",
+        },
+    )
+    # Tolerance time before suddenly stopped target is deleted (if MTI_EN)
+    TRACK_STOP_COAST_S: float = field(
+        default=5.0,
+        metadata={
+            "label": "Stopped Coast",
+            "unit": "s",
+            "scale": 1,
+            "group": "tracking",
+        },
+    )
+    # How many CPIs before two tracks wtihin one gate merges
+    TRACK_MERGE_N: int = field(
+        default=10,
+        metadata={
+            "label": "Merge After",
+            "unit": "CPIs",
+            "scale": 1,
+            "group": "tracking",
+        },
+    )
+    # Max tracked objects
+    TRACK_MAX: int = field(
+        default=100,
+        metadata={
+            "label": "Max Tracks",
+            "unit": "",
+            "scale": 1,
+            "group": "tracking",
+        },
+    )
+    # Minimum |v| to start a track (0 = off) (i.e  if MTI_EN=off)
+    TRACK_MIN_SPEED: float = field(
+        default=0.0,
+        metadata={
+            "label": "Min Start Speed",
+            "unit": "m/s",
+            "scale": 1,
+            "group": "tracking",
+        },
+    )
+    # Process noise: std of the random acceleration
+    TRACK_STD_A: float = field(
+        default=5.0,
+        metadata={
+            "label": "Accel. Std",
+            "unit": "m/s^2",
+            "scale": 1,
+            "group": "tracking",
+        },
+    )
+    # Measurement noise: range std (sub-bin refined; bins are ~3 m)
+    TRACK_STD_R: float = field(
+        default=0.7,
+        metadata={
+            "label": "Range Std",
+            "unit": "m",
+            "scale": 1,
+            "group": "tracking",
+        },
+    )
+    # Measurement noise: velocity std
+    TRACK_STD_V: float = field(
+        default=0.5,
+        metadata={
+            "label": "Velocity Std",
+            "unit": "m/s",
+            "scale": 1,
+            "group": "tracking",
         },
     )
     # --------------------------------

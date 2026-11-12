@@ -54,7 +54,7 @@ regenerates them); tracking in the fabric.
   target first seen above it can't be tracked: its aliased v predicts the wrong range
   (gtrack resolves this by unrolling Doppler; out of scope).
 - **Detections per target**: Part G showed mostly one dot per car, person or bike,
-  sometimes two for walkers. NMS (`nsize` 3, a 7x7 window, `dsp.py` `nms`) already acts
+  sometimes two for walkers. NMS (`dsp.NMS_SIZE` 3, a 7x7 window, `dsp.py` `nms`) already acts
   as a rough cluster: +-3 range bins (+-9 m) and +-3 velocity bins.
 - **Velocity bins**: 2.02 m/s sawtooth, 1.01 triangle or TDM, 0.5 triangle + TDM.
 - **False alarms**: CFAR at 1e-6 over ~90k cells, ~0.1 per CPI; clutter residue near
@@ -224,12 +224,21 @@ without touching association or track management:
 
 ```
 class TrackFilter:                 # one instance per track
-    init(det, cfg) -> TrackFilter  # classmethod: a track from one detection
+    __init__(cfg), init(det)       # a track from one detection
     predict(dt)
-    innovation(det) -> (y, S)      # for gating; y wrapped on circular axes
+    innovation(det) -> (y, S)      # y wrapped on circular axes
     update(det)
     state, cov                     # for the GUI and the tests
+
+    # Batched classmethods, one pass over all tracks; the Tracker calls only these (6.8)
+    predict_batch(filters, dt)
+    update_batch(filters, dets) -> (v, r, nis)  # one det per filter: v unrolled, r decoupled
+    d2_matrix(filters, dets) -> d2 (n_f, n_d)   # gating
+    pair_d2(filters) -> d2 (n, n)               # duplicates
 ```
+
+`predict` and `update` are one-filter calls of the batched versions, so the maths has one
+code path and the filter tests run what the tracker runs.
 
 The model is chosen once from the config: 
 - `TDM_EN` = True -> EKF (or UKF) 
@@ -299,8 +308,9 @@ where k = CHIRP_FC_HZ * T_EFF / CHIRP_BW_HZ   # ~0.012 s, dsp.md "Range-Doppler 
   out-of-gate pairs at a large cost (and dropped after assignment):
   1. confirmed tracks against all detections;
   2. tentative tracks against the detections left over;
-  3. what is left starts tentative tracks, **except inside a confirmed track's gate** (a
-     walker's second dot).
+  3. what is left starts tentative tracks, **except within a confirmed track's NMS window**
+     (+-3 range and +-3 velocity bins around its prediction). A walker's second dot sits
+     1-2 velocity bins off, at d^2 12-48: outside the gate, inside the window.
 
   Why two stages: a fresh tentative track has a large S, so its d^2 to everything is small,
   and in one stage it steals detections from confirmed tracks. (Textbook alternative: cost
@@ -317,30 +327,43 @@ where k = CHIRP_FC_HZ * T_EFF / CHIRP_BW_HZ   # ~0.012 s, dsp.md "Range-Doppler 
   - Tentative tracks are not shown (L4 has a toggle).
 - **Kinematic check (`dr/dt = v`)**, i.e. the spur filter: it rejects any detection stream
   whose range does not move with its v (only spurs are tested, (i)):
-  - During track's history (<= ~3 s) fit slope of 'r' vs 't' 
+  - Over the track's history (the last `W` = `TRACK_KINEMATIC_WINDOW_S`, 3 s) fit the slope of the *measured* r vs t
+    (the filter's r follows its own v, so it would always pass).
   - Compare with the mean measured v over the same window, unrolled to the track (6.6). Both are the window's mean velocity, so manoeuvres do not upset it.
-  - Three stages:
-    - *Decisive*: `sigma_slope < |v_mean| / k`, where `k = TRACK_CHECK_K` (3) & `sigma_slope ~= sr * sqrt(12 / (N T^2))` for N updates over T seconds 
-    - *Pass*: `|slope - v_mean| < k * sqrt(sigma_slope^2 + sigma_vmean^2)`, where `sigma_vmean = sv / sqrt(N)`
-    - *fail*: delete track
-    - Note: A track with `|v_mean| < TRACK_CHECK_VMIN` (0.7 m/s) is immediately 'decisive' since semi-/stationary target has nothing to check
-  - So the confirmation delay scales with speed by itself (25 CPI/s, k 3): a car at 15 m/s
-    ~0.2 s, a bike at 5 m/s ~0.4 s, a walker at 1.5 m/s ~1 s, a stationary target at once.
-    A spur (fixed r, v != 0) fails the moment the check becomes decisive, so it **never
-    confirms**.
-  - It keeps running on confirmed tracks over the sliding window: a confirmed track that
-    drifts onto a spur and fails is deleted.
-  - A spur with `|v| < TRACK_CHECK_VMIN` passes as stationary; with MTI on, one near
-    v = 0 sits in the notch and is removed before detection anyway.
+  - `d = slope - v_mean`, `sigma_d = sqrt(sigma_slope^2 + sigma_vmean^2)`, with
+    `sigma_slope = sr / sqrt(sum((t - t_mean)^2))` (exact for any dt and misses),
+    `sigma_vmean = sv / sqrt(N)`, `k = TRACK_KINEMATIC_SIGMA` (3).
+    - *Pass*: `sigma_d < |v_mean| / (2k)` and `|d| < k * sigma_d`.
+    - *Fail* (delete): `|d| > 2k * sigma_d`, every CPI, confirmed tracks too.
+    - Neither: wait. Still undecided at age W: pass as stationary (too slow to tell from a
+      spur within W).
+  - **Why pass at 2k**: a real target has d ~ 0, a spur (fixed r) d ~ v_mean: two bells |v|
+    apart, each needs k sigma of room, so the gap must hold 2k sigma. Then a spur passes
+    with at most Phi(-k) (k 3: 0.13 %), whatever sr, sv, the CPI rate and v are (Monte
+    Carlo over all four, 2026-11-11). Passing once `sigma_slope < |v| / k` let up to 90 % of
+    spurs through (~50 % at the defaults); leaving sigma_vmean out of the condition did too
+    for large sv.
+  - **Why fail at 2k, not k**: the check runs every CPI for the track's whole life. Failing
+    at k sigma deleted ~80 % of real tracks within 2 min; at 2k none (2 Phi(-2k) per CPI).
+    It costs nothing on spurs: their d ~ |v| crosses 2k sigma_d when they become decisive.
+  - **k alone sets the error rates**; sr, sv and the CPI rate only set the delay T, where
+    `sigma_d(T) = |v| / (2k)` and `sigma_d^2 ~= 12 sr^2 / (rate T^3) + sv^2 / (rate T)`.
+    At the defaults (25 CPI/s): car 15 m/s ~0.35 s, bike 5 m/s ~0.7 s, walker 1.5 m/s
+    ~1.6 s; below ~0.65 m/s nothing decides within W, so 3 s.
+  - It assumes sr and sv match the real noise: L3's NIS (mean 2) checks that.
+  - A spur too slow to decide within W passes as stationary; with MTI on, one near v = 0
+    sits in the notch and is removed before detection anyway.
 - **Delete by time**, not by CPI count:
   - a tentative track after 2 consecutive misses, until it has met M of N;
-  - a tentative track that has met M of N and only waits for the kinematic check: by time,
-    like a confirmed one. A walker waits ~1 s (25 CPIs), and at Pd 0.9 two misses in a row
-    somewhere in 25 CPIs happen ~20 % of the time;
+  - a tentative track that has met M of N (sticky: once met, always met) and only waits
+    for the kinematic check: by time,
+    like a confirmed one. A walker waits ~1.6 s (40 CPIs), and at Pd 0.9 two misses in a row
+    somewhere in 40 CPIs happen ~30 % of the time;
   - a confirmed track after `TRACK_DELETE_S` (0.5 s) without an update;
-  - a confirmed track with |v| inside the MTI notch (under one velocity bin) while MTI is
-    on: after `TRACK_STOP_COAST_S` (5 s). A person who stops keeps their ID for 5 s, then
-    gets a new one.
+  - a confirmed track with |v| under one velocity bin while MTI is on: after
+    `TRACK_STOP_COAST_S` (5 s), coasting with v set to 0 (a stopped target should not
+    drift). A person who stops keeps their ID for 5 s, then gets a new one. One bin is
+    enough: MTI drops a walker at 0.5-1.5 m/s (by SNR), inside the 2.02 m/s bin.
   The tracker therefore needs each CPI's MTI state.
 - **Duplicates**: two confirmed tracks within the gate of each other for `TRACK_MERGE_N`
   CPIs (10), measured as d^2 between their predicted measurements with `S = S_a + S_b`:
@@ -365,8 +388,9 @@ where k = CHIRP_FC_HZ * T_EFF / CHIRP_BW_HZ   # ~0.012 s, dsp.md "Range-Doppler 
   - no FilterPy
 - `Track`: 
   - Content: id, status (tentative / confirmed), filter (state, covariance), hits, misses,
-  time of the last update, age, the last detection's `snr_db` (for the track list), a ~3 s
-  history of `(t, r, v)` (plus `x, y` in L5) for the kinematic check and the ~2 s tails,
+  time of the last update, age, the last detection's `snr_db` (for the track list), a W
+  (3 s, trimmed by time) history of measured `(t, r, v)` (plus `x, y` in L5) for the
+  kinematic check and the ~2 s tails,
   with v unrolled to the track (predicted v + wrapped innovation, so a track that speeds
   past `MAX_VELOCITY` keeps passing the check), and the last update's NIS (written each CPI
   by L3's `replay --tracks`).
@@ -380,13 +404,13 @@ where k = CHIRP_FC_HZ * T_EFF / CHIRP_BW_HZ   # ~0.012 s, dsp.md "Range-Doppler 
 | Field | Default | Unit |
 |---|---|---|
 | `TRACK_EN` | True | |
-| `TRACK_SIGMA_A` | 5 | m/s^2 |
-| `TRACK_SIGMA_A_XY` | 10 | m/s^2 |
-| `TRACK_SIGMA_R` | 0.7 | m |
-| `TRACK_SIGMA_V` | 0.5 | m/s |
+| `TRACK_STD_A` | 5 | m/s^2 |
+| `TRACK_STD_A_XY` | 10 | m/s^2 |
+| `TRACK_STD_R` | 0.7 | m |
+| `TRACK_STD_V` | 0.5 | m/s |
 | `TRACK_CONFIRM_M` / `TRACK_CONFIRM_N` | 3 / 4 | CPIs |
-| `TRACK_CHECK_K` | 3 | sigma |
-| `TRACK_CHECK_VMIN` | 0.7 | m/s |
+| `TRACK_KINEMATIC_SIGMA` | 3 | sigma |
+| `TRACK_KINEMATIC_WINDOW_S` | 3 | s |
 | `TRACK_DELETE_S` | 0.5 | s |
 | `TRACK_STOP_COAST_S` | 5 | s |
 | `TRACK_MERGE_N` | 10 | CPIs |
@@ -397,13 +421,23 @@ The gates (9.21, 11.34) are chi-square constants, not config.
 
 ### 6.8 Cost
 
-Measured 2026-11-05 with a plain per-track Python loop (predict, gate, assign, update):
-~25 us per track for the KF and ~45 us for the EKF, linear in track count (20 tracks:
-0.5 / 0.9 ms; 100 tracks: 3 / 5 ms). Track management roughly doubles it. Against a CPI
-budget of ~33 ms, of which `process_cpi` takes ~25, a realistic scene (5-20 tracks) costs a
-few percent. Vectorizing across tracks would gain ~10x if ever needed.
+CPI budget ~33 ms, of which `process_cpi` takes ~25: the tracker gets a few ms at most.
+Measured 2026-11-12 on the L2 tracker, 98 confirmed tracks, Pd 0.9, 2 false alarms per CPI:
 
-### 6.9 Tests (`common/test_tracking.py`, `__main__` asserts)
+| Version | ms per CPI |
+|---|---|
+| Per-track Python loop | ~10 (kinematic refit ~1/3, 2x2 numpy calls ~1/2) |
+| Batched over tracks + kinematic check on running sums | **~1.5**, identical output |
+
+- Batched: the classmethods of 6.2, one numpy pass for all tracks.
+- Running sums: `[n, t, t^2, r, t*r, v]` per track, t relative to its birth, added on
+  append and subtracted on drop: O(1) per CPI. Drift over a 24 h track: 1e-5 m/s.
+- What is left is gathering x and P from the tracks ~6x per CPI; a struct of arrays
+  would remove it if ever needed.
+- L5's EKF must batch the same way: in a per-track loop it measured ~45 us per track
+  (2026-11-05), ~5 ms at `TRACK_MAX` before track management.
+
+### 6.9 Tests (`tests/test_tracking.py`, `__main__` asserts)
 
 Synthesize detection streams from ground-truth kinematics with a seeded Generator:
 measurement noise at (`sr`, `sv`), Pd = 0.9, ~2 false alarms per CPI uniform over the map,
@@ -422,15 +456,16 @@ dt jittered over 20-50 ms.
   one confirmed track.
 - (i) Spurs: fixed r with v = 2, 10 and 40 m/s at Pd 1: never confirmed. Then the
   reference sessions (`data/sessions/20261102-19*`, real RF, all four spurs) through
-  the tracker: no track at a spur range ever confirms. They live on the laptop, so this
+  the tracker: no confirmed track sits at a spur range for 1 s (fake targets pass through
+  them, a spur stays while its v says it moves). They live on the laptop, so this
   part skips with a message where they are absent.
 - (j) Consistency: one target whose truth has a random acceleration drawn from
   N(0, `sa`^2) each CPI and held over it (the DWNA model): mean NIS inside the 95 %
   chi-square band for 2 dof.
 - (k) Triangle kinds: a mix of "up", "down" and "both" from one target: one track, and its
   range has no `k*v` bias.
-- Confirmation delay: a walker at 1.5 m/s confirms within ~1.5 s and a car at 15 m/s within
-  ~0.4 s.
+- Confirmation delay: a walker at 1.5 m/s and a car at 15 m/s confirm within 1.25x the 6.5
+  delay T computed from the config (median; p90 within 2x). At the defaults ~1.6 s and ~0.35 s.
 
 Done when (a)-(k) and the delay check pass.
 
@@ -496,7 +531,7 @@ Done when live and playback show the layout with fake targets tracked in loopbac
 
 - State `[x, y, vx, vy]`, constant velocity. `x = r sin(theta)`, `y = r cos(theta)`: the
   radar at the origin, y along boresight, theta > 0 towards antenna B (`CLAUDE.md`).
-- Q: the 6.3 block on (x, vx) and on (y, vy), with `TRACK_SIGMA_A_XY` (10): twice the
+- Q: the 6.3 block on (x, vx) and on (y, vy), with `TRACK_STD_A_XY` (10): twice the
   (r, v) value, to cover linearization error (L0 exercise 3).
 - Measurement and Jacobian:
 
@@ -559,10 +594,10 @@ Q unchanged. Clutter associated to a track looks like a manoeuvre and can trigge
   crossing targets.
 - **Tracks drop out during braking** -> `sa` too small: the mean NIS sits near the gate
   (3.3).
-- **Walkers take long to confirm** -> `TRACK_CHECK_K` too strict, or `sr` too small for the
-  slope fit.
-- **A spur confirms** -> its |v| is under `TRACK_CHECK_VMIN` (treated as stationary), or
-  the check's window is too short.
+- **Walkers take long to confirm** -> compare with the 6.5 delay T: it grows with k, sr and
+  sv and with a lower CPI rate.
+- **A spur confirms** -> too slow to decide within W (treated as stationary), or `sr`/`sv`
+  are smaller than the real noise (mean NIS above 2).
 - **Two tracks on one walker** -> the second dot falls outside the gate (Section 10).
 - **Velocities mirrored** -> the sign convention (6.1).
 - **Angle tracks lag sideways on turns** -> expected (3.4); test (m) and Section 10.

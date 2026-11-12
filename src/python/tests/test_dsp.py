@@ -1,5 +1,5 @@
 """
-common/test_dsp.py
+tests/test_dsp.py
 
 Board-free tests for the circular Doppler axis in dsp.py: box_sum, nms,
 subbin_refine, wrap_velocity, dilate_doppler, and process_cpi on targets at the

@@ -1,5 +1,5 @@
 """
-online/test_fabric_ctl.py
+tests/test_fabric_ctl.py
 
 No-board tests for FabricCtl register-write sequencing. A RecordingTransport
 stands in for SshDevmem: write_seq appends to a flat, ordered list and read

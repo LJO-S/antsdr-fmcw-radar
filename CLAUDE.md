@@ -50,7 +50,6 @@ src/python/                 # import root
                  #   PlayerBar (the playback toolbar)
   offline/
     soft_model.py        # SoftFMCWModel — target/noise/impairment sim, __main__ entry
-    test_soft_model.py   # numeric detector self-test
     profile_cpi.py       # K1: median ms per process_cpi stage + apply_if vs fake-target
                          #   count (staged mirror of process_cpi, asserted equal to it)
     replay.py            # K2: recorded session -> prepare_block -> process_rx_data;
@@ -75,7 +74,8 @@ src/python/                 # import root
                    #   the Signals tab (live and playback)
     app.py         # RadarWorker (QThread) + main(); owns (config, ctx, sdr)
     fabric_ctl.py  # FabricCtl (enable/disable/set_calib_delay sequencing) + SshDevmem transport
-    test_fabric_ctl.py, test_target_sim.py, test_recorder.py  # board-free, run as __main__
+  tests/           # board-free suites (test_dsp, test_soft_model, test_target_sim, test_recorder,
+                   #   test_fabric_ctl, test_tracking), each run as __main__
   image.png, image-1.png  # screenshots of other radar GUIs, kept as reference
 docs/              # AntSDR_Phase6_Antennas_Angle_Guide.md (Part K spec, active),
                    #   AntSDR_Phase7_Tracking_Guide.md (Part L spec, tracking, active),
@@ -98,7 +98,7 @@ vhdl_ls.toml       # rust_hdl LSP config, points at firmware/.../projects/e200
 pypkgs.txt         # numpy, matplotlib, pylibiio, scipy, PySide6, pyqtgraph, vunit_hdl
 ```
 
-`src/python/run_tests.py` runs every `*/test_*.py` suite as
+`src/python/run_tests.py` runs every `tests/test_*.py` suite as
 `python -m`, one process each, failing on a non-zero exit.
 
 ## Running

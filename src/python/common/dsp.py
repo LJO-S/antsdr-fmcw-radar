@@ -7,6 +7,9 @@ from dataclasses import dataclass
 
 from .config import RadarConfig, c
 
+# NMS half-width in bins (a 7x7 window); the tracker's birth window uses it too.
+NMS_SIZE = 3
+
 
 # ===================================================================================
 def generate_chirp(a_config: RadarConfig):
@@ -325,7 +328,7 @@ def cfar_ca_2d(
 
     if a_apply_nms:
         detected = nms(
-            a_detections=detected, a_rd_matrix_pwr=rd_matrix_power, a_nsize=3
+            a_detections=detected, a_rd_matrix_pwr=rd_matrix_power, a_nsize=NMS_SIZE
         )
 
     return detected, rd_matrix_power, noise_level
