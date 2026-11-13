@@ -7,7 +7,10 @@ Exact only without random input: the loopback noise (SDR_LOOPBACK_EN with
 SDR_LOOPBACK_NOISE_SNR_DB > 0) is redrawn on replay. Set the SNR to 0 to turn it
 off for a session that --check should pass.
 
-    python -m offline.replay <session_dir> [--check]
+    python -m offline.replay <session_dir> [--check | --track] [--set TRACK_X=V ...]
+
+The default output is one JSON line per CPI with the tracks. --track runs the tracker
+on a session recorded without it; --set overrides tracking fields (L6 tuning).
 
 Player gives random access to any block (offline.playback, the GUI, is built on
 it); replay() walks it in order.
@@ -16,12 +19,13 @@ it); replay() walks it in order.
 import argparse
 import dataclasses
 import json
+import sys
 from pathlib import Path
 
 import numpy as np
 
 # No online.sdr here: it imports iio, and replay must run without libiio
-from common import config, dsp
+from common import config, dsp, tracking
 from online import capture, processing, recorder, target_sim
 
 
@@ -38,9 +42,15 @@ def load_session(a_dir: Path) -> tuple[config.RadarConfig, dict]:
     dropped = sorted(set(recorded) - known)
     defaulted = sorted(known - set(recorded))
     if dropped:
-        print(f"WARNING: session fields no longer in RadarConfig, ignored: {dropped}")
+        print(
+            f"WARNING: session fields no longer in RadarConfig, ignored: {dropped}",
+            file=sys.stderr,
+        )
     if defaulted:
-        print(f"WARNING: RadarConfig fields not in the session, defaulted: {defaulted}")
+        print(
+            f"WARNING: RadarConfig fields not in the session, defaulted: {defaulted}",
+            file=sys.stderr,
+        )
     fields = {k: v for k, v in recorded.items() if k in known}
     return config.RadarConfig(**fields), session
 
@@ -50,7 +60,10 @@ def _complete_lines(a_file):
     in the middle of writing it. Warns when that happens."""
     for text in a_file:
         if not text.endswith("\n"):
-            print(f"WARNING: {Path(a_file.name).name} ends in a torn line, skipped")
+            print(
+                f"WARNING: {Path(a_file.name).name} ends in a torn line, skipped",
+                file=sys.stderr,
+            )
             return
         yield text
 
@@ -71,7 +84,8 @@ def load_index(a_dir: Path) -> list[tuple[float, int, int]]:
             if offset + n_bytes > size:
                 print(
                     f"WARNING: block {block_no} is past the end of "
-                    f"{recorder.BLOCKS_BIN} (power loss?), stopping there"
+                    f"{recorder.BLOCKS_BIN} (power loss?), stopping there",
+                    file=sys.stderr,
                 )
                 break
             index.append((float(t), offset, n_bytes))
@@ -138,6 +152,7 @@ class Frame:
     outputs: tuple  # process_rx_data: up, down, targets, ranges, velocities, if
     mti: bool  # the MTI_EN this CPI ran with
     recorded: dict | None  # its detections.jsonl line, None if there is none
+    tracks: list[dict] | None  # Track.snapshot() per track; None if TRACK_EN is off
 
     @property
     def targets(self) -> list[dict]:
@@ -160,11 +175,17 @@ class Player:
     target resets t_spawn). A step forward costs one CPI; any other jump restores
     the recorded snapshot and advances the kinematics up to the new block, which
     is cheap: no echoes, no processing.
+
+    The tracker is the same kind of state: it only follows a step forward, any other
+    jump resets it and it warms up again from the new block.
     """
 
-    def __init__(self, a_dir: Path):
+    def __init__(self, a_dir: Path, a_overrides: dict | None = None):
         self.dir = Path(a_dir)
         self.cfg, self.session = load_session(self.dir)
+        if a_overrides:  # tracking fields only, see parse_overrides()
+            self.cfg = dataclasses.replace(self.cfg, **a_overrides)
+        self.tracker = None  # built on the first CPI, rebuilt after any jump
         self.ctx = dsp.build_cpi_context(a_config=self.cfg)
         self.index = load_index(self.dir)
         self.lines = load_detections(self.dir)
@@ -189,6 +210,8 @@ class Player:
     def render(self, a_block: int) -> Frame:
         if not 0 <= a_block < self.n_blocks:
             raise IndexError(f"block {a_block} outside [0, {self.n_blocks})")
+        if a_block != self.pos + 1:
+            self.tracker = None
         if a_block <= self.pos:
             self.sim.restore(self.session["fake_targets"])
             start = 0
@@ -213,15 +236,50 @@ class Player:
         )
         outputs = processing.process_rx_data(a_rx=rx, a_config=self.cfg, a_ctx=self.ctx)
         self.pos = a_block
-        return Frame(a_block, t, rx, outputs, self.cfg.MTI_EN, line)
+        tracks = None
+        if self.cfg.TRACK_EN:
+            if self.tracker is None:
+                self.tracker = tracking.Tracker(self.cfg)
+            trks = self.tracker.update(outputs[2], t, self.cfg.MTI_EN)
+            tracks = [k.snapshot() for k in trks]
+        return Frame(a_block, t, rx, outputs, self.cfg.MTI_EN, line, tracks)
 
 
 def replay(a_dir: Path):
     """Yield (block_no, t, targets) for every recorded block."""
-    player = Player(a_dir)
+    for frame in frames(a_dir):
+        yield frame.block, frame.t, frame.targets
+
+
+def frames(a_dir: Path, a_overrides: dict | None = None):
+    """Yield every recorded block as a Frame, in order."""
+    player = Player(a_dir, a_overrides)
     for block_no in range(player.n_blocks):
-        frame = player.render(block_no)
-        yield block_no, frame.t, frame.targets
+        yield player.render(block_no)
+
+
+def parse_overrides(a_pairs: list[str]) -> dict:
+    """NAME=VALUE strings -> {name: value} typed like the field. TRACK_* only: they
+    cannot change the detections, so the replay stays exact."""
+    types = {f.name: f.type for f in dataclasses.fields(config.RadarConfig) if f.init}
+    out = {}
+    for pair in a_pairs:
+        name, _, text = pair.partition("=")
+        kind = types.get(name)
+        if not name.startswith("TRACK_") or kind is None:
+            raise ValueError(f"{pair}: not a TRACK_* field of RadarConfig")
+        if kind is bool:
+            words = {"1": True, "true": True, "on": True}
+            words |= {"0": False, "false": False, "off": False}
+            if text.lower() not in words:
+                raise ValueError(f"{pair}: not a bool (1/0, true/false, on/off)")
+            out[name] = words[text.lower()]
+        else:
+            try:
+                out[name] = kind(text)
+            except ValueError:
+                raise ValueError(f"{pair}: not a {kind.__name__}") from None
+    return out
 
 
 def check(a_dir: Path) -> bool:
@@ -262,9 +320,30 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser(description="Replay a recorded K2 session")
     ap.add_argument("session", type=Path)
     ap.add_argument("--check", action="store_true", help="compare to detections.jsonl")
+    ap.add_argument(
+        "--track", action="store_true", help="run the tracker even if TRACK_EN was off"
+    )
+    ap.add_argument(
+        "--set",
+        action="append",
+        default=[],
+        metavar="TRACK_X=V",
+        help="override a tracking field, e.g. TRACK_STD_A=10 (repeatable)",
+    )
     args = ap.parse_args()
 
     if args.check:
+        if args.track or args.set:
+            ap.error("--check compares detections only; drop --track/--set")
         raise SystemExit(0 if check(args.session) else 1)
-    for block_no, t, targets in replay(args.session):
-        print(f"{block_no:6d}  t={t:10.3f}  {len(targets)} targets")
+    try:
+        overrides = parse_overrides(["TRACK_EN=1"] * args.track + args.set)
+    except ValueError as e:
+        ap.error(f"--set {e}")
+    if overrides:
+        print(f"overrides: {overrides}", file=sys.stderr)
+    # One JSON line per CPI; tracks (NIS included) are null unless TRACK_EN (recorded
+    # or --track). Redirect to a file for tuning; warnings go to stderr.
+    for frame in frames(args.session, overrides):
+        line = {"block": frame.block, "t": frame.t, "tracks": frame.tracks}
+        print(json.dumps(line, default=float))

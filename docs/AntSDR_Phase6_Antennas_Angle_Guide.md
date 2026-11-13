@@ -65,7 +65,9 @@ What it costs:
 
 - Each antenna gets every second chirp, so the slow-time interval is `T_rep = 2T`,
   as in triangle mode: unambiguous velocity 129 -> 64 m/s. With `CHIRP_REPS` chirps
-  per antenna the CPI doubles to 25.6 ms and velocity bins shrink to 1.01 m/s.
+  per antenna the CPI doubles to 25.6 ms and velocity bins shrink to 1.01 m/s. The CPI
+  rate falls with it: ~18 CPIs/s at best (25.6 ms of capture + ~28 ms on the host), ~9
+  with triangle (estimates from the K1 and K10 timings).
 - A moving target's phase also advances between an A chirp and the next B chirp.
   The host removes that term with the measured Doppler (Section 10.1).
 - The fabric drives the switch from the NCO's chirp boundary, so TDM needs fabric
@@ -93,19 +95,24 @@ stays documented as the fallback.
 ### 1.3 The link-budget consequence of patches
 
 Under the 25 mW SRD EIRP cap, **TX antenna gain and TX-side loss are nearly free**:
-a lower-gain TX antenna or the switch's insertion loss just takes more TX port power.
-The limit: with ~+5 dBm at the port, 2.0 dB of switch (HMC849A module, predicted) and 1.9 dB
-of cable (2 m HF240, measured in K4), the TX antenna needs ~13 dBi to reach the cap. Only one TX antenna radiates at a time, so
-the cap applies per antenna. **RX gain is the cost**: range goes as `G_rx^(1/4)`.
+a lower-gain TX antenna or the switch's insertion loss just takes more TX port power,
+until the port runs out. The limit: with +5 to +6.5 dBm at the port (6.5 typ), 3.0 dB of
+switch (HMC849A module, measured in K7; 2.0 predicted) and 1.9 dB of cable (2 m HF240,
+measured in K4), the TX antenna needs 12.4-13.9 dBi to reach the cap. A column in the TX
+pair has ~10.3 dBi (sim), so **the patch rig runs at full TX power and lands 2-3.5 dB under
+the cap**: 0.82-0.89 of the range, on top of the table below. A shorter TX cable buys it
+back dB for dB. Only one TX antenna radiates at a time, so the cap applies per antenna.
+**RX gain is the cost**: range goes as `G_rx^(1/4)`.
 
 | RX antenna | vs the 30 dBi grid | Range factor |
 |---|---|---|
 | COTS sector, 16 dBi | -14 dB | 0.45 |
 | 1x8 column, RO4350B 1.52 mm, ~14.5 dBi (model) | -15.5 dB | 0.41 |
-| 1x8 column, FR4, 11.0 dBi (sim) | -19 dB | 0.34 |
+| 1x8 column, FR4, 10.8 dBi (sim, eps_r 4.6) | -19 dB | 0.33 |
 
-So roughly a third of the grid's range: a person at a couple of hundred metres, cars
-further. `G_rx^(1/4)` only holds below the two-ray crossover (~350 m for a person at
+So roughly a third of the grid's range (~0.28 with the EIRP shortfall above): a person at
+a couple of hundred metres, cars further. K6 step 6 tests this before the patches exist.
+`G_rx^(1/4)` only holds below the two-ray crossover (~350 m for a person at
 1.5 m antenna height); beyond it, antenna height helps more than RX gain. The beams
 get wide (~80 deg in azimuth, vs a few degrees for the grid), so more ground clutter
 enters and MTI will matter more than it did in Part G.
@@ -250,7 +257,8 @@ debug new RF and new HDL at once.
 1. **COTS, software mode**, recording on: a static scene, then movers. Put a corner
    reflector at a tape- or laser-measured range. A trihedral with 30 cm edges is
    ~12.7 m^2 (`4 pi a^4 / (3 lambda^2)`). It is also the end-to-end range-axis check
-   Part F skipped.
+   Part F skipped. MTI off for this: the reflector is static and MTI removes it. Find it
+   by A/B (reflector in, reflector out), on a tripod >= 1 m up, clear of other metal.
 2. **Delay**: `dechirp_verify.py --no-loopback --sweep` (`SDR_LOOPBACK_EN = False`),
    starting the sweep at 0. Expect 61 +-1: 1.5 m of air is ~5 ns, ~0.3 samples.
 3. **A/B**: `dechirp_verify.py --no-loopback --decimate 8`, software vs fabric /8.
@@ -258,6 +266,13 @@ debug new RF and new HDL at once.
    between the two phases.
 4. **Fabric /8 in the app**, recording on: cars, people on foot, bikes, at several
    ranges, plus a quiet stretch.
+5. **Range walk**, fabric /8, recording on: a person walks out along boresight until
+   lost, and back. `snr_db` vs range is the real link budget: the R^-4 slope, the range at
+   loss, and the ground-bounce ripple (Phase 7 guide, Section 12).
+6. **Patch-budget preview**: a VAT-15A+ between the grid and RX1, then repeat 5 and a few
+   cars. The pad takes 15 dB of SNR, like a ~15 dBi RX antenna (the RX column is ~4 dB
+   below that). It tests 1.3's table and gives Phase 7 recordings at the SNR field day 2
+   will have, before a patch exists.
 
 Done when fabric /8 matches software mode on real RF and the delay is recorded.
 Then flip the `FABRIC_DECHIRP_EN` default.
@@ -276,9 +291,9 @@ Read first: 13.1 (the datasheet exercise), 13.4.
   1A (fragile). SMA ports and a header are fitted, so it wires with Dupont leads. The
   same listing sells an HMC8038 variant (less IL, more isolation) and an **HMC349
   variant (4 GHz max: wrong part)**. Buy two: clones vary.
-- Unverified on the module: the header pinout, whether EN is tied low (it must be
-  low), the real IL at 5.8 GHz on its FR4, whether the chip is genuine. 8.2 answers
-  all four.
+- Measured in K7 (`hardware/bench_measurements.md`): IL 3 dB on both units (chip 1.7),
+  isolation 40-45 dB, RFC S11 -8 to -10 dB, ~60 mA, polarity as the datasheet. Still open:
+  the chip marking.
 - Known-good fallback: Mini-Circuits ZFSWA2-63DR+ (DC-6 GHz, one CMOS line, 2.0 dB
   IL at 6 GHz; +V on a feed-through pin).
 - Avoid parts that need two complementary control lines or a negative supply
@@ -358,8 +373,9 @@ Read first: 13.2.
 ### 9.1 Targets
 
 - **Match**: S11 < -10 dB over 5.75-5.85 GHz (the chirp spans 5.775-5.825).
-- **Gain**: ~11 dBi per column on FR4 (sim 11.0; FR4 loss costs ~4 dB).
-- **Beam**: azimuth HPBW >= 60 deg, elevation ~12 deg.
+- **Gain**: ~10.8 dBi per column on FR4 (sim at eps_r 4.6; 10.3 in the TX pair; FR4 loss
+  costs ~4 dB).
+- **Beam**: azimuth HPBW >= 60 deg, elevation ~13 deg.
 - **Polarization**: linear, the same on TX and RX. When mixing with the COTS
   antennas, match their polarization.
 
@@ -405,13 +421,17 @@ across it. This is the standard automotive FMCW layout.
 Done when eps_r from the patch and eps_r from the lines' eps_eff agree within ~0.1,
 and eps_eff, lambda_g and dB/mm are written into `results.md`.
 
+Result (2026-10-23, `results.md` "Measured"): patch 4.61, lines 4.85. The 0.24 gap misses
+the target and is unexplained. K9 is designed at 4.6; its witness patch decides, and fc
+trims the rest (9.4).
+
 ### 9.4 K9 - columns
 
 Designed in `scripts/antenna_design/column_sim.py`; results in `results.md`.
 
 - Series-fed 1x8, end-fed, vertical polarization. The pitch is set by the in-phase
-  condition (patch + connector): 24.6 mm in the sim (0.48 lambda0, no grating
-  lobes). The column is ~23 cm long.
+  condition (patch + connector): 23.98 mm at eps_r 4.6 (0.46 lambda0, no grating lobes;
+  24.6 mm in the 4.4 baseline). The board is 226 mm long.
 - **Uniform, no taper.** The elevation sidelobes hit the ground within ~4 m, inside
   the close-in mask; the clutter that matters is main-beam ground from ~15 m out,
   which only MTI removes. A Taylor taper is a learning variant (sim: -19 / -22 dB,
@@ -425,9 +445,10 @@ Designed in `scripts/antenna_design/column_sim.py`; results in `results.md`.
   better RX: 16 dBi and 120 deg.
 - A witness coupon (single patch or short line pair) on every board: the K9 FR4
   batch may not be K8's.
-- Expected (sim, eps_r 4.4): 11.0 dBi, azimuth HPBW ~78 deg, elevation 13 deg,
-  1.7 deg beam tilt per 0.1 eps_r. Re-tune L and the connector length once K8 gives
-  eps_r.
+- Expected (sim, re-tuned at eps_r 4.6 on 2026-10-23): 10.8 dBi (10.3 in the TX pair),
+  azimuth HPBW ~79 deg, elevation 13.4 deg, ~2 deg of beam tilt per 0.1 eps_r. If the
+  board is really 4.85 (the K8 lines): -1.8 dB, S11 -11.8 dB, tilt +5 deg. The witness
+  patch tells which.
 - **fc is the trim for batch drift.** Patch resonance and section phase both scale
   with `f * sqrt(eps_eff)`, so a board with eps_r 0.1 high is the right board ~60 MHz
   lower: moving `CHIRP_FC_HZ` fixes match and tilt together. Legal window for a
@@ -446,23 +467,31 @@ Designed in `scripts/antenna_design/column_sim.py`; results in `results.md`.
   - S21 between the TX and RX boards vs spacing (isolation - this replaces Part G's
     skipped isolation item). Reference: the leakage the E200 sees with the COTS
     antennas at 1.5 m, measured once with the same RX gain.
-- **Gain, two-antenna method with the E200**: the RX column and one TX column (same
-  design) face to face at R >= 2 m (far field `2 D^2 / lambda` ~ 1.9 m for a 23 cm
-  column).
-  - Reference: TX cable -> known pad -> RX cable. Read the peak level in the range
-    profile (`dechirp_verify.range_profile_db`: no close-in mask).
-  - Then swap the pad for the two antennas, same RX gain:
+- **Gain, pattern and phase curve on the LiteVNA, not the E200** (decided 2026-11-02;
+  recipe `scripts/antenna_design/k9_turntable.md`). In the radar the E200's own TX1 -> RX1
+  leak (~40-44 dB) lands within a range bin of a 2 m antenna path (~32 dB plus cables),
+  only 5-10 dB under it: several dB on a level, tens of degrees on psi. The VNA has no
+  such leak (floor -81 dB at IFBW 12 Hz).
+- **Gain, two-antenna method**: the RX column and one TX column (same design) face to
+  face at R >= 2 m (far field `2 D^2 / lambda` ~ 2.0 m for the 226 mm board; at 2 m it
+  reads ~0.2 dB low). Calibrate at the cable ends that meet the antennas, then:
 
-    ```
-    G_dBi = 0.5 * (level_ant - level_ref - pad_dB + FSPL(R))
-    FSPL(R) = 20*log10(4*pi*R / lambda)      # 53.7 dB at 2 m, 57.3 dB at 3 m
-    ```
+  ```
+  G_dBi = 0.5 * (S21_dB + FSPL(R))
+  FSPL(R) = 20*log10(4*pi*R / lambda)      # 53.7 dB at 2 m, 57.3 dB at 3 m
+  ```
 
-  - The pad keeps RX below its +2.5 dBm absolute maximum; keep the TX low.
+  The other TX column sits on a 50 ohm load, as the switch leaves it (nonreflective).
 - **Pattern**: rotate the TX board on a marked turntable (5 deg steps), RX column
-  fixed >= 2 m away, TDM on. Record the A and B levels (HPBW, sidelobes) and the
-  **A-B phase difference vs angle** - K10's calibration curve. It is mandatory: in
-  the sim, the curve is 4.6 deg rms off `pi sin(theta)`, ~2 deg of angle at 30 deg.
+  fixed >= 2 m away. Port 1 on column A, then on B (the other on a load), port 2 on the
+  RX column: |S21| gives the A and B patterns (HPBW, sidelobes), and the S21 phase,
+  A minus B, vs angle is **K10's calibration curve**. It is mandatory: in the sim, the
+  curve is 4.6 deg rms off `pi sin(theta)`, ~2 deg of angle at 30 deg.
+  - Moving the port-1 cable between A and B adds a constant phase. Only the curve's
+    shape is used: the constant, the switch and the E200 are all in psi0, set in the
+    field (10.2).
+  - The E200 version (TDM on, levels from `dechirp_verify.range_profile_db`) reads
+    through the leak: a cross-check at most.
 - Measure outdoors, or with walls and floor far away, antennas >= 1.5 m high. A
   floor bounce ruins a pattern.
 
@@ -475,9 +504,14 @@ Done when both boards are characterized (S11, coupling, isolation vs spacing, ga
 SDR_TX_GAIN_DB ~ 14 - G_tx + L_txcable + L_switch - 6.5   # dB; 6.5 dBm = typ port at 0 dB
 ```
 
-`L_switch` is the IL measured in 8.2. Example: G_tx 12 dBi, 1.9 dB of cable, 2.0 dB
-of switch gives -0.6; use -2 for margin. Put the same value into
-`SDR_TX_GAIN_MAX_DB` for field sessions, so a typo cannot exceed the limit.
+`L_switch` is the IL measured in 8.2 (3.0 dB). With the TX pair's 10.3 dBi (sim) and
+1.9 dB of cable it gives +2.1: above 0, so the patches run at 0 dB, ~12 dBm EIRP (1.3).
+Redo it with the measured gain (9.5): above 12.4 dBi the result goes negative again.
+
+**The value belongs to the antenna.** 0 dB into the 16 dBi sector is ~20 dBm EIRP, 6 dB
+over the cap (it needs ~-5 dB, `CLAUDE.md`). Set `SDR_TX_GAIN_DB` again at every TX
+antenna swap, and put the same value into `SDR_TX_GAIN_MAX_DB` for field sessions, so a
+typo cannot exceed the limit.
 
 ---
 
@@ -527,10 +561,14 @@ it.
 
 The (x, y) tracker moved to Phase 7 (L5); this step records what it validates on (L6b).
 
-- psi0 first, from a corner reflector carried radially along boresight (K9 in
-  `TODO.md`).
 - One change at a time: the RX column in place of the grid (COTS sector still TX),
-  then the TX board through the switch with TDM on. Set the TX gain per 9.6.
+  then the TX board through the switch with TDM on. Set the TX gain per 9.6 at each TX
+  swap: ~-5 dB for the sector, 0 dB for the patches. Short on SNR: the sector (V port,
+  free once the TX board is up) as RX is +5 dB over the column (9.4).
+- psi0 next (it needs the TX board), from a corner reflector carried radially along
+  boresight (K9 in `TODO.md`). +-3 deg of psi is enough: a psi0 error is mostly a
+  rotation of the map (1 deg per 3 deg of psi), with 0.3 deg of distortion at 40 deg. Do
+  not chase it further than you can aim the board.
 - Then a person walking a known path and a car along a road. Record everything.
 
 Done when psi0 is set, a person walking a known line traces it on the PPI (K10's
@@ -564,6 +602,11 @@ Design notes for when it comes:
   outdoors and higher.
 - **Isolation reads the same whatever the switch** -> you are at the VNA's floor
   (K4). Quote it as ">= floor".
+- **Gain or A-B phase measured in the radar disagrees with the VNA** -> the E200's own
+  TX1 -> RX1 leak, 5-10 dB under a 2 m antenna path (9.5). Trust the VNA.
+- **Range shorter than 1.3's table** -> check the TX gain first: the patches run at 0 dB,
+  the sector at ~-5 dB (9.6), and a value left over from the other antenna is either 5 dB
+  short or over the cap.
 - **Even and odd rows at the same level in 8.4** -> the switch is not switching:
   EN not low, no VDD, the wrong J30 pin, or `tdm_en` not committed.
 - **The loud row changes between captures** -> the DMA sync still fires per chirp,
@@ -647,7 +690,7 @@ Exercises:
   formulas, and compare with 9.3.
 - Simulate your 5.8 GHz patch and sweep eps_r over 4.2-4.6. Watching the
   resonance move is the argument for K8's calibration spin.
-- Plot array factors in numpy: 8 elements at 0.55 lambda (the column in
+- Plot array factors in numpy: 8 elements at 0.46 lambda (the column in
   elevation), two elements at lambda/2 and at 2.8 lambda (9.2's ambiguity table).
 
 ### 13.3 Tracking: moved to Phase 7

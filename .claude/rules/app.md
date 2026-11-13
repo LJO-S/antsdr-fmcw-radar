@@ -50,6 +50,14 @@ paths:
   forced on/off from the bar. The display's config form and fake-target table are
   read-only there (`set_playback_mode`). `offline/replay.py` never imports `online.sdr` (no
   libiio needed); `Player` gives random access to any block, `replay()` walks them in order.
+- **Tracks (L3)**: `RadarWorker` and `Player` each own a `Tracker` (only with `TRACK_EN`) and emit
+  `tracks` (`Track.snapshot()` dicts, never live `Track`s) after `process_rx_data`, fed the
+  capture time the recorder writes. The worker rebuilds it on RE-CONFIGURE (incl. revert);
+  `Player` resets it on any jump except a step forward. `python -m offline.replay`
+  prints `{block, t, tracks}` lines (NIS included; null without `TRACK_EN` in the session).
+  `--track` forces the tracker on, `--set TRACK_X=V` overrides a tracking field (L6 tuning).
+  Only `TRACK_*` fields: they cannot change the detections, so replay stays exact.
+  Warnings go to stderr, so stdout stays pure JSON.
 - Spectrogram emits are **throttled to ~2 Hz** (`_last_spec_update`) and cover only 2 chirps.
 - Cleanup: `radio = None` before `try`, `finally: if radio is not None: set_loopback(False);
   close()`. `stop()` (GUI thread) flips `_running` then `wait(5000)`s — never `terminate()`.

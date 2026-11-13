@@ -23,12 +23,15 @@ their design conclusions move to `.claude/rules/` (area rules) or `CLAUDE.md`
 (project-wide), per the close-out rule in `CLAUDE.md` - don't grow narrative back in
 here as parts close.
 
-Current state (2026-11-11): Parts A-G and I are done. **Parts K (Phase 6) and L
+Current state (2026-11-12): Parts A-G and I are done. **Parts K (Phase 6) and L
 (Phase 7, tracking) are active**:
-K0-K2, K4, K5, K7, K8, K10 and L0 done; L1 in progress. FMC5 (TDM + `tx_sel` on J30) is on hardware, and fabric
+K0-K2, K4, K5, K7, K8, K10 and L0 done; L1 and L2 built (laptop checks and the
+2026-11-12 review items open); L3 started. FMC5 (TDM + `tx_sel` on J30) is on hardware, and fabric
 /8 has run on cable RF (K7 bench, K10 cable test) but not yet on air (K6). K9 boards
-ordered (due ~2026-11-06..12). Next: finish L1, then L2, while they ship; K6
-waits on weather.
+ordered (due ~2026-11-06..12).
+**Next: K6 on the first dry day** - it is the only source of real data for L6a, and the
+tracker is tuned on synthetic noise until then. Meanwhile L3, then the K9 bench when the
+boards land, then L5. L4's full layout can wait for L5.
 Part H stays deferred. Part J blocks nothing and can run in parallel.
 
 ---
@@ -101,7 +104,12 @@ moved to Part L on 2026-11-05.
 - [X] K5 - soldering + J30 header (G6): fitted, GPIO_00-07 = sysfs 995-1002 (2026-10-13).
 - [ ] K6 - field day 1 (G7, needs K2, weather): COTS only; delay sweep (expect
       61 +-1), software vs fabric /8; record everything; flip the
-      `FABRIC_DECHIRP_EN` default.
+      `FABRIC_DECHIRP_EN` default. Gaps filled 2026-11-12:
+  - [ ] MTI off for the static corner reflector (MTI removes it); find it by A/B (G7 step 1)
+  - [ ] Range walk: a person out along boresight until lost, and back; `snr_db` vs range
+        (G7 step 5)
+  - [ ] The same plus a few cars behind a VAT-15A+ on RX: patch-class SNR, tests G1.3
+        (G7 step 6)
 - [X] K7 - TX switch (G8, 2026-10-19): HMC849A, FMC5 (`tdm_en`, `tx_sel` on J30); A/B 30 dB
       both ways incl. triangle + TDM, floor = the E200's TX1 -> RX1 leak
       (`hardware/bench_measurements.md`).
@@ -122,7 +130,8 @@ moved to Part L on 2026-11-05.
       before the turntable calibration (9.5). K8's launch was left as is: trim fc to the
       column's launch-removed resonance.
       Turntable (9.5) on the LiteVNA, not the E200: recipe in
-      `scripts/antenna_design/k9_turntable.md` (2026-11-02). In the radar the E200's
+      `scripts/antenna_design/k9_turntable.md` (2026-11-02; **not in git and not on the
+      desktop as of 2026-11-12**: commit it from the laptop). In the radar the E200's
       TX1 -> RX1 leak lands ~1 range bin from the path, common to A and B and only ~5-10 dB
       under it (estimate from K7): psi off by tens of deg; under 1 deg at 30 deg needs it
       ~30 dB down. The VNA gives the curve's shape. The radar adds one offset, constant to
@@ -131,6 +140,10 @@ moved to Part L on 2026-11-05.
       radially along boresight at >= 1.5 m/s, >= 20 m out, MTI on (moving, so MTI removes
       the leak, TX-RX coupling and clutter from its cell). K10's cable test skipped step 0
       and the in-rig VNA, so that offset model is unconfirmed: psi0 comes from the field.
+  - [ ] Commit `k9_turntable.md` from the laptop (the README and this file point to it)
+  - [ ] Gain by the two-antenna method on the VNA too, not the E200: same leak (G9.5)
+  - [ ] Redo the TX gain with the measured gain and the switch's 3.0 dB: sim says 0 dB,
+        ~12 dBm EIRP, 2-3.5 dB under the cap (G1.3, G9.6)
 
 - [x] K10 - angle on the host (G10.1, 2026-10-29..11-02): `dsp.tdm_phasor` +
       `estimate_angle`, `FakeTarget.theta0`, Sector-PPI. Fake targets at +-30 deg within
@@ -143,6 +156,10 @@ moved to Part L on 2026-11-05.
 - [ ] K11 - field day 2 (G10.2): patches on air, one change at a time. psi0 first,
       from the walked corner reflector (K9). Records the sessions L6b validates on;
       the (x, y) tracker itself moved to Part L (L5).
+  - [ ] **TX gain at every TX antenna swap**: ~-5 dB for the sector, 0 dB for the patches.
+        0 dB into the sector is ~20 dBm EIRP, 6 dB over the cap (G9.6)
+  - [ ] psi0 to +-3 deg of psi is enough: an error is mostly a rotation of the map (G10.2)
+  - [ ] Short on SNR: the sector (V port) as RX, +5 dB over the column (G10.2)
 
 ---
 
@@ -160,7 +177,22 @@ reference sessions (spur test, L1 check) are on the laptop, not the desktop.
   - Mirror it in `profile_cpi.py`
   - `replay --check`: compare only the keys the recorded line has
   - Done: old sessions pass, a new session passes, +20 dB per decade of `amp`
+  - Built (0bc278d).
+  - [ ] `replay --check` on the `20261102-19*` sessions (laptop)
 - [ ] L2 - tracker in (r, v), `common/tracking.py` (G7 6)
+  - Built (3152b8f): `test_tracking` 16/17 on the desktop.
+  - [ ] Test (i) on the reference sessions (laptop; skipped on the desktop)
+  - Flaws found 2026-11-12:
+  - [x] Kinematic fail deleted real confirmed tracks: fixed 2026-11-12 in `kinematic()`,
+        fail only when `miss > max(2 * k * sigma, 0.5 * abs(v_mean))` (G7 6.5)
+  - [ ] **`TRACK_STD_A` 5 is too tight**: a car passing 20 m off always loses its ID, 87 %
+        keep it at 10. Decide, then change `config.py` (G7 3.3)
+  - [ ] Tests (p) braking, (q) passing, (r) coloured range noise, (s) spur capture
+        (G7 6.9)
+  - [ ] Test (g) is seed-fragile (35 of 40 seeds, seed 0 fails at `sa` 10): assert a share
+        over seeds (G7 6.9)
+  - [ ] `TRACK_EN`: the guide says True, `config.py` False. Flip it when L3 is wired
+        (G7 6.7)
   - `TrackFilter`: `init`, `predict`, `innovation`, `update` (6.2)
   - KF: DWNA Q, `sa` 5, `sr` 0.7, `sv` 0.5; H per `kind`; wrap the v innovation (6.3)
   - Two-stage GNN, gate 9.21: confirmed tracks, then tentative, then births outside
@@ -172,8 +204,8 @@ reference sessions (spur test, L1 check) are on the laptop, not the desktop.
 - [ ] L3 - app, playback, replay (G7 7)
   - Worker owns the tracker, emits `tracks` snapshots, rebuilds on RE-CONFIGURE
   - `PlaybackWorker` owns its own tracker, resets on seek
-  - `replay --tracks <file.jsonl>`, NIS included
-  - Done: one stable track per loopback fake target; `--tracks` deterministic; fps
+  - `replay` prints tracks per CPI as JSON lines, NIS included
+  - Done: one stable track per loopback fake target; replay output deterministic; fps
     cost vs K1
 - [ ] L4 - GUI layout A (G7 8)
   - Toolbar row; PPI left ~60 % (r-v plot there with TDM off); r-v plot + track list
@@ -185,10 +217,20 @@ reference sessions (spur test, L1 check) are on the laptop, not the desktop.
   - EKF `[x, y, vx, vy]` on (r, theta, v_r), `sa` 10; R per detection from `snr_db`;
     gate 11.34
   - Done: tests (l)-(o) pass or are resolved via G7 10; `theta0` fake targets on the PPI
+  - Gaps found 2026-11-12 (G7 9.1, 9.2):
+  - [ ] Stop-coast: the MTI notch is on radial speed. Zero the velocity only when
+        `hypot(vx, vy)` is under one bin; otherwise coast on the velocity
+  - [ ] `theta` arrives in degrees; clamp `cos(theta)` at 0.5 in sigma_theta
+  - [ ] `TRACK_STD_THETA_MIN_DEG` (0.5) as a config field: L6b tunes it, expect 1-2 deg
+  - [ ] Run (l)-(o) at ~15 CPIs/s (TDM), (o) with MTI on and off
 - [ ] L6 - real targets (G7 12)
   - L6a, K6 recordings: approaching car v < 0; tune `sa`, `sr`, `sv` by NIS per class;
     spurs never confirm
   - L6b, K11 recordings: walked line and a car traced on the PPI; NEES/NIS sane
+  - Expect, and count instead of fixing (G7 12): multipath ghosts confirm (they obey
+    dr/dt = v); fades at fixed ranges from the ground bounce (58, 29, 19 m for 1.5 m and
+    1.0 m heights); slow tracks on vegetation
+  - [ ] Check confirmation and ID hold on K6's padded recording (patch-class SNR)
 
 ---
 

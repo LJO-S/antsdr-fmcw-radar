@@ -75,7 +75,7 @@ src/python/                 # import root
     app.py         # RadarWorker (QThread) + main(); owns (config, ctx, sdr)
     fabric_ctl.py  # FabricCtl (enable/disable/set_calib_delay sequencing) + SshDevmem transport
   tests/           # board-free suites (test_dsp, test_soft_model, test_target_sim, test_recorder,
-                   #   test_fabric_ctl, test_tracking), each run as __main__
+                   #   test_fabric_ctl, test_tracking, test_replay_tracks), each run as __main__
   image.png, image-1.png  # screenshots of other radar GUIs, kept as reference
 docs/              # AntSDR_Phase6_Antennas_Angle_Guide.md (Part K spec, active),
                    #   AntSDR_Phase7_Tracking_Guide.md (Part L spec, tracking, active),
@@ -112,7 +112,7 @@ python -m common.gui                # GUI with pseudo-data only
 python -m online.app                # live SDR app (needs AntSDR at SDR_IP)
 python -m online.sdr                # standalone loopback test with matplotlib debug plots
 python -m offline.playback [dir]    # recorded session in the GUI (no board); Open... picks one
-python -m offline.replay <dir> [--check]  # headless replay; --check vs the live detections
+python -m offline.replay <dir> [--check | --track] [--set TRACK_X=V]  # headless replay (JSON line per CPI, with tracks); --check vs the live detections
 python run_tests.py [-v] [name]     # all board-free test suites (name = substring filter)
 ```
 

@@ -33,6 +33,7 @@ class PlaybackWorker(QThread):
     results = Signal(object, object, object, object, object, float)
     signals = Signal(object, object, object, object)  # rx, if, t, f
     recorded = Signal(object)  # the CPI's recorded targets, or None
+    tracks = Signal(object)  # Track.snapshot() dicts; only emitted with TRACK_EN
     error = Signal(str)
     loaded = Signal(object)  # session dict, see _session_info()
     position = Signal(object)  # dict: block, t, mti, mti_forced, n_replayed, ...
@@ -74,6 +75,7 @@ class PlaybackWorker(QThread):
         playing = False
         next_due = 0.0  # monotonic time the next block is due while playing
         last_spec = 0.0
+        tracks_shown = False  # tracks were emitted and not yet cleared
 
         def set_playing(a_on):
             nonlocal playing, next_due
@@ -139,6 +141,12 @@ class PlaybackWorker(QThread):
             recorded = frame.recorded["targets"] if frame.recorded else None
             self.results.emit(up, down, targets, ranges, velocities, frame.t)
             self.recorded.emit(recorded)
+            if frame.tracks is not None:
+                self.tracks.emit(frame.tracks)
+                tracks_shown = True
+            elif tracks_shown:
+                self.tracks.emit([])  # a session without TRACK_EN: clear the old ones
+                tracks_shown = False
             self.position.emit(
                 {
                     "block": frame.block,

@@ -20,10 +20,13 @@ def capture_rx_data(
     a_sdr: "sdr.AntSDR",
     a_target_sim: target_sim.TargetSim,
     a_recorder: recorder.Recorder = None,
-) -> tuple[np.ndarray, int | None]:
+) -> tuple[np.ndarray, int | None, float]:
     """
-    Captures one block, records it if a session is open, and returns
-    (prepare_block() output, block number or None when not recording).
+    Captures one block, records it if a session is open.
+    Returns:
+        - prepare_block() output
+        - block number or None
+        - capture time t
     """
     # 1. Capture. One timestamp: it goes to the recorder and to TargetSim, so replay
     #    moves the fake targets exactly like the live run did.
@@ -41,7 +44,7 @@ def capture_rx_data(
         a_target_sim=a_target_sim,
         a_now=t,
     )
-    return rx, block_no
+    return rx, block_no, t
 
 
 def prepare_block(

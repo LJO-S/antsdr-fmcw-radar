@@ -100,7 +100,8 @@ def test_blocks_roundtrip():
     # N random int16 blocks in -> byte-identical blocks out, index.csv offsets contiguous
     rng = np.random.default_rng(SEED)
     blocks = [
-        rng.integers(-2048, 2048, size=2 * n, dtype=np.int16) for n in (707, 1, 5000, 707)
+        rng.integers(-2048, 2048, size=2 * n, dtype=np.int16)
+        for n in (707, 1, 5000, 707)
     ]
     times = [1000.0, 1000.1 + 1e-9, 1000.25, 1234.5678901234]
     with tempfile.TemporaryDirectory() as d:
@@ -290,7 +291,7 @@ def test_disk_error_ends_session_not_radar():
         session_dir = rec.open(cfg, [])
         assert rec.write_block(raw, 1.0) == 0
         real, rec._blocks = rec._blocks, FullDisk()
-        rx, block_no = capture.capture_rx_data(cfg, ctx, FakeSDR(), TargetSim(), rec)
+        rx, block_no, _ = capture.capture_rx_data(cfg, ctx, FakeSDR(), TargetSim(), rec)
         real.close()
         assert block_no is None and len(rx) == cfg.CHIRP_REPS * cfg.N_IF
         assert not rec.active

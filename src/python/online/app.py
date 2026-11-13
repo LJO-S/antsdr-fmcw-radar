@@ -9,7 +9,7 @@ import time
 from PySide6.QtCore import QThread, Signal
 from PySide6.QtWidgets import QApplication
 
-from common import config, dsp, fabric_regs, gui
+from common import config, dsp, fabric_regs, gui, tracking
 from online import capture, processing, recorder, sdr, target_sim, fabric_ctl
 
 
@@ -23,6 +23,7 @@ class RadarWorker(QThread):
     reconfigure_done = Signal(bool, object)
     signals = Signal(object, object, object, object)  # rx, if, t, f
     recording = Signal(object)  # session dir (Path), or None when not recording
+    tracks = Signal(object)  # list of Track.snapshot() dicts
 
     def __init__(self, a_config: config.RadarConfig):
         super().__init__()
@@ -37,6 +38,7 @@ class RadarWorker(QThread):
         self._record_notes: str = ""
         self._last_spec_update: float = 0.0
         self._running: bool = True
+        self.tracker = None
 
     def run(self):
         radio = None
@@ -109,6 +111,9 @@ class RadarWorker(QThread):
                     traceback.print_exc()
                 fabric_on = False
 
+        def make_tracker(a_cfg):
+            return tracking.Tracker(a_cfg) if a_cfg.TRACK_EN else None
+
         try:
             ctx = dsp.build_cpi_context(a_config=self.config)
             fabric = fabric_ctl.FabricCtl(fabric_ctl.SshDevmem(self.config.SDR_IP))
@@ -116,6 +121,7 @@ class RadarWorker(QThread):
             radio.set_loopback(self.config.SDR_LOOPBACK_EN)
             radio.start()
             fabric_on = fabric_up(self.config)
+            self.tracker = make_tracker(a_cfg=self.config)
             while self._running:
                 new_session = False
                 if self.pending_cfg is not None:
@@ -131,6 +137,8 @@ class RadarWorker(QThread):
                         radio.set_loopback(new_cfg.SDR_LOOPBACK_EN)
                         radio.start()
                         fabric_on = fabric_up(new_cfg)
+                        self.tracker = make_tracker(a_cfg=new_cfg)
+                        self.tracks.emit([])  # the old tracks are gone
                         self.reconfigure_done.emit(True, new_cfg)
                     except Exception:
                         self.error.emit(traceback.format_exc())
@@ -141,6 +149,8 @@ class RadarWorker(QThread):
                         radio.set_loopback(old_cfg.SDR_LOOPBACK_EN)
                         radio.start()
                         fabric_on = fabric_up(old_cfg)
+                        self.tracker = make_tracker(a_cfg=old_cfg)
+                        self.tracks.emit([])
                         self.reconfigure_done.emit(False, old_cfg)
                 if self.pending_targets is not None:
                     targets, self.pending_targets = self.pending_targets, None
@@ -152,7 +162,7 @@ class RadarWorker(QThread):
                 # Sync recording if new session
                 rec_sync(new_session)
 
-                rx, block_no = capture.capture_rx_data(
+                rx, block_no, t = capture.capture_rx_data(
                     a_config=self.config,
                     a_ctx=ctx,
                     a_sdr=radio,
@@ -167,6 +177,18 @@ class RadarWorker(QThread):
                     velocities,
                     if_signal,
                 ) = processing.process_rx_data(a_rx=rx, a_config=self.config, a_ctx=ctx)
+
+                # Update tracker & emit tracks
+                if self.tracker is not None:
+                    try:
+                        trks = self.tracker.update(detections, t, self.config.MTI_EN)
+                        self.tracks.emit([k.snapshot() for k in trks])
+                    except Exception:
+                        # A tracker error ends tracking, never the radar
+                        self.error.emit("Tracker stopped:\n" + traceback.format_exc())
+                        self.tracker = None
+                        self.tracks.emit([])
+
                 if block_no is not None:
                     # The MTI_EN this CPI actually ran with, not _mti_en, which the
                     # GUI may have flipped since. A disk error here is reported by

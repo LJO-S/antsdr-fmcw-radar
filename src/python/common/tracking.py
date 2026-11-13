@@ -387,7 +387,7 @@ class Track:  # data only, no logic
     last_t: float  # time of last update, for delete-by-time
     age: int  # CPIs since birth
     snr_db: float  # from the last detection
-    nis: float  # from the last update
+    nis: float | None  # this CPI's update; None when born or coasting
     kin_ok: bool  # kinematic check has passed
     met: bool  # M of N has been reached once (sticky: the hits window slides on)
     history: deque  # (t, r, v), trimmed to the last TRACK_KINEMATIC_WINDOW_S
@@ -404,7 +404,7 @@ class Track:  # data only, no logic
             "v": float(self.filter.x[1]),
             "snr_db": float(self.snr_db),
             "age": self.age,
-            "nis": float(self.nis),
+            "nis": None if self.nis is None else float(self.nis),
             "kin_ok": bool(self.kin_ok),
             "coasting": self.misses > 0,  # no detection this CPI
         }
@@ -470,8 +470,9 @@ def kinematic(a_sums, a_cfg, a_age_s) -> bool | None:
 
     sigma = math.hypot(sigma_slope, sigma_vmean)
     miss = abs(slope - v_mean)
-    # Fail on strong disagreement
-    if miss > 2 * k * sigma:
+    # Fail on strong disagreement. The |v_mean| / 2 floor keeps coloured range noise and
+    # manoeuvres from failing a real track: a spur misses by all of |v| (guide 6.5).
+    if miss > max(2 * k * sigma, 0.5 * abs(v_mean)):
         return False
     # Pass only once the slope is precise enough to tell it from zero with margin
     # or a spur (slope 0) passes by noise about half the time at the boundary.
@@ -540,6 +541,7 @@ class Tracker:
                 trk.hits.append(0)
                 trk.misses += 1
                 trk.age += 1
+                trk.nis = None
 
         # 4. Birth trackers from the detections no track claimed.
         # NOTE: One inside a confirmed track's NMS window is a second dot of same target
@@ -645,7 +647,7 @@ class Tracker:
                     last_t=a_t,
                     age=1,
                     snr_db=det.get("snr_db", np.nan),
-                    nis=0.0,
+                    nis=None,
                     kin_ok=False,
                     met=False,
                     history=deque(maxlen=HISTORY_CAP),

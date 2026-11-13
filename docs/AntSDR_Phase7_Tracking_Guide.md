@@ -61,6 +61,9 @@ regenerates them); tracking in the fabric.
   v = 0; four fixed spurs at 56, 168, 337 and 360 m (`docs/rf_and_regulatory.md`, "Spurs
   riding the chirp"), fixed r with a nonzero v that differs per mode.
 - **Timing**: 6-30 CPIs/s, irregular (the rate falls with detections and fake targets).
+  TDM doubles the CPI: ~18 CPIs/s at best, ~9 with triangle + TDM (from the K1 and K10
+  timings, not measured). The 6.5 delays stretch with it (walker ~1.9 s at 15 CPIs/s), and
+  L5 runs at these rates: test it there, not at 25.
 
 ## 3. Filter choice
 
@@ -103,7 +106,19 @@ Constant-velocity filter, steady state under 8 m/s^2 braking, 25 CPI/s, `sr` 0.7
   CPI.
 - At `sa` 3, hard braking puts the mean NIS at the 9.21 gate and the track drops out;
   normal braking (3 m/s^2) gives NIS 3. Raising `sa` costs little noise because v is
-  measured. **Default `sa` = 5**, tuned by NIS (L0 exercise 1, L6).
+  measured. **Default `sa` = 10** (5 until 2026-11-12), tuned by NIS (L0 exercise 1, L6).
+- Why 10: the mean NIS hides the tail. On the L2 tracker (30 runs each, 25 CPI/s, Pd 0.9,
+  6.5's fail floor in place), share of runs that keep one ID:
+
+  | Scene | `sa` 5 | `sa` 10 |
+  |---|---|---|
+  | Car braking 8 m/s^2, 15 -> 3 m/s | 67 % | 100 % |
+  | Car at 15 m/s passing 30 m off (radial 7.5 m/s^2, 3.4) | 67 % | 100 % |
+  | Same, 20 m off (11 m/s^2) | 0 % | 87 % |
+
+  `sa` 15 adds nothing. 6.9's tracker tests and the delay check pass at 10, except (g) at
+  seed 0 (see 6.9). A pass 10 m off (22 m/s^2) always loses the ID: accepted, it is inside
+  the close-in mask.
 
 ### 3.4 Where the (x, y) EKF is weak
 
@@ -282,7 +297,7 @@ where k = CHIRP_FC_HZ * T_EFF / CHIRP_BW_HZ   # ~0.012 s, dsp.md "Range-Doppler 
 - Defaults: 
     - `sr` = 0.7 m (sub-bin refined, bins are 3.0 m)
     - `sv` = 0.5 m/s
-    - `sa` = 5 m/s^2 (3.3)
+    - `sa` = 10 m/s^2 (3.3)
     - Fixed R to start; scaling it per detection from `snr_db` is an upgrade (Section 10).
     - `sr` and `sv` cover measurement noise only. On a car the strongest reflection wanders
       over the body (gtrack sizes its car gate for +-4 m, +-2 m/s), so expect L6a to need a
@@ -329,12 +344,13 @@ where k = CHIRP_FC_HZ * T_EFF / CHIRP_BW_HZ   # ~0.012 s, dsp.md "Range-Doppler 
   whose range does not move with its v (only spurs are tested, (i)):
   - Over the track's history (the last `W` = `TRACK_KINEMATIC_WINDOW_S`, 3 s) fit the slope of the *measured* r vs t
     (the filter's r follows its own v, so it would always pass).
-  - Compare with the mean measured v over the same window, unrolled to the track (6.6). Both are the window's mean velocity, so manoeuvres do not upset it.
+  - Compare with the mean measured v over the same window, unrolled to the track (6.6). Both are the window's mean velocity, so a constant acceleration cancels exactly. A change of acceleration `da` inside the window does not: it leaves `d ~ 0.03 * da * W` (0.75 m/s for 8 m/s^2 braking that starts mid-window).
   - `d = slope - v_mean`, `sigma_d = sqrt(sigma_slope^2 + sigma_vmean^2)`, with
     `sigma_slope = sr / sqrt(sum((t - t_mean)^2))` (exact for any dt and misses),
     `sigma_vmean = sv / sqrt(N)`, `k = TRACK_KINEMATIC_SIGMA` (3).
     - *Pass*: `sigma_d < |v_mean| / (2k)` and `|d| < k * sigma_d`.
-    - *Fail* (delete): `|d| > 2k * sigma_d`, every CPI, confirmed tracks too.
+    - *Fail* (delete): `|d| > max(2k * sigma_d, |v_mean| / 2)`, every CPI, confirmed tracks
+      too.
     - Neither: wait. Still undecided at age W: pass as stationary (too slow to tell from a
       spur within W).
   - **Why pass at 2k**: a real target has d ~ 0, a spur (fixed r) d ~ v_mean: two bells |v|
@@ -346,11 +362,28 @@ where k = CHIRP_FC_HZ * T_EFF / CHIRP_BW_HZ   # ~0.012 s, dsp.md "Range-Doppler 
   - **Why fail at 2k, not k**: the check runs every CPI for the track's whole life. Failing
     at k sigma deleted ~80 % of real tracks within 2 min; at 2k none (2 Phi(-2k) per CPI).
     It costs nothing on spurs: their d ~ |v| crosses 2k sigma_d when they become decisive.
+  - **Why the `|v_mean| / 2` floor** (2026-11-12): sigma_d assumes white noise and shrinks
+    to ~0.1 m/s over W, so the bare 2k rule fails at 0.66 m/s. A car's strongest reflection
+    wanders over the body (correlated range noise), and braking or a pass leaves the `da`
+    term above: real confirmed tracks were deleted. A spur has d ~ |v|, a real target
+    d << |v|, so half of |v| splits them whatever the noise colour. Measured on the L2
+    tracker, 30 runs each, confirmed IDs per target (1 = ideal):
+
+    | Scene | 2k only | With the floor |
+    |---|---|---|
+    | Car 10 m/s, 60 s, range wander 1 m rms (1 s correlation) | 10.3 | 1.0 |
+    | Same, 2 m rms (2 s), `sa` 10, `sr` 1.5 | 9.0 | 1.0 |
+    | Braking 8 m/s^2, `sa` 10 | 2.0 | 1.0 |
+    | Passing 20 m off at 15 m/s, `sa` 10 | 2.1 | 1.1 |
+
+    Spurs are unaffected: 6.9 (i) passes, and a track pulled onto a stronger spur by a
+    target passing at the spur's v dies as fast (0.2 s mean, 0.9 max). Cost: a stream
+    whose range moves at more than half its v no longer fails; a spur does not move.
   - **k alone sets the error rates**; sr, sv and the CPI rate only set the delay T, where
     `sigma_d(T) = |v| / (2k)` and `sigma_d^2 ~= 12 sr^2 / (rate T^3) + sv^2 / (rate T)`.
     At the defaults (25 CPI/s): car 15 m/s ~0.35 s, bike 5 m/s ~0.7 s, walker 1.5 m/s
     ~1.6 s; below ~0.65 m/s nothing decides within W, so 3 s.
-  - It assumes sr and sv match the real noise: L3's NIS (mean 2) checks that.
+  - The pass delay assumes sr and sv match the real noise: L3's NIS (mean 2) checks that.
   - A spur too slow to decide within W passes as stationary; with MTI on, one near v = 0
     sits in the notch and is removed before detection anyway.
 - **Delete by time**, not by CPI count:
@@ -364,6 +397,12 @@ where k = CHIRP_FC_HZ * T_EFF / CHIRP_BW_HZ   # ~0.012 s, dsp.md "Range-Doppler 
     `TRACK_STOP_COAST_S` (5 s), coasting with v set to 0 (a stopped target should not
     drift). A person who stops keeps their ID for 5 s, then gets a new one. One bin is
     enough: MTI drops a walker at 0.5-1.5 m/s (by SNR), inside the 2.02 m/s bin.
+    Checked on the L2 tracker (2026-11-12, 30 runs of 60 s each):
+    - Zeroing v on a miss does not shake off a slow walker that is still detected:
+      1.2, 1.5 and 1.8 m/s, MTI on, sawtooth and TDM bins, one ID in every run.
+    - Capping P while it coasts (sigma_v <= one bin, sigma_r <= bin x coast time) changes
+      nothing: the 4 s stop keeps the ID in 35 of 40 seeds with and without it (32 and 34
+      at `sa` 10). Not worth adding.
   The tracker therefore needs each CPI's MTI state.
 - **Duplicates**: two confirmed tracks within the gate of each other for `TRACK_MERGE_N`
   CPIs (10), measured as d^2 between their predicted measurements with `S = S_a + S_b`:
@@ -393,7 +432,7 @@ where k = CHIRP_FC_HZ * T_EFF / CHIRP_BW_HZ   # ~0.012 s, dsp.md "Range-Doppler 
   kinematic check and the ~2 s tails,
   with v unrolled to the track (predicted v + wrapped innovation, so a track that speeds
   past `MAX_VELOCITY` keeps passing the check), and the last update's NIS (written each CPI
-  by L3's `replay --tracks`).
+  by L3's `replay`).
   "Coasting" = confirmed and not updated this CPI.
   - Size: the history is a `deque(maxlen=...)`, ~19 kB per track as Python tuples (90
     entries of 5 floats, measured), ~2 MB at `TRACK_MAX`. Nothing grows with track age.
@@ -404,12 +443,14 @@ where k = CHIRP_FC_HZ * T_EFF / CHIRP_BW_HZ   # ~0.012 s, dsp.md "Range-Doppler 
 | Field | Default | Unit |
 |---|---|---|
 | `TRACK_EN` | True | |
-| `TRACK_STD_A` | 5 | m/s^2 |
+| `TRACK_STD_A` | 10 | m/s^2 |
+| `TRACK_STD_THETA_MIN_DEG` (L5, 9.1) | 0.5 | deg |
 | `TRACK_STD_A_XY` | 10 | m/s^2 |
 | `TRACK_STD_R` | 0.7 | m |
 | `TRACK_STD_V` | 0.5 | m/s |
 | `TRACK_CONFIRM_M` / `TRACK_CONFIRM_N` | 3 / 4 | CPIs |
 | `TRACK_KINEMATIC_SIGMA` | 3 | sigma |
+| `TRACK_KINEMATIC_WINDOW_S` (W) | 3 | s |
 | `TRACK_KINEMATIC_WINDOW_S` | 3 | s |
 | `TRACK_DELETE_S` | 0.5 | s |
 | `TRACK_STOP_COAST_S` | 5 | s |
@@ -418,6 +459,9 @@ where k = CHIRP_FC_HZ * T_EFF / CHIRP_BW_HZ   # ~0.012 s, dsp.md "Range-Doppler 
 | `TRACK_MIN_SPEED` | 0 | m/s |
 
 The gates (9.21, 11.34) are chi-square constants, not config.
+
+As built on 2026-11-12, `config.py` differs in two defaults: `TRACK_EN` False (until L3
+wires the tracker) and `TRACK_STD_A` 5 (3.3's change is not in yet).
 
 ### 6.8 Cost
 
@@ -467,7 +511,21 @@ dt jittered over 20-50 ms.
 - Confirmation delay: a walker at 1.5 m/s and a car at 15 m/s confirm within 1.25x the 6.5
   delay T computed from the config (median; p90 within 2x). At the defaults ~1.6 s and ~0.35 s.
 
-Done when (a)-(k) and the delay check pass.
+Field cases (added 2026-11-12; (a)-(k) use white noise and gentle motion). Each over ~30
+seeds, as a share of runs:
+- (p) Hard braking: a car at 15 m/s brakes at 8 m/s^2 to 3 m/s: one ID in >= 90 %.
+- (q) Passing: a car at 15 m/s on a straight line 30 m off boresight, in (r, v):
+  one ID in >= 90 %.
+- (r) Coloured range noise: a car at 10 m/s for 60 s with an AR(1) range error of 1 m rms,
+  1 s correlation, on top of `sr`: one ID in >= 90 %.
+- (s) Spur capture: a target passes a fixed-r stream of its own v (+-0.5 m/s) that is
+  stronger, with one detection while both share a 7x7 window: no confirmed track sits on
+  the spur for 1 s after the target has left.
+- (g) is seed-fragile: at 2 false alarms per CPI the 4 s stop keeps the ID in 35 of 40
+  seeds at `sa` 5 and 32 of 40 at 10 (38 and 40 at 0.1 per CPI), and seed 0 fails at 10.
+  Assert a share (>= 70 %), not one seed.
+
+Done when (a)-(k), (p)-(s) and the delay check pass.
 
 ---
 
@@ -484,10 +542,12 @@ Done when (a)-(k) and the delay check pass.
 - **Playback**: `PlaybackWorker` owns its own tracker, runs it on the recorded times and
   emits `tracks`. A seek resets the tracker, which then warms up again from the new
   position.
-- **Replay**: `--tracks <file.jsonl>` writes the tracks per CPI, including the NIS, for
-  offline tuning (L6). `--check` stays detections-only.
+- **Replay**: the default output is one JSON line per CPI with the tracks, including the NIS, for
+  offline tuning (L6). `--track` runs the tracker on a session recorded without it, and
+  `--set TRACK_X=V` (repeatable) overrides tracking fields only, so the detections stay
+  exact. `--check` stays detections-only.
 
-Done when each loopback fake target gives one stable track live, `replay --tracks` is
+Done when each loopback fake target gives one stable track live, `replay` output is
 deterministic (two runs, identical output), and the fps cost is measured against the K1
 table in `TODO.md`.
 
@@ -531,8 +591,10 @@ Done when live and playback show the layout with fake targets tracked in loopbac
 
 - State `[x, y, vx, vy]`, constant velocity. `x = r sin(theta)`, `y = r cos(theta)`: the
   radar at the origin, y along boresight, theta > 0 towards antenna B (`CLAUDE.md`).
-- Q: the 6.3 block on (x, vx) and on (y, vy), with `TRACK_STD_A_XY` (10): twice the
-  (r, v) value, to cover linearization error (L0 exercise 3).
+- Q: the 6.3 block on (x, vx) and on (y, vy), with `TRACK_STD_A_XY` (10, from L0
+  exercise 3: it covers the linearization error). The Cartesian state removes the passing
+  geometry that set the (r, v) value (3.3), so tune the two apart in L6.
+- Units: `theta` in the target dicts is in degrees; the filter works in radians.
 - Measurement and Jacobian:
 
   ```
@@ -545,7 +607,13 @@ Done when live and playback show the layout with fake targets tracked in loopbac
 - R per detection: `diag(sr^2, sigma_theta^2, sv^2)`, with
   `sigma_theta = 1 / (pi cos(theta) sqrt(SNR_ch))` rad (G6 10.1) and
   `SNR_ch` = `snr_db` (5). Triangle + TDM "both" sums two looks (up and down phasors):
-  sigma_theta / sqrt(2). Floor sigma_theta at ~0.5 deg for calibration error.
+  sigma_theta / sqrt(2). Floor sigma_theta at `TRACK_STD_THETA_MIN_DEG` (0.5 deg) for
+  calibration error.
+  - Clamp `cos(theta)` at 0.5: theta is the measured one, and near +-90 deg (spurs read
+    60-75 deg) R would blow up.
+  - 0.5 deg suits fake targets. On air expect 1-2 deg: psi0 is set by walking a reflector
+    (G6 10.2), the turntable curve leaves a residual, and a near car is wider than the
+    thermal sigma (4.5 m at 30 m is 8 deg). L6b sets it by NIS.
 - Innovations: theta wrapped to [-pi, pi), v_r wrapped as in 6.3. The range row carries
   the per-kind coupling of 6.3 (`r + k v_r` for "up").
 - Start from one detection: position from (r, theta); velocity = v_r along the line of
@@ -553,6 +621,14 @@ Done when live and playback show the layout with fake targets tracked in loopbac
   (x, y).
 - Gate 11.34 (chi-square, 3 dof, 99 %). Association, track management and the kinematic
   check (on r and v_r) are unchanged.
+- **Stop-coast changes** (6.5 sets v to 0 below one bin with MTI on). The notch is on the
+  *radial* speed, and in (x, y) a target can sit in it while moving: a walker at 1.5 m/s
+  has |v_r| < 0.5 m/s whenever its heading is within ~20 deg of sideways, for as long as
+  that lasts (~14 s around closest approach on a straight pass 30 m off). So: if the
+  track's speed `hypot(vx, vy)` is under one bin, it stopped: zero the velocity. Otherwise
+  it is crossing: coast on its velocity for `TRACK_STOP_COAST_S`. A sideways walker still
+  outlasts 5 s and comes back under a new ID: accepted, it is what MTI costs. Test (o)
+  with MTI on shows it.
 
 ### 9.2 Tests (same file)
 
@@ -563,6 +639,10 @@ Done when live and playback show the layout with fake targets tracked in loopbac
 - (n) **Long range**: 300 m at 13 dB, random heading (`ex3_ekf_ukf.py` is the template):
   mean NEES in the 95 % band after the first 5 s. The start-up bump is expected (3.4).
 - (o) A target crossing the beam at 30 m: one track, no ID loss.
+  - A car at 15 m/s, MTI off and on: one ID both ways (it is in the notch for ~0.1 s).
+  - A walker at 1.5 m/s, MTI on: the ID is lost around closest approach (9.1). Assert
+    that the old track coasts on its velocity, not at v = 0, and report the gap.
+- Run (l)-(o) at the TDM rate (dt 55-75 ms, ~15 CPIs/s), not at L2's 20-50 ms (Section 2).
 
 Done when (l)-(o) pass, or their failures are understood and resolved through Section 10,
 and loopback fake targets with `theta0` track live on the PPI.
@@ -577,6 +657,8 @@ and loopback fake targets with `theta0` track live on the PPI.
 | EKF NEES inconsistent after track start (test n, L6b) | UKF behind the same interface (~30 % lower NEES at 300 m, 13 dB) |
 | NIS depends on SNR | R scaled per detection from `snr_db` |
 | NIS high on cars, normal on walkers (L6a) | A target-extent term in R (gtrack's dispersion `C_D`, estimated per track) |
+| Theta NIS high on near cars, normal far out (L6b) | An extent term in R's theta: `(width / r)^2` added to sigma_theta^2 |
+| Slow tracks on trees and bushes in wind (pass as stationary after W) | `TRACK_MIN_SPEED`, then the 2-pulse canceller (`TODO.md`, open small items) |
 | L5 tentative tracks (sideways sigma 10 m/s) grab clutter | Cap the gate's size in metres (gtrack's `DepthLimit`, `WidthLimit`) |
 | Duplicate tracks on one car or person | NMS Doppler window in m/s instead of bins (TDM doubles micro-Doppler in bins; this changes detections, so `replay --check` on older sessions needs the old setting), then clustering (DBSCAN in (r, v), or gtrack's centroid) |
 | Tracks swap when targets crowd | JPDA |
@@ -594,6 +676,12 @@ Q unchanged. Clutter associated to a track looks like a manoeuvre and can trigge
   crossing targets.
 - **Tracks drop out during braking** -> `sa` too small: the mean NIS sits near the gate
   (3.3).
+- **A car's ID changes every few seconds, walkers hold** -> the kinematic fail on
+  non-white range noise (6.5's floor missing), or `sr` too small for cars.
+- **Detections fade at the same ranges on every pass** -> the ground bounce, not the
+  tracker (Section 12).
+- **A second track behind a car, same v, weaker** -> a multipath ghost. It obeys
+  `dr/dt = v`, so the kinematic check passes it (Section 12).
 - **Walkers take long to confirm** -> compare with the 6.5 delay T: it grows with k, sr and
   sv and with a lower CPI rate.
 - **A spur confirms** -> too slow to decide within W (treated as stationary), or `sr`/`sv`
@@ -608,11 +696,24 @@ Q unchanged. Clutter associated to a track looks like a manoeuvre and can trigge
 - **L6a, (r, v), on K6's recordings** (Phase 6 field day 1: cars, people, bikes, a quiet
   stretch; software mode and fabric /8):
   - an approaching car reads v < 0;
-  - tune `sa`, `sr`, `sv` by NIS (`replay --tracks`): mean NIS ~2 on steady targets, per
+  - tune `sa`, `sr`, `sv` by NIS (`replay --track --set TRACK_STD_A=...`): mean NIS ~2 on steady targets, per
     class (cars likely need a larger `sr`, 6.3);
   - count detections per target (one dot or several) against the Section 10 rows;
-  - the spurs, and any multipath ghosts, never confirm;
+  - the spurs never confirm;
   - IDs hold in normal traffic; slow crossings lose IDs only as documented in 6.5.
+  - Expected, not bugs:
+    - **Multipath ghosts confirm.** A bounce off a wall or a second car is a longer path
+      with a consistent Doppler: it obeys `dr/dt = v`. Note how often; a fix (ghost =
+      same v, longer r, weaker, appears and dies with its parent) is out of scope.
+    - **Fades at fixed ranges.** Direct and ground-bounced paths cancel where
+      `R = 2 h_radar h_target / (n lambda)`: for 1.5 m and 1.0 m, at 58, 29, 19 m...
+      Beyond 58 m there is one last lobe (peak ~116 m), then the R^-8 fall-off (G6 1.3).
+      A person spans many heights and blurs it; a car's low reflection points do not.
+      K6's range walk (G6 7, step 5) shows the ripple in `snr_db`. A walker can sit in a
+      fade longer than `TRACK_DELETE_S`: count those ID losses before raising it.
+    - **Slow tracks on vegetation** in wind (Section 10).
+  - K6's padded recording (G6 7, step 6) is the SNR field day 2 will have: check that
+    confirmation and ID hold survive there, not only at the grid's 30 dBi.
 - **L6b, (x, y), on field day 2's recordings** (patches on air, TDM, psi0 set): a person
   walking a known line and a car along a road trace their paths on the PPI; NEES and NIS
   are sane; sideways lag is judged against test (m).
