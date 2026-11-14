@@ -23,16 +23,16 @@ their design conclusions move to `.claude/rules/` (area rules) or `CLAUDE.md`
 (project-wide), per the close-out rule in `CLAUDE.md` - don't grow narrative back in
 here as parts close.
 
-Current state (2026-11-12): Parts A-G and I are done. **Parts K (Phase 6) and L
+Current state (2026-11-14): Parts A-G and I are done. **Parts K (Phase 6) and L
 (Phase 7, tracking) are active**:
-K0-K2, K4, K5, K7, K8, K10 and L0 done; L1 and L2 built (laptop checks and the
-2026-11-12 review items open); L3 started. FMC5 (TDM + `tx_sel` on J30) is on hardware, and fabric
-/8 has run on cable RF (K7 bench, K10 cable test) but not yet on air (K6). K9 boards
-ordered (due ~2026-11-06..12).
-**Next: K6 on the first dry day** - it is the only source of real data for L6a, and the
-tracker is tuned on synthetic noise until then. Meanwhile L3, then the K9 bench when the
-boards land, then L5. L4's full layout can wait for L5.
-Part H stays deferred. Part J blocks nothing and can run in parallel.
+K0-K2, K4, K5, K7, K8, K10, L0 done; L1-L3 built, board checks and 2026-11-12/13 review
+items open. FMC5 (TDM + `tx_sel` on J30) on hardware; fabric /8 has run on cable RF (K7
+bench, K10) but not on air (K6). K9 boards arrived 2026-11-09, S-params measured,
+turntable next.
+**Next: K6 on first dry day** - only source of real data for L6a; tracker tuned on
+synthetic noise until then. Meanwhile L2/L3 open items, K9 turntable, then L5. L4 full
+layout can wait for L5.
+Part H deferred. Part J (`docs/archive/optionals.md`) blocks nothing, can run in parallel.
 
 ---
 
@@ -124,11 +124,11 @@ moved to Part L on 2026-11-05.
       coupling, isolation vs spacing, gain +-1 dB, pattern + A-B phase vs angle.
       Re-tuned at eps_r 4.6 2026-10-23 (`results.md`, K9; run files in
       `scripts/antenna_design/column/`): 10.8 dBi, S11 -18 dB, tilt -0.7 deg.
-      Boards ordered 2026-10-26 (KiCad + Gerbers in `scripts/antenna_design/tx/`, `rx/`):
-      JLCPCB FR4 TG135 as K8, EuroPacket, expected ~2026-11-06..12. Each board carries
-      the K8 patch on a tab (witness for this batch's eps_r); if the tab is cut off, cut
-      before the turntable calibration (9.5). K8's launch was left as is: trim fc to the
-      column's launch-removed resonance.
+      Boards (KiCad + Gerbers in `scripts/antenna_design/tx/`, `rx/`) measured on the VNA
+      2026-11-09 (`results.md`, K9 "Measured"): batch eps_r **~4.8** not 4.6 (witness
+      tab) -> expect 1.5-1.8 dB less gain, ~5 deg tilt at 5.8 GHz. Column S11 -6.5 to
+      -8.4 dB worst in band (launch; S11 cannot set fc), coupling A-B -25.8 dB. Cut witness
+      tab off only after turntable calibration (9.5).
       Turntable (9.5) on the LiteVNA, not the E200: recipe in
       `scripts/antenna_design/k9_turntable.md` (2026-11-02; **not in git and not on the
       desktop as of 2026-11-12**: commit it from the laptop). In the radar the E200's
@@ -140,6 +140,8 @@ moved to Part L on 2026-11-05.
       radially along boresight at >= 1.5 m/s, >= 20 m out, MTI on (moving, so MTI removes
       the leak, TX-RX coupling and clutter from its cell). K10's cable test skipped step 0
       and the in-rig VNA, so that offset model is unconfirmed: psi0 comes from the field.
+  - [ ] Elevation cut on the turntable (`k9_turntable.md` 8): gives tilt -> fc (window in
+        `CLAUDE.md`) and mount tilt
   - [ ] Commit `k9_turntable.md` from the laptop (the README and this file point to it)
   - [ ] Gain by the two-antenna method on the VNA too, not the E200: same leak (G9.5)
   - [ ] Redo the TX gain with the measured gain and the switch's 3.0 dB: sim says 0 dB,
@@ -171,48 +173,50 @@ reference sessions (spur test, L1 check) are on the laptop, not the desktop.
 
 - [x] L0 - reading + exercises (G7 4, 2026-11-09): `scripts/tracking/`. GNN is enough;
       EKF for L5 with `sa` 10. Results in G7 4.
-- [ ] L1 - `snr_db` per detection (G7 5)
-  - Cell power over the CFAR noise estimate, in dB: "both" on `avg_pwr`, up/down-only
-    on their own map, TDM on `|X_A|^2 + |X_B|^2`
-  - Mirror it in `profile_cpi.py`
-  - `replay --check`: compare only the keys the recorded line has
-  - Done: old sessions pass, a new session passes, +20 dB per decade of `amp`
-  - Built (0bc278d).
-  - [ ] `replay --check` on the `20261102-19*` sessions (laptop)
+- [x] L1 - `snr_db` per detection (G7 5, 0bc278d, rules in `dsp.md`): old sessions check
+      exact (eight `20261102-*`, laptop 2026-11-13), +20 dB/decade of `amp`, new session
+      `20261114-141729` (fabric, loopback, 762 CPIs) `replay --check` OK.
 - [ ] L2 - tracker in (r, v), `common/tracking.py` (G7 6)
-  - Built (3152b8f): `test_tracking` 16/17 on the desktop.
-  - [ ] Test (i) on the reference sessions (laptop; skipped on the desktop)
-  - Flaws found 2026-11-12:
-  - [x] Kinematic fail deleted real confirmed tracks: fixed 2026-11-12 in `kinematic()`,
-        fail only when `miss > max(2 * k * sigma, 0.5 * abs(v_mean))` (G7 6.5)
-  - [ ] **`TRACK_STD_A` 5 is too tight**: a car passing 20 m off always loses its ID, 87 %
-        keep it at 10. Decide, then change `config.py` (G7 3.3)
-  - [ ] Tests (p) braking, (q) passing, (r) coloured range noise, (s) spur capture
-        (G7 6.9)
-  - [ ] Test (g) is seed-fragile (35 of 40 seeds, seed 0 fails at `sa` 10): assert a share
-        over seeds (G7 6.9)
-  - [ ] `TRACK_EN`: the guide says True, `config.py` False. Flip it when L3 is wired
-        (G7 6.7)
-  - `TrackFilter`: `init`, `predict`, `innovation`, `update` (6.2)
-  - KF: DWNA Q, `sa` 5, `sr` 0.7, `sv` 0.5; H per `kind`; wrap the v innovation (6.3)
-  - Two-stage GNN, gate 9.21: confirmed tracks, then tentative, then births outside
-    confirmed gates (6.4)
-  - Confirm on 3-of-4 + the dr/dt = v check; delete by time (0.5 s, 5 s in the MTI
-    notch); merge duplicates; cap 100 (6.5)
-  - `TRACK_*` config group (6.7)
-  - Done: `tests/test_tracking.py` (a)-(k) + the confirmation delay pass
+  - Built (3152b8f, fba89b4). `test_tracking` 17/17 on laptop, (i) on five reference
+    sessions included (2026-11-13). Cost 0.3 ms/CPI at 4 tracks, 1.7 at 96.
+  - Order matters ((g) first, or `sa` 10 turns suite red):
+  - [x] Test (g) asserts a share (>= 70 % of 20 seeds); `TRACK_STD_A` now 10 (2026-11-14,
+        G7 3.3), L6a tunes it by NIS
+  - [ ] Tests (p) braking, (q) passing, (r) coloured range noise (also at walking speed,
+        see floor item), (s) spur capture (G7 6.9)
+  - 2026-11-13 review (synthetic, `sa` 10; recordings show none of it):
+  - [ ] Spur leak: fixed-r stream with noise near `sr` / `sv` confirms briefly in 3-19 of
+        20 runs of 60 s (G7 6.5 says 0.13 %); 2nd tentative track born on stream, they
+        share its detections. Fixed 2026-11-14 in `Tracker.update`: no births inside the
+        NMS window of a tentative track that has met M-of-N. Test (i) is now 60 s x 20
+        seeds and fails 2 / 3 / 6 of 20 seeds at 2 / 10 / 40 m/s (old code 16 / 8 / 4):
+        about Phi(-3) per born spur track (0.1-0.2 %, hundreds of births per run), so not
+        the leak
+  - [ ] Decide test (i): assert the confirmed share of born spur tracks (<= ~0.5 %), not
+        "never"; check it still catches the old leak
+  - [ ] A track can confirm on a CPI without a detection (age reaches W while coasting;
+        `met` sticky). Require a hit and M-of-N on that CPI: session `211213` 67 confirmed
+        IDs (22 under 1 s) -> 39 (5)
+  - [ ] `abs(v_mean) / 2` fail floor gives slow targets no cover: walker at 1 m/s, 0.5 m
+        rms / 1 s range wander keeps ID in 27 % of 60 s runs, 100 % with absolute
+        1 m/s floor. Decide on L6a data
+  - [ ] `TRACK_EN`: guide says True, `config.py` False. Flip with L4 (nothing draws tracks
+        before; K6 tracks offline with `replay --track`) (G7 6.7)
 - [ ] L3 - app, playback, replay (G7 7)
-  - Worker owns the tracker, emits `tracks` snapshots, rebuilds on RE-CONFIGURE
-  - `PlaybackWorker` owns its own tracker, resets on seek
-  - `replay` prints tracks per CPI as JSON lines, NIS included
-  - Done: one stable track per loopback fake target; replay output deterministic; fps
-    cost vs K1
+  - Built (fba89b4); rules in `app.md`. `replay --track` deterministic (2 runs identical,
+    laptop 2026-11-13). Capture stamp fixed: 2 kernel buffers + `BlockClock` (`sdr.md`)
+  - [ ] Live loopback: one stable track per fake target (board)
+  - [ ] fps cost vs K1 (board)
 - [ ] L4 - GUI layout A (G7 8)
   - Toolbar row; PPI left ~60 % (r-v plot there with TDM off); r-v plot + track list
     right
   - Tracks: ID + ~2 s tail, coasting dimmed, tentative toggle, click to select
   - RD maps to Signals; track lines in History
   - Done: live and playback in loopback; GUI slot re-measured
+  - [ ] Number tracks at confirmation: IDs are spent at birth, 23-40/s
+  - [ ] `_draw_history` (5 Hz) ran with the tab hidden, 15 ms at 5000 dots: likely the
+        +40 ms stall every 0.2 s in recorded dt. Skipped when hidden (2026-11-14, draws on
+        tab switch); still to do: cap dots, confirm on board
 - [ ] L5 - tracker in (x, y) (G7 9)
   - EKF `[x, y, vx, vy]` on (r, theta, v_r), `sa` 10; R per detection from `snr_db`;
     gate 11.34
@@ -222,15 +226,21 @@ reference sessions (spur test, L1 check) are on the laptop, not the desktop.
         `hypot(vx, vy)` is under one bin; otherwise coast on the velocity
   - [ ] `theta` arrives in degrees; clamp `cos(theta)` at 0.5 in sigma_theta
   - [ ] `TRACK_STD_THETA_MIN_DEG` (0.5) as a config field: L6b tunes it, expect 1-2 deg
-  - [ ] Run (l)-(o) at ~15 CPIs/s (TDM), (o) with MTI on and off
+  - [ ] Run (l)-(o) at the recorded rates (~23 CPIs/s TDM, ~14 triangle + TDM), (o) with
+        MTI on and off
 - [ ] L6 - real targets (G7 12)
   - L6a, K6 recordings: approaching car v < 0; tune `sa`, `sr`, `sv` by NIS per class;
-    spurs never confirm
+    spurs never confirm; a walker's range wander (the L2 fail floor). Fabric recordings
+    only: software mode runs at ~4 CPIs/s
   - L6b, K11 recordings: walked line and a car traced on the PPI; NEES/NIS sane
   - Expect, and count instead of fixing (G7 12): multipath ghosts confirm (they obey
     dr/dt = v); fades at fixed ranges from the ground bounce (58, 29, 19 m for 1.5 m and
     1.0 m heights); slow tracks on vegetation
   - [ ] Check confirmation and ID hold on K6's padded recording (patch-class SNR)
+- [ ] Docs from the 2026-11-13 review: G7 2 and 9.2 rates (recorded 21-25 CPIs/s TDM,
+      13.7 triangle + TDM); G7 6.5 (fake targets give NIS ~0, L3 can't check `sr` / `sv`);
+      duplicate row in G7 6.7; `common/tracking.py` into a rule file and `CLAUDE.md`
+      tree; `tests/test_replay_tracks` is in `CLAUDE.md` but not in git
 
 ---
 
