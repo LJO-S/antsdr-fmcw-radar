@@ -544,10 +544,13 @@ class Tracker:
                 trk.nis = None
 
         # 4. Birth trackers from the detections no track claimed.
-        # NOTE: One inside a confirmed track's NMS window is a second dot of same target
+        # NOTE: Det inside confirmed track's NMS window = second dot of same target.
+        # Same for tentative track that met M of N, waiting on kinematic check: else
+        # spur's neighbours keep birthing tracks around it.
         free = np.asarray(left1, dtype=int)[left2]
-        if conf and len(free):
-            free = free[~self._in_window(conf, [a_dets[j] for j in free]).any(axis=0)]
+        guard = conf + [t for t in tent if t.met]
+        if guard and len(free):
+            free = free[~self._in_window(guard, [a_dets[j] for j in free]).any(axis=0)]
         births = [a_dets[j] for j in free]
         self._birth(births, a_t)
 

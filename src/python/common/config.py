@@ -262,7 +262,7 @@ class RadarConfig:
     TRACK_EN: bool = field(
         default=False,
         metadata={
-            "label": "Tracker",
+            "label": "ENABLE",
             "unit": "",
             "scale": 1,
             "group": "tracking",
@@ -365,7 +365,7 @@ class RadarConfig:
     )
     # Process noise: std of the random acceleration
     TRACK_STD_A: float = field(
-        default=5.0,
+        default=10.0,
         metadata={
             "label": "Accel. Std",
             "unit": "m/s^2",

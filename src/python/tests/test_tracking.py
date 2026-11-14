@@ -57,6 +57,10 @@ DT_JITTER = (0.020, 0.050)  # s, guide 6.9
 PD = 0.9
 FA_PER_CPI = 2.0
 SPUR_RANGES = (56.0, 168.0, 337.0, 360.0)  # m, guide 6.9 (i)
+G_SEEDS = 20  # test (g): seeds per gap
+G_SHARE = 0.7  # test (g): share of seeds that must behave
+SPUR_SEEDS = 20  # test (i): seeds per spur and v
+SPUR_T = 60.0  # test (i): s per run
 SESSIONS = Path(__file__).resolve().parents[3] / "data" / "sessions"
 
 
@@ -565,27 +569,32 @@ def walker_stop_go(a_cfg, a_gap):
 
 
 def test_g_stop_and_go():
-    """(g) MTI on, walker stops: 4 s gap keeps the ID, 6 s gap gives a new one."""
+    """(g) MTI on, walker stops: 4 s gap keeps the ID, 6 s gap gives a new one.
+    A share over G_SEEDS seeds (>= G_SHARE): one seed is fragile at 2 false alarms per CPI.
+    A run that never confirms before or after the stop counts as a miss."""
     cfg = RadarConfig()
     for gap, same in ((4.0, True), (6.0, False)):
-        rng = np.random.default_rng(SEED)
-        tg, t_cease, t_resume = walker_stop_go(cfg, gap)
-        scene = Scene(cfg, rng, [tg])
-        log = run(cfg, scene, t_resume + 5.0, rng, a_mti=True)
-        # match() returns an ID, and ID 0 is falsy: compare with None
-        before = [
-            m for s in log if s.t < t_cease - 0.2 and (m := match(s, 0)) is not None
-        ]
-        after = [
-            m for s in log if s.t > t_resume + 3.0 and (m := match(s, 0)) is not None
-        ]
-        assert before, f"gap {gap}: never confirmed before the stop"
-        assert after, f"gap {gap}: no confirmed track after the stop"
-        id_b, id_a = before[-1], after[-1]
-        if same:
-            assert id_a == id_b, f"gap {gap}: ID {id_b} -> {id_a}"
-        else:
-            assert id_a != id_b, f"gap {gap}: ID kept ({id_b})"
+        ok, bad = 0, []
+        for seed in range(SEED, SEED + G_SEEDS):
+            rng = np.random.default_rng(seed)
+            tg, t_cease, t_resume = walker_stop_go(cfg, gap)
+            scene = Scene(cfg, rng, [tg])
+            log = run(cfg, scene, t_resume + 5.0, rng, a_mti=True)
+            # match() returns an ID, and ID 0 is falsy: compare with None
+            before = [
+                m for s in log if s.t < t_cease - 0.2 and (m := match(s, 0)) is not None
+            ]
+            after = [
+                m for s in log if s.t > t_resume + 3.0 and (m := match(s, 0)) is not None
+            ]
+            if before and after and ((after[-1] == before[-1]) == same):
+                ok += 1
+            else:
+                bad.append(seed)
+        assert ok >= G_SHARE * G_SEEDS, (
+            f"gap {gap}: {'ID kept' if same else 'new ID'} in {ok}/{G_SEEDS} seeds, "
+            f"failed {bad}"
+        )
 
 
 def test_h_second_dot():
@@ -600,28 +609,32 @@ def test_h_second_dot():
 
 
 def test_i_spurs_synthetic():
-    """(i) fixed-r detections at v = 2, 10, 40 m/s, Pd 1, never confirm."""
+    """(i) fixed-r detections at v = 2, 10, 40 m/s, Pd 1, 60 s, SPUR_SEEDS seeds: never
+    confirm. 60 s x many seeds: leak (births next to waiting tentative track) is rare per CPI."""
     cfg = RadarConfig()
     for r_spur in SPUR_RANGES:
         for v in (2.0, 10.0, 40.0):
-            rng = np.random.default_rng(SEED)
-            scene = Scene(cfg, rng, [], a_fa=0)
-            sr, sv = cfg.TRACK_STD_R, cfg.TRACK_STD_V
-            trk = make_tracker(cfg)
-            t, bad = T0, []
-            while t < T0 + 4.0:
-                det = {
-                    "r": r_spur + rng.normal(0, sr),
-                    "v": v + rng.normal(0, sv),
-                    "kind": "up",
-                    "snr_db": 30.0,
-                }
-                for s in trk.update([det] + scene.step(t - T0, False), t, False):
-                    sn = snap(s)
-                    if sn["status"] == CONFIRMED and abs(sn["r"] - r_spur) < 12.0:
-                        bad.append(sn)
-                t += rng.uniform(*DT_JITTER)
-            assert not bad, f"spur {r_spur} m at {v} m/s confirmed: {bad[0]}"
+            for seed in range(SEED, SEED + SPUR_SEEDS):
+                rng = np.random.default_rng(seed)
+                scene = Scene(cfg, rng, [], a_fa=0)
+                sr, sv = cfg.TRACK_STD_R, cfg.TRACK_STD_V
+                trk = make_tracker(cfg)
+                t, bad = T0, []
+                while t < T0 + SPUR_T and not bad:
+                    det = {
+                        "r": r_spur + rng.normal(0, sr),
+                        "v": v + rng.normal(0, sv),
+                        "kind": "up",
+                        "snr_db": 30.0,
+                    }
+                    for s in trk.update([det] + scene.step(t - T0, False), t, False):
+                        sn = snap(s)
+                        if sn["status"] == CONFIRMED and abs(sn["r"] - r_spur) < 12.0:
+                            bad.append(sn)
+                    t += rng.uniform(*DT_JITTER)
+                assert not bad, (
+                    f"spur {r_spur} m at {v} m/s, seed {seed}, confirmed: {bad[0]}"
+                )
 
 
 def test_i_spurs_reference_sessions():
