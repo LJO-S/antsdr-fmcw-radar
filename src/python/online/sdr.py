@@ -1,7 +1,15 @@
+import time
+
 import iio
 import common.config as config
 import common.dsp as dsp
 import numpy as np
+from online import block_clock
+
+# Kernel RX blocks. refill() returns block captured from entry of refill n-1 calls back
+# (.claude/rules/sdr.md); 2 keeps next block filling while host processes this one, at
+# one loop latency (libiio default 4 was 3).
+RX_KERNEL_BUFFERS = 2
 
 
 class AntSDR:
@@ -150,7 +158,17 @@ class AntSDR:
         # costs two DMA transfers per refill() and the last sample comes from the
         # second one. The extra sample is margin.
         rx_buf_samples += rx_buf_samples % 2
+        # Before buffer: count applied at creation
+        self.rx.set_kernel_buffers_count(RX_KERNEL_BUFFERS)
         self.rx_buff = iio.Buffer(self.rx, samples_count=rx_buf_samples, cyclic=False)
+        # Every refill goes through _read_raw, feeding this clock. T_blk is at FS_IF,
+        # off until fabric_up() switches rate: only flush/throwaway blocks see that.
+        self.rx_clock = block_clock.BlockClock(
+            a_n_bufs=RX_KERNEL_BUFFERS,
+            a_t_blk=rx_buf_samples / self.config.FS_IF,
+            a_t_create=time.monotonic(),
+        )
+        self.block_t = None
 
         # --------------------
         # Start TX cyclic DMA
@@ -180,23 +198,28 @@ class AntSDR:
 
     def _read_raw(self):
         """
-        Refill RX buffer and return raw bytes.
+        Refill RX buffer, return raw bytes. Sets self.block_t, block capture
+        midpoint.
         """
+        t_entry = time.monotonic()
         self.rx_buff.refill()
+        self.block_t = self.rx_clock.refill(t_entry)
         return self.rx_buff.read()
 
-    def read_raw_block(self) -> np.ndarray:
+    def read_raw_block(self) -> tuple[np.ndarray, float]:
         """
-        Refill RX buffer and return the interleaved int16 block (read-only view),
-        exactly as the DMA delivered it. This is also what the recorder stores.
+        Refill RX buffer, return (block, t): interleaved int16 block (read-only
+        view) exactly as DMA delivered it (what recorder stores), and its capture
+        midpoint t (time.monotonic()).
         """
-        return np.frombuffer(self._read_raw(), dtype=np.int16)
+        raw = np.frombuffer(self._read_raw(), dtype=np.int16)
+        return raw, self.block_t
 
     def read_block(self) -> np.ndarray:
         """
         Refill RX buffer and return normalized+de-interleaved complex64 array.
         """
-        return dsp.iq_from_raw(self.read_raw_block())
+        return dsp.iq_from_raw(self.read_raw_block()[0])
 
     def set_loopback(self, a_en: bool):
         self.ctrl.debug_attrs["loopback"].value = str(int(a_en))

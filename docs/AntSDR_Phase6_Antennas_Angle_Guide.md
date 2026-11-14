@@ -153,7 +153,9 @@ at a desk, against real clutter.
 - `blocks.bin`: raw capture blocks appended exactly as the DMA delivered them
   (int16, interleaved, before trim and before `TargetSim`).
 - `index.csv`: one line per block, `monotonic_t, byte_offset, n_bytes`, flushed
-  per line so a crash loses at most one block.
+  per line so a crash loses at most one block. `monotonic_t` = block capture
+  midpoint (`BlockClock`); old sessions (4 kernel buffers) hold the read-return time,
+  ~3 loops late (`.claude/rules/sdr.md`).
 - `detections.jsonl`: the live detection list per CPI. It makes replay
   self-checking.
 

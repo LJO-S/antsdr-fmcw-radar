@@ -98,7 +98,8 @@ class RadarWorker(QThread):
                 except Exception:
                     traceback.print_exc()
                 raise
-            for _ in range(3):  # IF_SEL switch re-rolls the cpack pack phase
+            # Flush blocks queued before IF_SEL switch
+            for _ in range(sdr.RX_KERNEL_BUFFERS - 1):
                 radio.read_block()
             return True
 

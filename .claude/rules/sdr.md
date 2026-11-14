@@ -1,6 +1,6 @@
 ---
 paths:
-  - "src/python/online/{sdr,capture}.py"
+  - "src/python/online/{sdr,capture,block_clock}.py"
 ---
 
 # AntSDR and libiio
@@ -47,7 +47,20 @@ Verified against the v0.x binding source (the pip package's `iio.py`). **v0.x AP
 - `find_device()` / `find_channel()` return `None` silently on a bad name — guard.
 - Attr values must be **strings** (`str(value)`); errors raise `OSError` with real errno
   (incl. `refill()` timeouts — `ctx.set_timeout(ms)` to adjust).
-- `dev.set_kernel_buffers_count(n)` (default 4) trades RX staleness vs dropped data.
+- **Kernel buffers make RX blocks stale by n-1 refills** (`dev.set_kernel_buffers_count(n)`,
+  libiio default 4). All n queued at creation; each `refill()` re-queues held block
+  and returns oldest full one. Loop slower than a block (always, in app): DMA idles,
+  block from refill k captured over `[entry of refill k-n+1, + T_blk]` (measured with RX
+  gain step at n = 1, 2, 4). Ready block's `refill()` + `read()` is pure transfer,
+  ~12-14 ms for 730 kB (~55 MB/s); n = 1 adds full T_blk per loop. So `sdr.py` uses
+  **`RX_KERNEL_BUFFERS = 2`** (one loop latency, processing still overlaps capture) and
+  stamps blocks with **`online/block_clock.BlockClock`**: start = max(queue time, end of
+  previous block), t = start + T_blk/2. Every refill must go through `_read_raw` or clock
+  drifts off queue. Checked on board to +-5 ms (marker jitter: `hardwaregain` write
+  lands in data 0-10 ms after call, depending on iiod load).
+  Old sessions (n = 4) stamp read-return time, ~3 loops + transfer late.
+  Live (fabric /8 + TDM, loopback): stale blocks after fabric enable 3 (n = 4) -> 1 (n = 2);
+  CPI rate 29.6 -> 30.4/s; read return - stamp 108 -> 39 ms.
 - Throughput: RX buffer = `(CHIRP_REPS + margin) * N_IF * 4 B` = 2.9 MB per CPI at 128 reps
   at full rate (software or fabric /1), a few frames per second over ~118 MB/s GbE. Fabric /8
   cuts it to 365 kB: measured **up to ~30 CPIs/s in the GUI** (I5 exit), falling

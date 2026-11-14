@@ -1,5 +1,4 @@
 import logging
-import time
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -28,10 +27,9 @@ def capture_rx_data(
         - block number or None
         - capture time t
     """
-    # 1. Capture. One timestamp: it goes to the recorder and to TargetSim, so replay
-    #    moves the fake targets exactly like the live run did.
-    raw = a_sdr.read_raw_block()
-    t = time.monotonic()
+    # Timestamp 'block capture' midpoint. Goes to recorder,
+    # tracker, TargetSim, so replay moves fake targets exactly like live run.
+    raw, t = a_sdr.read_raw_block()
     block_no = None
     if a_recorder is not None and a_recorder.active:
         # None on a disk error: the recorder ends the session itself and never

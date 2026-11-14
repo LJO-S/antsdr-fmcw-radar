@@ -25,7 +25,7 @@ work.
 | `CLAUDE.md` | Project-wide: sign conventions, config, firmware stack, RF safety | Always |
 | `.claude/rules/dsp.md` | DSP conventions, detection pipeline, TargetSim / `apply_if`, soft model | `dsp.py`, `target_sim.py`, `processing.py`, `offline/` soft model + profiler, `scripts/angle/` |
 | `.claude/rules/app.md` | Worker invariants, recording, playback, GUI | `app.py`, `capture.py`, `recorder.py`, `gui.py`, `replay.py`, `playback.py` |
-| `.claude/rules/sdr.md` | AntSDR lifecycle, libiio, real-board behaviour | `sdr.py`, `capture.py` |
+| `.claude/rules/sdr.md` | AntSDR lifecycle, libiio, real-board behaviour | `sdr.py`, `capture.py`, `block_clock.py` |
 | `.claude/rules/hdl.md` | Firmware/HDL, register map, hardware rules, fabric control, decimator, 2R2T, J30 | `firmware/**`, `scripts/bringup/`, `fabric_regs.py`, `fabric_ctl.py` |
 | `docs/rf_and_regulatory.md` | AD9361 RF numbers, bench and field results, PTS/EMF rules, link budget | On demand |
 | `docs/*Guide*.md` | Phase specs (Phases 6 and 7 active, 1-5 in `archive/`) | On demand |
@@ -60,7 +60,10 @@ src/python/                 # import root
                          #   + RadarDisplay in playback mode + PlayerBar
   online/
     sdr.py         # AntSDR: connect/find_device in __init__; attrs+buffers in start();
-                   #   read_raw_block() (int16), read_block() = dsp.iq_from_raw of it
+                   #   read_raw_block() -> (int16 block, capture t), read_block() =
+                   #   dsp.iq_from_raw of it; 2 kernel RX buffers
+    block_clock.py # BlockClock: RX block capture midpoint from refill() entry times
+                   #   (.claude/rules/sdr.md)
     capture.py     # capture_rx_data(): read_raw_block -> Recorder.write_block ->
                    #   prepare_block(): TargetSim.apply -> frame_sync_linear
                    #   (fabric mode: FABRIC_FRAME_TRIM slice -> TargetSim.apply_if, no sync)
@@ -75,7 +78,8 @@ src/python/                 # import root
     app.py         # RadarWorker (QThread) + main(); owns (config, ctx, sdr)
     fabric_ctl.py  # FabricCtl (enable/disable/set_calib_delay sequencing) + SshDevmem transport
   tests/           # board-free suites (test_dsp, test_soft_model, test_target_sim, test_recorder,
-                   #   test_fabric_ctl, test_tracking, test_replay_tracks), each run as __main__
+                   #   test_fabric_ctl, test_tracking, test_replay_tracks, test_block_clock),
+                   #   each run as __main__
   image.png, image-1.png  # screenshots of other radar GUIs, kept as reference
 docs/              # AntSDR_Phase6_Antennas_Angle_Guide.md (Part K spec, active),
                    #   AntSDR_Phase7_Tracking_Guide.md (Part L spec, tracking, active),

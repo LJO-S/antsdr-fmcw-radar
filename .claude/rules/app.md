@@ -63,8 +63,9 @@ paths:
   close()`. `stop()` (GUI thread) flips `_running` then `wait(5000)`s — never `terminate()`.
 - **Fabric bring-up is worker-owned too**: `fabric = FabricCtl(SshDevmem(SDR_IP))` is built in
   `run()` next to `radio`; two closures `fabric_up(cfg)` / `fabric_down()` wrap it. Order at
-  every `start()`: `radio.start()` -> `fabric_up` (check_magic, enable, 3 throwaway
-  `read_block()`s because the IF_SEL switch re-rolls the cpack pack phase). Before every
+  every `start()`: `radio.start()` -> `fabric_up` (check_magic, enable, `RX_KERNEL_BUFFERS - 1`
+  throwaway `read_block()`s: blocks queued before IF_SEL switch, `.claude/rules/sdr.md`;
+  was 3 at libiio default 4). Before every
   `radio.close()` (normal, reconfigure, last-good revert): `fabric_down()`, best-effort in
   `finally`. **`enable()` can raise after its `write_seq` already ran** (the STATUS check), so
   `fabric_up` must catch, `disable()`, then re-raise - otherwise `fabric_on` stays False on a

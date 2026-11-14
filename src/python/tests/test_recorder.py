@@ -284,7 +284,7 @@ def test_disk_error_ends_session_not_radar():
 
     class FakeSDR:
         def read_raw_block(self):
-            return raw
+            return raw, 2.0
 
     with tempfile.TemporaryDirectory() as d:
         rec = Recorder(Path(d))
