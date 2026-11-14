@@ -2,7 +2,7 @@ import sys
 import time
 import numpy as np
 import dataclasses
-from collections import defaultdict, deque
+from collections import defaultdict
 from pathlib import Path
 from PySide6.QtCore import QRectF, Qt, QLocale, Signal
 from PySide6.QtWidgets import (
@@ -734,6 +734,10 @@ class RadarDisplay(QMainWindow):
         tab = QWidget()
         a_tabs.addTab(tab, "History")
         layout = QVBoxLayout(tab)
+        # Images drawn only while this tab is current (see _update_history); showing
+        # it draws at once, never stale
+        self._history_tab = tab
+        self._tabs = a_tabs
 
         row = QHBoxLayout()
         row.addWidget(QLabel("Window"))
@@ -757,8 +761,10 @@ class RadarDisplay(QMainWindow):
             image = pg.ImageItem()
             image.setColorMap(pg.colormap.get("CET-L9"))
             plot.addItem(image)
-            dets = pg.ScatterPlotItem(
-                size=5, pen=pg.mkPen(None), brush=pg.mkBrush(255, 255, 0, 220)
+            # Detections: a 0/1 mask on the image grid, transparent / yellow
+            dets = pg.ImageItem()
+            dets.setLookupTable(
+                np.array([[0, 0, 0, 0], [255, 255, 0, 220]], dtype=np.uint8)
             )
             plot.addItem(dets)
             return plot, image, dets
@@ -773,6 +779,7 @@ class RadarDisplay(QMainWindow):
         layout.addWidget(self.rti_plot, stretch=3)
         layout.addWidget(self.vti_plot, stretch=2)
         self._reset_history()
+        a_tabs.currentChanged.connect(self._on_tab_changed)
 
     def _reset_history(self):
         """Empty the history. The next CPI sizes the buffers (the bin counts change
@@ -785,12 +792,13 @@ class RadarDisplay(QMainWindow):
         self._hist_bin = None  # time bin of the newest column
         self._hist_t = None  # time of the newest CPI
         self._hist_axes = None  # the range/velocity axes the buffers were built for
-        self._hist_dets = deque()  # (t, r, v)
+        self._hist_rdet = None  # (n_cols, n_range) uint8 detection mask, same grid
+        self._hist_vdet = None  # (n_cols, n_velocity)
         self._hist_last_draw = 0.0
         self.rti_image.clear()
         self.vti_image.clear()
-        self.rti_dets.setData(pos=[])
-        self.vti_dets.setData(pos=[])
+        self.rti_dets.clear()
+        self.vti_dets.clear()
         # The window is the time axis; auto-range would not follow the image anyway
         self.rti_plot.enableAutoRange(x=False)
         self.rti_plot.setXRange(-self._hist_window_s, self.HISTORY_BIN_S, padding=0)
@@ -816,6 +824,8 @@ class RadarDisplay(QMainWindow):
             self._hist_vti = np.full(
                 (n_cols, len(a_velocities)), self.HISTORY_FLOOR_DB, np.float32
             )
+            self._hist_rdet = np.zeros((n_cols, len(a_ranges)), np.uint8)
+            self._hist_vdet = np.zeros((n_cols, len(a_velocities)), np.uint8)
             self._hist_bin = new_bin
             self._hist_axes = axes
         shift = min(new_bin - self._hist_bin, n_cols)
@@ -823,6 +833,9 @@ class RadarDisplay(QMainWindow):
             for buf in (self._hist_rti, self._hist_vti):
                 buf[:-shift] = buf[shift:].copy()
                 buf[-shift:] = self.HISTORY_FLOOR_DB
+            for buf in (self._hist_rdet, self._hist_vdet):
+                buf[:-shift] = buf[shift:].copy()
+                buf[-shift:] = 0
             self._hist_bin = new_bin
         # RD maps are (velocity, range): strongest cell per range bin and per velocity
         # bin, max-held within the newest time bin
@@ -830,15 +843,34 @@ class RadarDisplay(QMainWindow):
         np.maximum(self._hist_vti[-1], a_rd_db.max(axis=1), out=self._hist_vti[-1])
         self._hist_t = a_t
 
-        for target in a_targets:
-            self._hist_dets.append((a_t, target["r"], target["v"]))
-        while self._hist_dets and self._hist_dets[0][0] < a_t - self._hist_window_s:
-            self._hist_dets.popleft()
+        # Detections: nearest bin of the uniform axes, marked in the newest column
+        if len(a_targets):
+            rv = np.array([(t["r"], t["v"]) for t in a_targets], dtype=float)
+            for vals, buf, (n, lo, hi) in (
+                (rv[:, 0], self._hist_rdet, axes[0:3]),
+                (rv[:, 1], self._hist_vdet, axes[3:6]),
+            ):
+                step = (hi - lo) / (n - 1) if n > 1 else 1.0
+                idx = np.clip(np.rint((vals - lo) / step), 0, n - 1).astype(int)
+                buf[-1, idx] = 1
 
+        # Buffers keep filling; draw (4x setImage) skipped while another
+        # tab is up
         now = time.monotonic()
-        if now - self._hist_last_draw >= self.HISTORY_REDRAW_S:
+        if (
+            self._tabs.currentWidget() is self._history_tab
+            and now - self._hist_last_draw >= self.HISTORY_REDRAW_S
+        ):
             self._draw_history()
             self._hist_last_draw = now
+
+    def _on_tab_changed(self, _index):
+        if (
+            self._tabs.currentWidget() is self._history_tab
+            and self._hist_t is not None
+        ):
+            self._draw_history()
+            self._hist_last_draw = time.monotonic()
 
     def _draw_history(self):
         # x = seconds relative to the newest CPI; the newest column ends where its
@@ -850,10 +882,16 @@ class RadarDisplay(QMainWindow):
         self.rti_image.setRect(QRectF(x_left, r0, self._hist_window_s, r1 - r0))
         self.vti_image.setImage(self._hist_vti, levels=(self.HISTORY_FLOOR_DB, 0))
         self.vti_image.setRect(QRectF(x_left, v0, self._hist_window_s, v1 - v0))
-        dets = np.array(self._hist_dets, dtype=float).reshape(-1, 3)
-        dt = dets[:, 0] - self._hist_t
-        self.rti_dets.setData(x=dt, y=dets[:, 1])
-        self.vti_dets.setData(x=dt, y=dets[:, 2])
+        for item, mask, rect in (
+            (self.rti_dets, self._hist_rdet, (r0, r1)),
+            (self.vti_dets, self._hist_vdet, (v0, v1)),
+        ):
+            # one bin is under a pixel on screen: widen by 1 bin along range/velocity
+            m = mask.copy()
+            m[:, 1:] |= mask[:, :-1]
+            m[:, :-1] |= mask[:, 1:]
+            item.setImage(m, levels=(0, 1), autoLevels=False)
+            item.setRect(QRectF(x_left, rect[0], self._hist_window_s, rect[1] - rect[0]))
 
     def update_signals(self, a_rx_spec, a_if_spec, a_t, a_f):
         rect = QRectF(
