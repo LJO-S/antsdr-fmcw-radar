@@ -139,6 +139,8 @@ SOL + thru + isolation, NanoVNA-Saver. Raw `.s1p/.s2p` kept locally, not in the 
   (b) **two laminate panels** (cores 1.49 / 1.54 mm).
 - **For K9**: eps_r **4.6** (decided 2026-10-23). Right under (a); under (b) the witness
   patch measures the new panel and fc trims +-0.08 eps_r.
+- **Settled by K9 (2026-11-09): (b).** The K9 batch is thin like the lines and reads ~4.8;
+  (a) predicted 4.6. The lines were right, the K8 patch board was the odd panel (K9 "Measured").
 
 ## Phase 6 K9
 
@@ -173,6 +175,32 @@ L 11.531 x W 15.728 mm, connectors 0.6 x 12.45 mm, pitch 23.981 mm, transformer 
   -11.8 dB and the beam tilts +5 deg. The reverse error is milder: a 4.85 design (L 11.216,
   lc 12.05, tw 4.322, tl 6.431; S11 -20.3 dB, 10.6 dBi at refine 1.5) on 4.61 kept -17.7 dB
   and 10.6 dBi, tilt -5 deg.
+
+#### Measured (2026-11-09, LiteVNA-64, before the turntable)
+
+Both boards. 5.0-6.3 GHz, 401 points (K8's grid), SOL at the cable end, NanoVNA-Saver. Raw
+files in `local/k9_bench/` (git-ignored). A = J1 (outer column), B = J2 (next to the witness).
+
+| Quantity | Predicted | Measured |
+|---|---|---|
+| Thickness, bare FR4 (calipers) | | RX 1.50, TX 1.51 mm (same tool: K8 patch 1.54, lines 1.49) |
+| Witness S11 minimum, raw | 5.819 GHz (K8 patch) | RX 5.588, TX 5.585 GHz (-10.5 / -11.1 dB) |
+| Witness eps_r | 4.6 | **~4.8**: raw 4.78, launch removed 4.81 RX / 4.76 TX |
+| Column S11, raw null | | RX 5.734, A 5.751, B 5.754 GHz (-26 / -27 / -23 dB) |
+| Column S11, worst 5.75-5.85 GHz | -18 dB (sim, ideal port) | RX -6.5, A -8.1, B -8.4 dB |
+| Coupling A-B, worst 5.75-5.85 GHz | -24.3 dB | **-25.8 dB** (mean -28.8) |
+
+- **The batch is ~0.2 above the design.** Thickness and eps_r match the K8 lines. The witness
+  curves overlap K8's away from resonance (same launch, solder repeatable); only the
+  resonance moved.
+- **S11 cannot set fc.** The three columns are alike. The sharp null is the launch
+  reflection cancelling the column's: with K8's launch removed the curves match neither sim
+  (4.6 design on 4.6 or on 4.85), so that launch model does not fit a column. The worst
+  in-band match costs ~1 dB.
+- **Expected at 5.8 GHz** (the 4.85 column of the table above): 1.5-1.8 dB less gain, tilt
+  ~5 deg. The elevation cut (`k9_turntable.md` 8) measures it; fc and the mount tilt follow.
+- Coupling is S21 over a thru (cables + barrel), not 2-port calibrated: +-0.5 dB of port-match
+  ripple.
 
 Below: the 4.4 design, all at eps_r 4.4, h 1.5 mm, tan d 0.02, PEC copper.
 Far-field numbers corrected for a phase-centre units bug (fixed in `column_sim.py`).
