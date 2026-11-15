@@ -338,7 +338,7 @@ where k = CHIRP_FC_HZ * T_EFF / CHIRP_BW_HZ   # ~0.012 s, dsp.md "Range-Doppler 
 ### 6.5 Track management
 
 - **Confirm**:
-  - M of N CPIs hit (3 of 4) **and** the kinematic check has passed. 
+  - M of N CPIs hit (3 of 4) **and** the kinematic check has passed, on a CPI with a hit (a coasting track never confirms; the check passes at age W). 
   - Tentative tracks are not shown (L4 has a toggle).
 - **Kinematic check (`dr/dt = v`)**, i.e. the spur filter: it rejects any detection stream
   whose range does not move with its v (only spurs are tested, (i)):
@@ -460,8 +460,7 @@ where k = CHIRP_FC_HZ * T_EFF / CHIRP_BW_HZ   # ~0.012 s, dsp.md "Range-Doppler 
 
 The gates (9.21, 11.34) are chi-square constants, not config.
 
-As built on 2026-11-12, `config.py` differs in two defaults: `TRACK_EN` False (until L3
-wires the tracker) and `TRACK_STD_A` 5 (3.3's change is not in yet).
+As built, `config.py` differs in one default: `TRACK_EN` False (flipped with L4).
 
 ### 6.8 Cost
 
@@ -498,7 +497,10 @@ dt jittered over 20-50 ms.
   notch. 4 s: same ID. 6 s: new ID.
 - (h) Second dot: a walker with an extra detection 1-2 velocity bins off in 30 % of CPIs:
   one confirmed track.
-- (i) Spurs: fixed r with v = 2, 10 and 40 m/s at Pd 1: never confirmed. Then the
+- (i) Spurs: fixed r with v = 2, 10 and 40 m/s at Pd 1, 60 s x 20 seeds per spur: at
+  most 0.5 % of spur-born tracks confirm and none stays confirmed 1 s (measured 0 / 0.29 /
+  0.13 %, ~0.55 s: the check's Phi(-k) pass, then r runs off at v and the track times
+  out; the pre-2026-11-14 leak gave 3 % at 2 m/s). Then the
   reference sessions (`data/sessions/20261102-19*`, real RF, all four spurs) through
   the tracker: no confirmed track sits at a spur range for 1 s (fake targets pass through
   them, a spur stays while its v says it moves). They live on the laptop, so this
@@ -518,9 +520,13 @@ seeds, as a share of runs:
   one ID in >= 90 %.
 - (r) Coloured range noise: a car at 10 m/s for 60 s with an AR(1) range error of 1 m rms,
   1 s correlation, on top of `sr`: one ID in >= 90 %.
-- (s) Spur capture: a target passes a fixed-r stream of its own v (+-0.5 m/s) that is
-  stronger, with one detection while both share a 7x7 window: no confirmed track sits on
-  the spur for 1 s after the target has left.
+- (s) Spur hand-over: a walker (1.5 and 2 m/s) hands its confirmed track to a stronger
+  fixed-r stream of its own v (+-0.5 m/s) that starts at its r, with one detection while
+  both share a 7x7 window. Once the walker is clear, the track sits on the spur no later
+  than `TRACK_KINEMATIC_WINDOW_S` after the hand-over, in >= 90 %. Not the 6.5 delay T:
+  the window still holds the walker's motion, so the floor fails the track once spur data
+  fills about half of it (~1.5 s at any v). From ~3 m/s the gate drops the spur first (same
+  with the check off), so faster targets do not test the check.
 - (g) is seed-fragile: at 2 false alarms per CPI the 4 s stop keeps the ID in 35 of 40
   seeds at `sa` 5 and 32 of 40 at 10 (38 and 40 at 0.1 per CPI), and seed 0 fails at 10.
   Assert a share (>= 70 %), not one seed.

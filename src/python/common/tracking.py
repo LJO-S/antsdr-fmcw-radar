@@ -1,7 +1,7 @@
 """
-All code related to radar's tracker internals.
+Radar tracker internals.
 
-Detections are target dicts from process_cpi.
+Detections = target dicts from process_cpi.
 """
 
 import math
@@ -14,10 +14,10 @@ from common.config import c
 from common.dsp import NMS_SIZE
 
 GATE_RV = 9.21  # chi-square, 2 dof, 99 %
-OUT_OF_GATE = 1e9  # assignment cost of a pair outside the gate
+OUT_OF_GATE = 1e9  # assignment cost of pair outside gate
 CONFIRMED = "confirmed"  # Track.status values
 TENTATIVE = "tentative"
-HISTORY_CAP = 500  # safety cap on the history deque; it is trimmed by time
+HISTORY_CAP = 500  # safety cap on history deque, trimmed by time
 # Pass needs sigma_d < |v| / (KIN_MARGIN * k), sigma_d = hypot(sigma_slope, sigma_vmean)
 KIN_MARGIN = 2.0
 
@@ -25,7 +25,7 @@ KIN_MARGIN = 2.0
 #   __init__(cfg), init(det)      start from one detection
 #   predict(dt)                   dt seconds ahead
 #   innovation(det)               -> (y, S)
-#   update(det)                   fold the detection in
+#   update(det)                   fold detection in
 #   state, cov                    for the GUI and the tests
 #
 # Batched classmethods = one pass over all tracks:
@@ -56,13 +56,13 @@ class CvKalmanFilter:
         return self.P
 
     def __init__(self, a_cfg):
-        # Process noise: std of the random acceleration [m/s^2]
+        # Process noise: std of random accel [m/s^2]
         self.sa = a_cfg.TRACK_STD_A
-        # Range-Doppler coupling [s] and the circular velocity span, fixed per config
+        # Range-Doppler coupling [s] and circular velocity span, fixed per config
         self.k = a_cfg.CHIRP_FC_HZ * a_cfg.T_EFF / a_cfg.CHIRP_BW_HZ
         self.vmax = a_cfg.MAX_VELOCITY
 
-        # State vector [r, v] and its covariance; set by init()
+        # State [r, v] and covariance, set by init()
         self.x = None
         self.P = None
 
@@ -70,7 +70,7 @@ class CvKalmanFilter:
 
         self.nis = 0.0
 
-        # One H per detection kind, built once (treat as read-only)
+        # One H per detection kind, read-only
         self._Hs = {
             kind: np.array([[1.0, cpl], [0.0, 1.0]])
             for kind, cpl in (("up", self.k), ("down", -self.k), ("other", 0.0))
@@ -78,31 +78,31 @@ class CvKalmanFilter:
 
     def _H(self, a_kind):
         """
-        Measurement matrix: "up" / "down" carry the range-Doppler coupling +-k*v
+        Measurement matrix: "up" / "down" carry range-Doppler coupling +-k*v
         """
         return self._Hs.get(a_kind, self._Hs["other"])
 
     def init(self, a_det):
         """
-        A track starts from one detection: invert H so the range has no k*v bias.
+        Start track from one detection: invert H so range has no k*v bias.
         """
-        Hi = np.linalg.inv(self._H(a_det["kind"]))  # invert to get removal of coupling
+        Hi = np.linalg.inv(self._H(a_det["kind"]))  # removes coupling
         self.x = Hi @ self.z_of(a_det)
         self.P = Hi @ self.R @ Hi.T
 
     def predict(self, dt):
         """
-        Predict state and covariance dt seconds ahead. 'dt' may change every call.
+        Predict state and covariance dt seconds ahead. dt may change per call.
         """
         type(self).predict_batch([self], dt)
 
     def innovation(self, a_det):
         """
-        Innovation y and its covariance S for a detection
+        Innovation y and covariance S for a detection
         """
         z = self.z_of(a_det)
         H = self._H(a_det["kind"])
-        # Measurement innovation (the Doppler axis is circular so wrap v)
+        # Innovation, v wrapped (circular Doppler axis)
         y = z - H @ self.x
         y[1] = (y[1] + self.vmax) % (2 * self.vmax) - self.vmax
         # Residual covariance
@@ -111,18 +111,18 @@ class CvKalmanFilter:
 
     def update(self, a_det):
         """
-        Update the state with a detection.
+        Update state with a detection.
         """
         type(self).update_batch([self], [a_det])
 
     @classmethod
     def predict_batch(cls, a_filters, a_dt):
         """
-        predict(dt) for every filter (batched approach)
+        predict(dt) for every filter (batched)
         """
         f0 = a_filters[0]
         F = np.array([[1.0, a_dt], [0.0, 1.0]])
-        # DWNA: acceleration 'a' held over 'dt' moves the state by G*a, so Q = sa^2 G G'
+        # DWNA: accel a held over dt moves state by G*a, so Q = sa^2 G G'
         G = np.array([a_dt**2 / 2, a_dt])
         Q = f0.sa**2 * np.outer(G, G)
         x = np.array([f.x for f in a_filters])  # (n, 2)
@@ -138,8 +138,8 @@ class CvKalmanFilter:
         update(det) for one (filter, detection) pair per index
 
         Returns (v, r, nis) arrays per pair:
-        - 'v' unrolled to track (predicted v + wrapped innovation)
-        - 'r' with Doppler coupling removed
+        - v unrolled to track (predicted v + wrapped innovation)
+        - r with Doppler coupling removed
         - NIS
 
         """
@@ -156,7 +156,7 @@ class CvKalmanFilter:
         y = np.stack([y_r, y_v], axis=1)
 
         # Covariance
-        # S = H P H' + R and its closed-form inverse
+        # S = H P H' + R and closed-form inverse
         a, b, d = P[:, 0, 0], P[:, 0, 1], P[:, 1, 1]
         s_rr = a + 2 * c * b + c**2 * d + f0.R[0, 0]
         s_rv = b + c * d
@@ -167,15 +167,14 @@ class CvKalmanFilter:
         Si[:, 0, 1] = Si[:, 1, 0] = -s_rv / det
         Si[:, 1, 1] = s_rr / det
 
-        # Kalman Gain_
-        # K = P H' S^-1;
+        # Kalman gain K = P H' S^-1
         H = np.zeros_like(P)
         H[:, 0, 0] = H[:, 1, 1] = 1.0
         H[:, 0, 1] = c
         K = P @ H.transpose(0, 2, 1) @ Si
         I_KH = np.eye(2) - K @ H
         x_new = x + (K @ y[:, :, None])[:, :, 0]
-        # Joseph-form covariance force P symmetric and positive
+        # Joseph form keeps P symmetric and positive
         P_new = I_KH @ P @ I_KH.transpose(0, 2, 1) + K @ f0.R @ K.transpose(0, 2, 1)
 
         # Calc NIS
@@ -189,8 +188,8 @@ class CvKalmanFilter:
     @classmethod
     def pair_d2(cls, a_filters):
         """
-        Squared Mahalanobis distance between the predicted measurements of every pair
-        of filters, (n, n): y = x_a - x_b (v wrapped), S = S_a + S_b with S = P + R.
+        Squared Mahalanobis distance between predicted measurements of every filter
+        pair, (n, n): y = x_a - x_b (v wrapped), S = S_a + S_b with S = P + R.
         """
         f0 = a_filters[0]
         x = np.array([f.x for f in a_filters])  # (n, 2)
@@ -208,9 +207,9 @@ class CvKalmanFilter:
     def d2_matrix(cls, a_filters, a_dets):
         """
         Squared Mahalanobis distance of every detection to every filter, (n_f, n_d).
-        Same numbers as d2(*f.innovation(det)), vectorized: H = [[1, c], [0, 1]] has
-        c = +k / -k / 0 per detection kind, so S = H P H' + R is closed-form 2x2.
-        All filters share one config (k, vmax, R are read from the first).
+        Same as d2(*f.innovation(det)), vectorized: H = [[1, c], [0, 1]], c = +k / -k / 0
+        per detection kind, so S = H P H' + R is closed-form 2x2.
+        Filters share one config (k, vmax, R read from first).
         """
         f0 = a_filters[0]
         x = np.array([f.x for f in a_filters])  # (n_f, 2)
@@ -219,7 +218,7 @@ class CvKalmanFilter:
         coupling = {"up": f0.k, "down": -f0.k}
         c = np.array([coupling.get(d["kind"], 0.0) for d in a_dets])[None, :]
 
-        # Innovation y = z - H x, v wrapped (the Doppler axis is circular)
+        # Innovation y = z - H x, v wrapped
         x_r, x_v = x[:, 0:1], x[:, 1:2]
         y_r = z[None, :, 0] - (x_r + c * x_v)
         y_v = z[None, :, 1] - x_v
@@ -231,7 +230,7 @@ class CvKalmanFilter:
         s_rv = b + c * d
         s_vv = d + f0.R[1, 1]
 
-        # y' S^-1 y with the closed-form 2x2 inverse
+        # y' S^-1 y, closed-form 2x2 inverse
         det = s_rr * s_vv - s_rv**2
         return (s_vv * y_r**2 - 2 * s_rv * y_r * y_v + s_rr * y_v**2) / det
 
@@ -380,23 +379,23 @@ class CvKalmanFilter:
 class Track:  # data only, no logic
     id: int
     filter: CvKalmanFilter
-    status: str  # TENTATIVE / CONFIRMED (the constants above)
+    status: str  # TENTATIVE / CONFIRMED
     hits: deque  # last N CPIs as 0/1; M-of-N = sum(hits) >= M
     misses: int  # consecutive misses; a tentative track dies at 2
-    birth_t: float  # time the track was born
+    birth_t: float  # birth time
     last_t: float  # time of last update, for delete-by-time
     age: int  # CPIs since birth
     snr_db: float  # from the last detection
     nis: float | None  # this CPI's update; None when born or coasting
     kin_ok: bool  # kinematic check has passed
-    met: bool  # M of N has been reached once (sticky: the hits window slides on)
-    history: deque  # (t, r, v), trimmed to the last TRACK_KINEMATIC_WINDOW_S
-    # Running sums over history for the kinematic check: [n, t, t^2, r, t*r, v],
+    met: bool  # M of N reached once (sticky, hits window slides on)
+    history: deque  # (t, r, v), trimmed to last TRACK_KINEMATIC_WINDOW_S
+    # Running sums over history for kinematic check: [n, t, t^2, r, t*r, v],
     # t relative to birth_t (keeps cancellation harmless). See _hist_add / _hist_drop.
     sums: list
 
     def snapshot(self) -> dict:
-        """Plain copy for signals: the worker keeps mutating the live Track."""
+        """Plain copy for signals: worker keeps mutating live Track."""
         return {
             "id": self.id,
             "status": self.status,
@@ -413,7 +412,7 @@ class Track:  # data only, no logic
 # ===================================================================================
 def _hist_add(a_trk, a_t, a_r, a_v):
     """
-    Append (t, r, v) to history and running sums. Drop oldest entry if deque is full.
+    Append (t, r, v) to history and running sums. Drop oldest if deque full.
     """
     h = a_trk.history
     if len(h) == h.maxlen:
@@ -431,7 +430,7 @@ def _hist_add(a_trk, a_t, a_r, a_v):
 
 def _hist_drop(a_trk):
     """
-    Pop oldest history entry and remove from running sums.
+    Pop oldest history entry, remove from running sums.
     """
     t, r, v = a_trk.history.popleft()
     t -= a_trk.birth_t
@@ -446,13 +445,12 @@ def _hist_drop(a_trk):
 
 def kinematic(a_sums, a_cfg, a_age_s) -> bool | None:
     """
-    Tries to answer "Does the range move with the measured velocity?" i.e.
-    "is object following Newtonian physics?".
+    Does range move with measured velocity? i.e. is object following Newtonian physics.
 
-    Fits slope=r/t of history (the last TRACK_KINEMATIC_WINDOW_S as running sums
-    [n, t, t^2, r, t*r, v]) and compares with mean measured v.
+    Fits slope=r/t of history (last TRACK_KINEMATIC_WINDOW_S as running sums
+    [n, t, t^2, r, t*r, v]), compares with mean measured v.
 
-    Note: a_age_s is the track's age in seconds.
+    a_age_s = track age in seconds.
     """
     n, s_t, s_t2, s_r, s_tr, s_v = a_sums
     if n < 2:
@@ -460,7 +458,7 @@ def kinematic(a_sums, a_cfg, a_age_s) -> bool | None:
     k = a_cfg.TRACK_KINEMATIC_SIGMA
     v_mean = s_v / n
 
-    # Least-squares slope of 'r-over-t' and its std for white range noise
+    # Least-squares slope of r-over-t and its std for white range noise
     s_tt = s_t2 - s_t * s_t / n
     if s_tt <= 0.0:
         return None
@@ -470,15 +468,15 @@ def kinematic(a_sums, a_cfg, a_age_s) -> bool | None:
 
     sigma = math.hypot(sigma_slope, sigma_vmean)
     miss = abs(slope - v_mean)
-    # Fail on strong disagreement. The |v_mean| / 2 floor keeps coloured range noise and
-    # manoeuvres from failing a real track: a spur misses by all of |v| (guide 6.5).
+    # Fail on strong disagreement. |v_mean| / 2 floor keeps coloured range noise and
+    # manoeuvres from failing real track: spur misses by all of |v| (guide 6.5).
     if miss > max(2 * k * sigma, 0.5 * abs(v_mean)):
         return False
-    # Pass only once the slope is precise enough to tell it from zero with margin
-    # or a spur (slope 0) passes by noise about half the time at the boundary.
+    # Pass only once slope precise enough to tell from zero with margin,
+    # else spur (slope 0) passes by noise ~half the time at boundary.
     if sigma < abs(v_mean) / (KIN_MARGIN * k) and miss < k * sigma:
         return True
-    # Still undecided after the window: too slow to tell from stationary so pass
+    # Undecided after window: too slow to tell from stationary so pass
     return True if a_age_s >= a_cfg.TRACK_KINEMATIC_WINDOW_S else None
 
 
@@ -493,7 +491,7 @@ class Tracker:
         self.gate = GATE_RV
         self.cfg = a_cfg
         self._cap_warned = False
-        # Velocity bin: the MTI notch is one bin wide
+        # Velocity bin: MTI notch is one bin wide
         t_rep = a_cfg.LEGS_PER_PERIOD * a_cfg.T_EFF
         self.vbin = (c / a_cfg.CHIRP_FC_HZ) / (2 * t_rep * a_cfg.CHIRP_REPS)
         self.rbin = c / (2 * a_cfg.CHIRP_BW_HZ)
@@ -501,14 +499,14 @@ class Tracker:
     def update(self, a_dets, a_t, a_mti_en) -> list[Track]:
         """
         Update all tracks.
-        a. Predict all tracks.
-        b. Stage 1: confirmed tracks against all detections.
-        c. Stage 2: tentative tracks against the leftover detections.
-        d. Apply the matched updates.
-        e. Count a miss for every unmatched track.
-        f. _birth from what's still unmatched.
+        a. Predict all.
+        b. Stage 1: confirmed vs all detections.
+        c. Stage 2: tentative vs leftover detections.
+        d. Apply matched updates.
+        e. Count miss for every unmatched track.
+        f. _birth from still unmatched.
         g. _manage, then _merge.
-        h. Return the tracks.
+        h. Return tracks.
         """
         # 1. delta time
         if self.t is not None:
@@ -523,16 +521,16 @@ class Tracker:
             )
         conf = [t for t in self.tracks if t.status == CONFIRMED]
         tent = [t for t in self.tracks if t.status == TENTATIVE]
-        # Stage 1: confirmed tracks against detections
+        # Stage 1: confirmed vs detections
         pairs1, left1 = self._assign(a_tracks=conf, a_dets=a_dets)
-        # Stage 2: tentative tracks against leftovers
+        # Stage 2: tentative vs leftovers
         rest = [a_dets[j] for j in left1]
         pairs2, left2 = self._assign(a_tracks=tent, a_dets=rest)
         # Collect results
         matches = [(conf[i], a_dets[j]) for i, j in pairs1]
         matches += [(tent[i], a_dets[left1[j]]) for i, j in pairs2]
 
-        # 3. Matched tracks update. If not found then incr miss
+        # 3. Matched tracks update, else incr miss
         if matches:
             self._apply_all(matches, a_t)
         matched = {id(trk) for trk, _ in matches}
@@ -543,8 +541,8 @@ class Tracker:
                 trk.age += 1
                 trk.nis = None
 
-        # 4. Birth trackers from the detections no track claimed.
-        # NOTE: Det inside confirmed track's NMS window = second dot of same target.
+        # 4. Birth from detections no track claimed.
+        # NOTE: det inside confirmed track's NMS window = second dot of same target.
         # Same for tentative track that met M of N, waiting on kinematic check: else
         # spur's neighbours keep birthing tracks around it.
         free = np.asarray(left1, dtype=int)[left2]
@@ -562,8 +560,8 @@ class Tracker:
     def _apply_all(self, a_matches, a_t):
         """
         Batched filter update and bookkeeping.
-        The history holds v unrolled to the track (predicted v +
-        wrapped innovation) and the range with the coupling removed.
+        History holds v unrolled to track (predicted v + wrapped innovation) and
+        range with coupling removed.
         """
         filters = [trk.filter for trk, _ in a_matches]
         dets = [det for _, det in a_matches]
@@ -584,8 +582,8 @@ class Tracker:
     def _in_window(self, a_tracks, a_dets):
         """
         (n_tracks, n_dets) bool:
-        Detemines if detection is within +-NMS_SIZE R and V bins of track's predicted
-        measurement (v wrapped).
+        Detection within +-NMS_SIZE R and V bins of track's predicted measurement
+        (v wrapped).
         """
         f0 = a_tracks[0].filter
         x = np.array([t.filter.x for t in a_tracks])
@@ -601,7 +599,7 @@ class Tracker:
 
     def _assign(self, a_tracks, a_dets):
         """
-        One GNN stage: tracks to detections on d^2, inside the gate only.
+        One GNN stage: tracks to detections on d^2, in-gate only.
 
         Returns (pairs, leftover):
             - pairs = [(track_i, det_j)]
@@ -624,7 +622,7 @@ class Tracker:
 
     def _birth(self, a_dets, a_t):
         """
-        Start a tentative track from each detection
+        Start tentative track from each detection.
         Skip if TRACK_MIN_SPEED or TRACK_MAX apply.
         """
         for det in a_dets:
@@ -662,8 +660,7 @@ class Tracker:
 
     def _manage(self, a_t, a_mti_en):
         """
-        Kinematic check, confirm (M of N + check passed) and delete (by time).
-
+        Kinematic check, confirm (M of N + check passed), delete (by time).
         """
         cfg = self.cfg
         keep = []
@@ -673,13 +670,19 @@ class Tracker:
                 continue  # fails the check: deleted
             trk.kin_ok = kin is True
             trk.met = trk.met or sum(trk.hits) >= cfg.TRACK_CONFIRM_M
-            if trk.status == TENTATIVE and trk.met and trk.kin_ok:
+
+            if (
+                trk.status == TENTATIVE
+                and trk.kin_ok
+                and trk.hits[-1]
+                and sum(trk.hits) >= cfg.TRACK_CONFIRM_M
+            ):
                 trk.status = CONFIRMED
 
             if trk.status == CONFIRMED or trk.met:
-                # Confirmed, or tentative and only waiting for the check: by time.
-                # A confirmed track inside the MTI notch (a person who stopped) has
-                # no detections by design, so it coasts longer.
+                # Confirmed, or tentative only waiting for check: by time.
+                # Confirmed track inside MTI notch (person who stopped) has
+                # no detections by design, so coasts longer.
                 limit = cfg.TRACK_DELETE_S
                 if (
                     a_mti_en
@@ -687,7 +690,7 @@ class Tracker:
                     and abs(trk.filter.x[1]) < self.vbin
                 ):
                     limit = cfg.TRACK_STOP_COAST_S
-                    # A stopped target should not drift while it coasts
+                    # stopped target must not drift while coasting
                     if trk.last_t != a_t:
                         trk.filter.x[1] = 0.0
                 dead = a_t - trk.last_t > limit
@@ -699,9 +702,9 @@ class Tracker:
 
     def _merge(self):
         """
-        Two confirmed tracks inside each other's gate for TRACK_MERGE_N CPIs in a row
-        are one target. Delete the younger (the higher ID).
-        pair_n counts the streaks.
+        Two confirmed tracks in each other's gate for TRACK_MERGE_N CPIs in a row
+        = one target. Delete younger (higher ID).
+        pair_n counts streaks.
         """
         conf = [t for t in self.tracks if t.status == CONFIRMED]
         if len(conf) < 2:
@@ -716,7 +719,7 @@ class Tracker:
             pair_n[key] = self.pair_n.get(key, 0) + 1
             if pair_n[key] >= self.cfg.TRACK_MERGE_N:
                 doomed.add(key[1])
-        # A pair that is not close this CPI starts over (it is not in pair_n)
+        # Pair not close this CPI starts over (not in pair_n)
         self.pair_n = {k: n for k, n in pair_n.items() if not doomed.intersection(k)}
         if doomed:
             self.tracks = [t for t in self.tracks if t.id not in doomed]

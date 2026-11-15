@@ -1,10 +1,10 @@
 """
 tests/test_tracking.py
 
-L2 tracker tests (Phase 7 guide 6.9). The filter-level tests run against
-CvKalmanFilter; the tracker-level tests (a)-(k) run against Tracker (guide 6.6) and
-fail with "Tracker not implemented" until it exists. Detections are synthesized from
-ground truth with a seeded Generator, never from process_cpi.
+L2 tracker tests (Phase 7 guide 6.9). Filter-level tests run on
+CvKalmanFilter; tracker-level (a)-(k), (p)-(s) on Tracker (guide 6.6), failing with
+"Tracker not implemented" until it exists. Detections synthesized from
+ground truth with seeded Generator, never process_cpi.
 """
 
 import dataclasses
@@ -21,7 +21,7 @@ from common.dsp import NMS_SIZE
 from common.tracking import CvKalmanFilter
 
 # ===================================================================================
-# Assumed tracker API (guide 6.6 / 6.7). Match these to tracking.py in one place.
+# Assumed tracker API (guide 6.6 / 6.7). Match to tracking.py in one place
 # ===================================================================================
 TRACKER_CLASS = "Tracker"  # Tracker(cfg).update(detections, t, mti_en) -> list[Track]
 CONFIRMED = "confirmed"  # Track.status values
@@ -52,15 +52,19 @@ CFG_FIELDS = [  # 6.7 names the tests read
 # ===================================================================================
 
 SEED = 0
-T0 = 1000.0  # absolute time offset: the tracker must use dt, not t
+T0 = 1000.0  # absolute time offset: tracker must use dt, not t
 DT_JITTER = (0.020, 0.050)  # s, guide 6.9
 PD = 0.9
 FA_PER_CPI = 2.0
 SPUR_RANGES = (56.0, 168.0, 337.0, 360.0)  # m, guide 6.9 (i)
 G_SEEDS = 20  # test (g): seeds per gap
 G_SHARE = 0.7  # test (g): share of seeds that must behave
+FIELD_SEEDS = 30  # tests (p)-(s): seeds
+FIELD_SHARE = 0.9  # tests (p)-(s): share of seeds that must behave
 SPUR_SEEDS = 20  # test (i): seeds per spur and v
 SPUR_T = 60.0  # test (i): s per run
+SPUR_SHARE = 0.005  # test (i): max confirmed share of spur-born tracks
+SPUR_LIFE = 1.0  # s, test (i): max time a spur track stays confirmed
 SESSIONS = Path(__file__).resolve().parents[3] / "data" / "sessions"
 
 
@@ -99,13 +103,13 @@ def kin_sigma_d(a_cfg, a_t, a_rate):
 
 
 def kin_delay(a_cfg, a_v, a_rate):
-    """Time until the kinematic check decides on |v|: sigma_d = |v| / 2k (guide 6.5)."""
+    """Time until kinematic check decides on |v|: sigma_d = |v| / 2k (guide 6.5)."""
     gap = abs(a_v) / (2 * a_cfg.TRACK_KINEMATIC_SIGMA)
     return optimize.brentq(lambda t: kin_sigma_d(a_cfg, t, a_rate) - gap, 1e-3, 1e3)
 
 
 def kin_vmin(a_cfg, a_rate):
-    """Slowest |v| the kinematic check can decide within its window."""
+    """Slowest |v| kinematic check can decide within its window."""
     return 2 * a_cfg.TRACK_KINEMATIC_SIGMA * kin_sigma_d(a_cfg, a_cfg.TRACK_KINEMATIC_WINDOW_S, a_rate)
 
 
@@ -163,7 +167,7 @@ class Path1D:
 
 
 class Target:
-    """Ground-truth target alive over [t_on, t_off); kind: up, down, both or mixed."""
+    """Ground-truth target alive over [t_on, t_off); kind: up, down, both, mixed."""
 
     def __init__(
         self, a_path, a_t_on=0.0, a_t_off=np.inf, a_snr_db=25.0, a_kind="up", a_pd=PD
@@ -212,7 +216,7 @@ class Scene:
         alive = [a for a in alive if a[1].alive(a_t)]
         drop = set()
         self.merged_now = False
-        if self.merge:  # NMS: the stronger of two targets in one 7x7 window wins
+        if self.merge:  # NMS: stronger of two targets in one 7x7 window wins
             for x in range(len(alive)):
                 for y in range(x + 1, len(alive)):
                     ia, ta, ra, va = alive[x]
@@ -322,10 +326,76 @@ def first_confirmed_t(a_log, a_i):
 
 
 # ===================================================================================
+# Field-case helpers (tests (p)-(s))
+# ===================================================================================
+class PassPath:
+    """Straight line past radar at distance a_d, speed a_vx along it, closest at a_t_pass.
+    In (r, v): r = hypot(d, x), v = dr/dt = vx * x / r (v < 0 approaching)."""
+
+    def __init__(self, a_d, a_vx, a_t_pass):
+        self.d, self.vx, self.t_pass = a_d, a_vx, a_t_pass
+
+    def at(self, a_t):
+        x = self.vx * (a_t - self.t_pass)
+        r = float(np.hypot(self.d, x))
+        return r, self.vx * x / r
+
+
+class SpurPath:
+    """Spur: fixed r with nonzero v (never moves, whatever v says)."""
+
+    def __init__(self, a_r, a_v):
+        self.r, self.v = a_r, a_v
+
+    def at(self, a_t):
+        return self.r, self.v
+
+
+class WanderPath:
+    """a_base plus coloured range error, AR(1) with std a_rms and correlation a_tau:
+    strongest reflection wandering over car body. Only r moves; v stays clean
+    Doppler, so range slope and v disagree as on a real car."""
+
+    GRID = 0.01  # s
+
+    def __init__(self, a_base, a_rms, a_tau, a_rng, a_t_end):
+        self.base = a_base
+        n = int(a_t_end / self.GRID) + 2
+        a = np.exp(-self.GRID / a_tau)
+        w = np.empty(n)
+        w[0] = a_rms * a_rng.normal()
+        e = a_rng.normal(0, a_rms * np.sqrt(1 - a * a), n)
+        for k in range(1, n):
+            w[k] = a * w[k - 1] + e[k]
+        self.t, self.w = np.arange(n) * self.GRID, w
+
+    def at(self, a_t):
+        r, v = self.base.at(a_t)
+        return r + float(np.interp(a_t, self.t, self.w)), v
+
+
+def kept_id(a_log, a_i):
+    """Target a_i has one confirmed ID over run, matched on last step."""
+    ids = ids_of(a_log, a_i)
+    return len(distinct(ids)) == 1 and ids[-1] is not None
+
+
+def share_of(a_fn, a_n=FIELD_SEEDS):
+    """(share of seeds where a_fn(seed) is True, the failing seeds)."""
+    bad = [seed for seed in range(SEED, SEED + a_n) if not a_fn(seed)]
+    return 1 - len(bad) / a_n, bad
+
+
+def assert_share(a_name, a_fn, a_n=FIELD_SEEDS, a_share=FIELD_SHARE):
+    share, bad = share_of(a_fn, a_n)
+    assert share >= a_share, f"{a_name}: {share:.0%} of {a_n} seeds, failed {bad}"
+
+
+# ===================================================================================
 # Filter-level tests (CvKalmanFilter)
 # ===================================================================================
 def test_filter_dwna_nis_consistent():
-    """(j) mean NIS under DWNA truth sits in the 95 % chi-square band for 2 dof."""
+    """(j) mean NIS under DWNA truth in 95 % chi-square band for 2 dof."""
     cfg = RadarConfig()
     rng = np.random.default_rng(SEED)
     sa, sr, sv = cfg.TRACK_STD_A, cfg.TRACK_STD_R, cfg.TRACK_STD_V
@@ -354,7 +424,7 @@ def test_filter_dwna_nis_consistent():
 
 
 def test_filter_kind_init_no_bias():
-    """(k, filter) a track started from a noiseless up/down/both detection has no k*v bias."""
+    """(k, filter) track started from noiseless up/down/both detection has no k*v bias."""
     cfg = RadarConfig()
     k = coupling(cfg)
     r, v = 400.0, -60.0
@@ -369,7 +439,7 @@ def test_filter_kinds_mixed_no_bias():
     """(k, filter) mean range error is ~0 for up-only, down-only and mixed kinds."""
     cfg = RadarConfig()
     sr, sv = cfg.TRACK_STD_R, cfg.TRACK_STD_V
-    k, v = coupling(cfg), -60.0  # k*v = 0.7 m: the size of sr
+    k, v = coupling(cfg), -60.0  # k*v = 0.7 m: size of sr
     for mode in ("up", "down", "both", "mixed"):
         rng = np.random.default_rng(SEED)
         r = 700.0
@@ -397,7 +467,7 @@ def test_filter_kinds_mixed_no_bias():
 
 
 def test_filter_velocity_innovation_wraps():
-    """A detection wrapped across +-MAX_VELOCITY gives a small v innovation."""
+    """Detection wrapped across +-MAX_VELOCITY gives small v innovation."""
     cfg = RadarConfig()
     vmax = cfg.MAX_VELOCITY
     for v0, v_true in ((vmax - 0.5, vmax + 0.3), (-vmax + 0.5, -vmax - 0.3)):
@@ -483,7 +553,7 @@ def test_c_false_alarms_only():
 
 
 def test_d_vanish_deleted_in_time():
-    """(d) a vanished target's track is gone within TRACK_DELETE_S (+ one CPI)."""
+    """(d) vanished target's track gone within TRACK_DELETE_S (+ one CPI)."""
     cfg = RadarConfig()
     delete_s = cfg.TRACK_DELETE_S if hasattr(cfg, "TRACK_DELETE_S") else None
     if delete_s is None:
@@ -492,7 +562,7 @@ def test_d_vanish_deleted_in_time():
     t_off = 6.0
     scene = Scene(cfg, rng, [const_v(100.0, 8.0, a_t_off=t_off)])
     log = run(cfg, scene, 10.0, rng)
-    # Last detection near the target, from the emitted stream
+    # last detection near target, from emitted stream
     t_last, tid = None, None
     for st in log:
         if st.t < t_off and st.truth[0] is not None:
@@ -511,7 +581,7 @@ def test_d_vanish_deleted_in_time():
 
 
 def test_e_fixed_vs_jittered_dt():
-    """(e) fixed and jittered dt give the same tracks: IDs, count and accuracy."""
+    """(e) fixed and jittered dt give same tracks: IDs, count, accuracy."""
     cfg = RadarConfig()
     res = []
     for dt in (0.035, None):
@@ -527,7 +597,7 @@ def test_e_fixed_vs_jittered_dt():
 
 
 def test_f_slow_crossing():
-    """(f) slow crossing inside one NMS window: no swap, at most one ID lost."""
+    """(f) slow crossing inside one NMS window: no swap, max one ID lost."""
     cfg = RadarConfig()
     rng = np.random.default_rng(SEED)
     # dv 2 velocity bins, 18 m apart: ~4.5 s inside one 7x7 window
@@ -569,9 +639,9 @@ def walker_stop_go(a_cfg, a_gap):
 
 
 def test_g_stop_and_go():
-    """(g) MTI on, walker stops: 4 s gap keeps the ID, 6 s gap gives a new one.
-    A share over G_SEEDS seeds (>= G_SHARE): one seed is fragile at 2 false alarms per CPI.
-    A run that never confirms before or after the stop counts as a miss."""
+    """(g) MTI on, walker stops: 4 s gap keeps ID, 6 s gap gives new one.
+    Share over G_SEEDS seeds (>= G_SHARE): one seed fragile at 2 false alarms per CPI.
+    Run never confirming before or after stop = miss."""
     cfg = RadarConfig()
     for gap, same in ((4.0, True), (6.0, False)):
         ok, bad = 0, []
@@ -609,18 +679,22 @@ def test_h_second_dot():
 
 
 def test_i_spurs_synthetic():
-    """(i) fixed-r detections at v = 2, 10, 40 m/s, Pd 1, 60 s, SPUR_SEEDS seeds: never
-    confirm. 60 s x many seeds: leak (births next to waiting tentative track) is rare per CPI."""
+    """(i) fixed-r detections at v = 2, 10, 40 m/s, Pd 1, 60 s, SPUR_SEEDS seeds per spur.
+    Not "never": spur-born track passes kinematic check by chance (~3 sigma on first
+    ~0.4 s), then r runs off at v, spur leaves gate, times out ~TRACK_DELETE_S later.
+    So: max SPUR_SHARE of spur-born tracks confirm, none stays confirmed SPUR_LIFE
+    (the leak, two tracks sharing the stream, did)."""
     cfg = RadarConfig()
-    for r_spur in SPUR_RANGES:
-        for v in (2.0, 10.0, 40.0):
+    sr, sv = cfg.TRACK_STD_R, cfg.TRACK_STD_V
+    for v in (2.0, 10.0, 40.0):
+        born, conf = 0, {}  # conf: (r, seed, id) -> [first, last] t confirmed
+        for r_spur in SPUR_RANGES:
             for seed in range(SEED, SEED + SPUR_SEEDS):
                 rng = np.random.default_rng(seed)
-                scene = Scene(cfg, rng, [], a_fa=0)
-                sr, sv = cfg.TRACK_STD_R, cfg.TRACK_STD_V
+                scene = Scene(cfg, rng, [], a_fa=0)  # no false alarms: every track is spur-born
                 trk = make_tracker(cfg)
-                t, bad = T0, []
-                while t < T0 + SPUR_T and not bad:
+                t, ids = T0, set()
+                while t < T0 + SPUR_T:
                     det = {
                         "r": r_spur + rng.normal(0, sr),
                         "v": v + rng.normal(0, sv),
@@ -629,16 +703,21 @@ def test_i_spurs_synthetic():
                     }
                     for s in trk.update([det] + scene.step(t - T0, False), t, False):
                         sn = snap(s)
-                        if sn["status"] == CONFIRMED and abs(sn["r"] - r_spur) < 12.0:
-                            bad.append(sn)
+                        ids.add(sn["id"])
+                        if sn["status"] == CONFIRMED:
+                            conf.setdefault((r_spur, seed, sn["id"]), [t, t])[1] = t
                     t += rng.uniform(*DT_JITTER)
-                assert not bad, (
-                    f"spur {r_spur} m at {v} m/s, seed {seed}, confirmed: {bad[0]}"
-                )
+                born += len(ids)
+        share = len(conf) / born
+        assert share <= SPUR_SHARE, (
+            f"{v} m/s: {len(conf)} of {born} spur tracks confirmed ({share:.2%})"
+        )
+        key, (a, b) = max(conf.items(), key=lambda kv: kv[1][1] - kv[1][0], default=(None, (0, 0)))
+        assert b - a < SPUR_LIFE, f"{v} m/s: (r, seed, id) {key} confirmed {b - a:.2f} s"
 
 
 def test_i_spurs_reference_sessions():
-    """(i) recorded sessions 20261102-19*: no confirmed track sits at a spur range for 1 s."""
+    """(i) recorded sessions 20261102-19*: no confirmed track at spur range for 1 s."""
     from offline import replay
 
     dirs = sorted(glob.glob(str(SESSIONS / "20261102-19*")))
@@ -665,7 +744,7 @@ def test_i_spurs_reference_sessions():
                         continue
                     key = (sn["id"], r_spur)
                     t0, r0 = inside[key] = entered.get(key, (t, sn["r"]))
-                    # A fake target passing through moves with its v; a spur stays put
+                    # fake target passing through moves with its v; spur stays put
                     moving = abs(sn["v"]) > vmin
                     sits = abs(sn["r"] - r0) < 0.5 * abs(sn["v"]) * (t - t0)
                     assert not (t - t0 >= 1.0 and moving and sits), (
@@ -689,6 +768,138 @@ def test_k_triangle_kinds():
         rms, bias = rms_range_error(log, 0, tid)
         assert abs(bias) < 0.25, f"{mode}: range bias {bias:.3f} m"
         assert rms < cfg.TRACK_STD_R, f"{mode}: range RMS {rms:.3f} m"
+
+
+# ===================================================================================
+# Field cases (guide 6.9, added 2026-11-12): shares over seeds, default Pd and false alarms
+# ===================================================================================
+def test_p_braking():
+    """(p) car 15 m/s brakes at 8 m/s^2 to 3 m/s (approaching or receding, onset varies):
+    one ID in >= 90 % of seeds."""
+    cfg = RadarConfig()
+    dur = (15.0 - 3.0) / 8.0
+
+    def one(seed):
+        rng = np.random.default_rng(seed)
+        sgn = rng.choice([-1.0, 1.0])
+        t_b = rng.uniform(3.0, 6.0)
+        r0 = 100.0 if sgn > 0 else 400.0
+        path = Path1D(
+            r0, [(0, sgn * 15), (t_b, sgn * 15), (t_b + dur, sgn * 3), (1e4, sgn * 3)]
+        )
+        log = run(cfg, Scene(cfg, rng, [Target(path)]), t_b + dur + 5.0, rng)
+        return kept_id(log, 0)
+
+    assert_share("braking", one)
+
+
+def test_q_passing():
+    """(q) car 15 m/s on straight line 30 m off boresight, seen in (r, v) (7.5 m/s^2
+    apparent radial acceleration at closest approach): one ID in >= 90 %. r(t) same
+    for either direction along line, so only noise varies with seed."""
+    cfg = RadarConfig()
+    x0, speed = 100.0, 15.0
+
+    def one(seed):
+        rng = np.random.default_rng(seed)
+        path = PassPath(30.0, speed, x0 / speed)
+        log = run(cfg, Scene(cfg, rng, [Target(path)]), 2 * x0 / speed, rng)
+        return kept_id(log, 0)
+
+    assert_share("passing", one)
+
+
+def _wander_run(a_cfg, a_seed, a_r0, a_v, a_rms, a_tau, a_t, a_mti=False):
+    rng = np.random.default_rng(a_seed)
+    base = Path1D(a_r0, [(0, a_v), (1e4, a_v)])
+    path = WanderPath(base, a_rms, a_tau, rng, a_t)
+    return run(a_cfg, Scene(a_cfg, rng, [Target(path)]), a_t, rng, a_mti=a_mti)
+
+
+def test_r_coloured_range_noise():
+    """(r) car 10 m/s for 60 s (either direction) with AR(1) range error, 1 m rms and
+    1 s correlation, on top of sr: one ID in >= 90 % of seeds. Report only: walker 1 m/s
+    with 0.5 m rms and 1 s (MTI off: sits in MTI notch), open fail-floor
+    question in TODO.md."""
+    cfg = RadarConfig()
+
+    def car(seed):
+        sgn = 1.0 if seed % 2 == 0 else -1.0
+        log = _wander_run(cfg, seed, 100.0 if sgn > 0 else 700.0, sgn * 10.0, 1.0, 1.0, 60.0)
+        return kept_id(log, 0)
+
+    def walker(seed):
+        sgn = 1.0 if seed % 2 == 0 else -1.0
+        log = _wander_run(cfg, seed, 50.0 if sgn > 0 else 110.0, sgn * 1.0, 0.5, 1.0, 60.0)
+        return kept_id(log, 0)
+
+    share, bad = share_of(walker)
+    print(f"      (r) walker 1 m/s, 0.5 m rms wander, 60 s: one ID in {share:.0%} of {FIELD_SEEDS} seeds, failed {bad}")
+    assert_share("coloured range noise, car", car)
+
+
+def test_s_spur_handover():
+    """(s) walker at 1.5 and 2 m/s (either direction) hands confirmed track to a
+    stronger spur of its own v (+-0.5 m/s) starting at its r; one detection while both
+    share a 7x7 window. Once walker is R_TOL clear, handed-over track sits on spur
+    no later than TRACK_KINEMATIC_WINDOW_S after hand-over (then window holds
+    only spur data), in >= 90 % of seeds. Not kin_delay(v): window still holds
+    walker's motion, so |v_mean| / 2 floor fails track once spur data fills about
+    half of it, ~1.5 s at any v. From ~3 m/s gate drops spur first (same with
+    check off), so only slow targets test the check. Spur-born tracks are (i)'s, not
+    counted here."""
+    cfg = RadarConfig()
+    t_h = 5.0  # s: hand-over, after the walker confirms (6.5 delay ~1.6 s)
+
+    def one(seed, v):
+        rng = np.random.default_rng(seed)
+        sgn = rng.choice([-1.0, 1.0])
+        walker = const_v(100.0, sgn * v)
+        r_s = walker.truth(t_h)[0]
+        v_s = sgn * (v + rng.uniform(-0.5, 0.5))
+        spur = Target(SpurPath(r_s, v_s), a_t_on=t_h, a_snr_db=35.0, a_pd=1.0)
+        log = run(cfg, Scene(cfg, rng, [walker, spur], a_merge=True), t_h + 8.0, rng)
+        cid = match(next(s for s in log if s.t >= t_h), 0)
+        if cid is None:
+            return False  # not confirmed at the hand-over
+        on = [
+            s.t
+            for s in log
+            if s.t >= t_h
+            and abs(s.truth[0][0] - r_s) >= R_TOL
+            and any(x["id"] == cid and abs(x["r"] - r_s) < R_TOL for x in s.confirmed())
+        ]
+        return not on or max(on) - t_h <= cfg.TRACK_KINEMATIC_WINDOW_S
+
+    for v in (1.5, 2.0):
+        assert_share(f"spur hand-over at {v} m/s", lambda seed: one(seed, v))
+
+
+def test_confirm_needs_a_hit():
+    """Tentative track that met M of N and reaches age W while coasting stays tentative
+    on that CPI (kinematic() passes at age W; confirm needs hit and M of N then).
+    Confirms on next hit. Noise-free slow target: check undecided until W."""
+    cfg = RadarConfig()
+    trk = make_tracker(cfg)
+    r0, v, dt = 100.0, 0.3, 0.05
+    w = cfg.TRACK_KINEMATIC_WINDOW_S
+    i, miss_done = 0, False
+    while i * dt < w + 5 * dt:
+        t = T0 + i * dt
+        coast = not miss_done and t - T0 >= w  # age W as tracker sees it: no detection
+        dets = [] if coast else [{"r": r0 + v * i * dt, "v": v, "kind": "both", "snr_db": 25.0}]
+        tracks = [snap(x) for x in trk.update(dets, t, False)]
+        assert len(tracks) == 1, f"CPI {i}: {len(tracks)} tracks"
+        if t - T0 < w:
+            assert tracks[0]["status"] == TENTATIVE, f"CPI {i}: confirmed before age W"
+        elif coast:
+            assert tracks[0]["status"] == TENTATIVE, "confirmed on a CPI without a hit"
+            miss_done = True
+        elif miss_done:
+            assert tracks[0]["status"] == CONFIRMED, "no confirm on the next hit"
+            break
+        i += 1
+    assert miss_done, "the age-W CPI was never reached"
 
 
 def confirm_delays(a_cfg, a_r0, a_v, a_n=20):
@@ -733,6 +944,11 @@ if __name__ == "__main__":
         test_i_spurs_synthetic,
         test_i_spurs_reference_sessions,
         test_k_triangle_kinds,
+        test_p_braking,
+        test_q_passing,
+        test_r_coloured_range_noise,
+        test_s_spur_handover,
+        test_confirm_needs_a_hit,
         test_confirmation_delay,
     ]
     failures = skipped = 0

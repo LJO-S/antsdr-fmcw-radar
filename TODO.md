@@ -23,15 +23,14 @@ their design conclusions move to `.claude/rules/` (area rules) or `CLAUDE.md`
 (project-wide), per the close-out rule in `CLAUDE.md` - don't grow narrative back in
 here as parts close.
 
-Current state (2026-11-14): Parts A-G and I are done. **Parts K (Phase 6) and L
+Current state (2026-11-15): Parts A-G and I are done. **Parts K (Phase 6) and L
 (Phase 7, tracking) are active**:
-K0-K2, K4, K5, K7, K8, K10, L0 done; L1-L3 built, board checks and 2026-11-12/13 review
-items open. FMC5 (TDM + `tx_sel` on J30) on hardware; fabric /8 has run on cable RF (K7
-bench, K10) but not on air (K6). K9 boards arrived 2026-11-09, S-params measured,
-turntable next.
+K0-K2, K4, K5, K7, K8, K10, L0-L3 done. FMC5 (TDM + `tx_sel` on J30) on hardware;
+fabric /8 has run on cable RF (K7 bench, K10) but not on air (K6). K9 boards arrived
+2026-11-09, S-params measured, turntable next.
 **Next: K6 on first dry day** - only source of real data for L6a; tracker tuned on
-synthetic noise until then. Meanwhile L2/L3 open items, K9 turntable, then L5. L4 full
-layout can wait for L5.
+synthetic noise until then. Meanwhile K9 turntable, L4 (r, v) parts, then L5. L4 full
+layout (PPI tracks) waits for L5.
 Part H deferred. Part J (`docs/archive/optionals.md`) blocks nothing, can run in parallel.
 
 ---
@@ -142,7 +141,6 @@ moved to Part L on 2026-11-05.
       and the in-rig VNA, so that offset model is unconfirmed: psi0 comes from the field.
   - [ ] Elevation cut on the turntable (`k9_turntable.md` 8): gives tilt -> fc (window in
         `CLAUDE.md`) and mount tilt
-  - [ ] Commit `k9_turntable.md` from the laptop (the README and this file point to it)
   - [ ] Gain by the two-antenna method on the VNA too, not the E200: same leak (G9.5)
   - [ ] Redo the TX gain with the measured gain and the switch's 3.0 dB: sim says 0 dB,
         ~12 dBm EIRP, 2-3.5 dB under the cap (G1.3, G9.6)
@@ -176,37 +174,13 @@ reference sessions (spur test, L1 check) are on the laptop, not the desktop.
 - [x] L1 - `snr_db` per detection (G7 5, 0bc278d, rules in `dsp.md`): old sessions check
       exact (eight `20261102-*`, laptop 2026-11-13), +20 dB/decade of `amp`, new session
       `20261114-141729` (fabric, loopback, 762 CPIs) `replay --check` OK.
-- [ ] L2 - tracker in (r, v), `common/tracking.py` (G7 6)
-  - Built (3152b8f, fba89b4). `test_tracking` 17/17 on laptop, (i) on five reference
-    sessions included (2026-11-13). Cost 0.3 ms/CPI at 4 tracks, 1.7 at 96.
-  - Order matters ((g) first, or `sa` 10 turns suite red):
-  - [x] Test (g) asserts a share (>= 70 % of 20 seeds); `TRACK_STD_A` now 10 (2026-11-14,
-        G7 3.3), L6a tunes it by NIS
-  - [ ] Tests (p) braking, (q) passing, (r) coloured range noise (also at walking speed,
-        see floor item), (s) spur capture (G7 6.9)
-  - 2026-11-13 review (synthetic, `sa` 10; recordings show none of it):
-  - [ ] Spur leak: fixed-r stream with noise near `sr` / `sv` confirms briefly in 3-19 of
-        20 runs of 60 s (G7 6.5 says 0.13 %); 2nd tentative track born on stream, they
-        share its detections. Fixed 2026-11-14 in `Tracker.update`: no births inside the
-        NMS window of a tentative track that has met M-of-N. Test (i) is now 60 s x 20
-        seeds and fails 2 / 3 / 6 of 20 seeds at 2 / 10 / 40 m/s (old code 16 / 8 / 4):
-        about Phi(-3) per born spur track (0.1-0.2 %, hundreds of births per run), so not
-        the leak
-  - [ ] Decide test (i): assert the confirmed share of born spur tracks (<= ~0.5 %), not
-        "never"; check it still catches the old leak
-  - [ ] A track can confirm on a CPI without a detection (age reaches W while coasting;
-        `met` sticky). Require a hit and M-of-N on that CPI: session `211213` 67 confirmed
-        IDs (22 under 1 s) -> 39 (5)
-  - [ ] `abs(v_mean) / 2` fail floor gives slow targets no cover: walker at 1 m/s, 0.5 m
-        rms / 1 s range wander keeps ID in 27 % of 60 s runs, 100 % with absolute
-        1 m/s floor. Decide on L6a data
-  - [ ] `TRACK_EN`: guide says True, `config.py` False. Flip with L4 (nothing draws tracks
-        before; K6 tracks offline with `replay --track`) (G7 6.7)
-- [ ] L3 - app, playback, replay (G7 7)
-  - Built (fba89b4); rules in `app.md`. `replay --track` deterministic (2 runs identical,
-    laptop 2026-11-13). Capture stamp fixed: 2 kernel buffers + `BlockClock` (`sdr.md`)
-  - [ ] Live loopback: one stable track per fake target (board)
-  - [ ] fps cost vs K1 (board)
+- [x] L2 - tracker in (r, v), `common/tracking.py` (G7 6; 3152b8f, fba89b4, f22ea44):
+      tests (a)-(k), (p)-(s) pass (2026-11-15, bars and numbers in G7 6.9); confirm needs
+      a hit on that CPI; 0.3 ms/CPI at 4 tracks, 1.7 at 96. Fail floor -> L6a,
+      `TRACK_EN` -> L4
+- [x] L3 - app, playback, replay (G7 7, fba89b4, rules in `app.md`; capture stamp in
+      `sdr.md`): board 2026-11-14, loopback /8, 3 fake targets: one ID each, held 100 %,
+      no other confirmed track; tracker 0.47 ms/CPI, 45.8 vs 47.0 CPIs/s off.
 - [ ] L4 - GUI layout A (G7 8)
   - Toolbar row; PPI left ~60 % (r-v plot there with TDM off); r-v plot + track list
     right
@@ -214,9 +188,7 @@ reference sessions (spur test, L1 check) are on the laptop, not the desktop.
   - RD maps to Signals; track lines in History
   - Done: live and playback in loopback; GUI slot re-measured
   - [ ] Number tracks at confirmation: IDs are spent at birth, 23-40/s
-  - [ ] `_draw_history` (5 Hz) ran with the tab hidden, 15 ms at 5000 dots: likely the
-        +40 ms stall every 0.2 s in recorded dt. Skipped when hidden (2026-11-14, draws on
-        tab switch); still to do: cap dots, confirm on board
+  - [ ] Flip `TRACK_EN` to True (G7 6.7); K6 tracks offline with `replay --track` until then
 - [ ] L5 - tracker in (x, y) (G7 9)
   - EKF `[x, y, vx, vy]` on (r, theta, v_r), `sa` 10; R per detection from `snr_db`;
     gate 11.34
@@ -230,8 +202,11 @@ reference sessions (spur test, L1 check) are on the laptop, not the desktop.
         MTI on and off
 - [ ] L6 - real targets (G7 12)
   - L6a, K6 recordings: approaching car v < 0; tune `sa`, `sr`, `sv` by NIS per class;
-    spurs never confirm; a walker's range wander (the L2 fail floor). Fabric recordings
-    only: software mode runs at ~4 CPIs/s
+    spurs never confirm; decide the `|v_mean| / 2` fail floor on a walker's range wander
+    (1 m/s, 0.5 m rms / 1 s keeps the ID in 20-27 % of runs, test (r) prints it; 100 % with
+    an absolute 1 m/s floor). Expect a larger `sr` for cars: 2 m rms / 2 s range wander
+    keeps the ID in 3 % of runs at `sr` 0.7, 97 % at 1.5. Fabric recordings only:
+    software mode runs at ~4 CPIs/s
   - L6b, K11 recordings: walked line and a car traced on the PPI; NEES/NIS sane
   - Expect, and count instead of fixing (G7 12): multipath ghosts confirm (they obey
     dr/dt = v); fades at fixed ranges from the ground bounce (58, 29, 19 m for 1.5 m and
