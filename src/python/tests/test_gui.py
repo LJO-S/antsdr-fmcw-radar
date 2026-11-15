@@ -290,6 +290,15 @@ def shown_up(a_display):
     return a_display.det_image.image
 
 
+def n_dots(a_display, a_dots=None):
+    """Fading dots drawn on the (r, v) plot (cells of the dot image)."""
+    return (a_dots or a_display.det_dots).n
+
+
+def dots_visible(a_display, a_dots=None):
+    return (a_dots or a_display.det_dots).isVisible()
+
+
 def test_intake_does_not_draw():
     rng = np.random.default_rng(SEED)
     cfg = mode_cfg(TDM_EN=True)
@@ -297,14 +306,14 @@ def test_intake_does_not_draw():
     d.show()
     f1 = frame(cfg, 3, rng)
     f2 = frame(cfg, 7, rng)
-    d.update(*f1)
+    d.update(*f1, a_t=10.0)
     d.draw_now()
     assert np.array_equal(shown_up(d), f1[0])
-    assert d.scatter_both.data["x"].size == 3
-    d.update(*f2)  # intake: no event loop turn, no draw
-    assert np.array_equal(shown_up(d), f1[0]) and d.scatter_both.data["x"].size == 3
+    assert n_dots(d) == 3
+    d.update(*f2, a_t=20.0)  # intake: no event loop turn, no draw
+    assert np.array_equal(shown_up(d), f1[0]) and n_dots(d) == 3
     d.draw_now()
-    assert np.array_equal(shown_up(d), f2[0]) and d.scatter_both.data["x"].size == 7
+    assert np.array_equal(shown_up(d), f2[0]) and n_dots(d) == 7
     d.close()
     no_exceptions()
 
@@ -443,7 +452,7 @@ def test_relayout_cycles():
         d.update(*frame(cfg, 10, rng))
         d.draw_now()
         pump()
-        assert d.scatter_both.data["x"].size == 10
+        assert n_dots(d) == 10
         assert (d.det_plot, d.xy_plot, d.track_view) == plots
     d.close()
     no_exceptions()
@@ -464,23 +473,24 @@ def test_toolbar_and_detections_toggle():
     d.update_recorded([{"r": 50.0, "v": 1.0, "kind": "both"}])
     d.set_recorded_visible(True)
     d.draw_now()
-    assert d.scatter_both.isVisible() and d.xy_scatter.isVisible()
+    assert dots_visible(d) and dots_visible(d, d.xy_dots)
     assert d.scatter_recorded.isVisible()
     # Toggle with data already taken in: dirty flag, drawn by the next draw
     d.dets_box.setChecked(False)
     assert d._tracks_dirty
     d._draw_current(a_now=False)
-    for item in (d.scatter_both, d.scatter_up, d.scatter_down, d.xy_scatter):
+    assert not dots_visible(d) and not dots_visible(d, d.xy_dots)
+    for item in (d.scatter_up, d.scatter_down, d.xy_scatter):
         assert not item.isVisible()
     assert d.scatter_recorded.isVisible(), "rings stay"
     d.dets_box.setChecked(True)
     d._draw_current(a_now=False)
-    assert d.scatter_both.isVisible() and d.xy_scatter.isVisible()
+    assert dots_visible(d) and dots_visible(d, d.xy_dots)
     # Detections stay off across a new frame
     d.dets_box.setChecked(False)
     d.update(up, down, ranges, vels, targets)
     d.draw_now()
-    assert not d.scatter_both.isVisible() and not d.xy_scatter.isVisible()
+    assert not dots_visible(d) and not dots_visible(d, d.xy_dots)
     # Toolbar signals still wired
     seen = []
     d.mti_signal_changed.connect(seen.append)
@@ -545,6 +555,7 @@ def test_rd_alignment():
         cfg = mode_cfg(**fields)
         d = make_display(cfg)
         d.show()
+        d.xs_toggle.setChecked(True)  # triangle: single-ramp crosses
         _, _, ranges, vels, _ = frame(cfg, 0, rng)
         dv, dr = vels[1] - vels[0], ranges[1] - ranges[0]
         for i, j in [(0, 0), (N_DOPPLER - 1, N_RANGE - 1), (0, N_RANGE - 1),
@@ -561,8 +572,19 @@ def test_rd_alignment():
             # Same in data coordinates: cell centre within half a bin of the dot
             c = d.det_image.mapToParent(gui.QPointF(i + 0.5, j + 0.5))
             assert abs(c.x() - vels[i]) < dv / 2 and abs(c.y() - ranges[j]) < dr / 2
-            dot = d.scatter_up if cfg.TRIANGLE_EN else d.scatter_both
-            assert abs(dot.data["x"][0] - vels[i]) < dv / 2
+            if cfg.TRIANGLE_EN:
+                assert abs(d.scatter_up.data["x"][-1] - vels[i]) < dv / 2
+            else:
+                # Fading dot: trail point within half a bin, its image cell holds it
+                v_dot, r_dot = d._trail.arrays()[0][-1]
+                assert abs(v_dot - vels[i]) < dv / 2 and abs(r_dot - ranges[j]) < dr / 2
+                nx, ny = d.det_dots.image.shape
+                vmax, rmax = cfg.MAX_VELOCITY, cfg.MAX_RANGE
+                cell = (
+                    min(int((v_dot + vmax) / (2 * vmax) * nx), nx - 1),
+                    min(int(r_dot / rmax * ny), ny - 1),
+                )
+                assert d.det_dots.image[cell] == 4
             # Signal tab maps use the same rect; down map is Doppler-mirrored
             d.centralWidget().setCurrentWidget(d._signal_tab)
             d.draw_now()
@@ -573,6 +595,354 @@ def test_rd_alignment():
                 assert (int(np.floor(x)), int(np.floor(y))) == (i, j), "down mirror"
             d.centralWidget().setCurrentWidget(d._tracks_tab)
         d.close()
+    no_exceptions()
+
+
+# ===================================================================================
+# Track layer (common/gui_tracks.py)
+# ===================================================================================
+def snap(a_id, a_r, a_v, a_theta=None, a_age=5, a_num=None, a_status="confirmed",
+         a_coasting=False, a_birth=0.0, **a_extra):
+    """A Track.snapshot() dict."""
+    d = {
+        "id": a_id, "num": a_id if a_num is None else a_num, "status": a_status,
+        "r": a_r, "v": a_v, "theta": a_theta, "birth_t": a_birth, "snr_db": 20.0,
+        "age": a_age, "nis": None, "kin_ok": True, "coasting": a_coasting,
+    }
+    d.update(a_extra)
+    return d
+
+
+def test_store_tail_trim():
+    from common import gui_tracks as gt
+
+    st = gt.TrackStore(a_v_limit=20.0)
+    for k in range(200):  # 20 s at 10 Hz, tail buffer wraps and grows
+        t = k * 0.1
+        st.update([snap(0, 100.0 + k, 1.0, 10.0, a_age=k)], t)
+        tail = st.tracks[0].tail
+        assert tail[-1, 0] == t
+        assert tail[0, 0] >= t - gt.TAIL_S - 1e-9
+    assert len(st.tracks[0].tail) == 21  # 2.0 s at 0.1 s steps, both ends
+    assert abs(st.tracks[0].age_s - 19.9) < 1e-9
+    assert np.array_equal(st.tracks[0].tail_rv()[-1], [1.0, 299.0])
+
+
+def test_store_restart_and_clear():
+    from common import gui_tracks as gt
+
+    st = gt.TrackStore(a_v_limit=20.0)
+    for k in range(10):
+        st.update([snap(0, 100.0, 1.0, a_age=k, a_birth=0.0)], k * 0.1)
+    assert len(st.tracks[0].tail) == 10
+    old = st.tracks[0]
+    st.update([snap(0, 50.0, 1.0, a_age=2, a_birth=0.8)], 1.0)  # age dropped
+    assert st.tracks[0] is not old and len(st.tracks[0].tail) == 1
+    # Same id, same age but a new birth_t: also a different track
+    old = st.tracks[0]
+    st.update([snap(0, 50.0, 1.0, a_age=3, a_birth=0.9)], 1.1)
+    assert st.tracks[0] is not old
+    # Time backwards clears the whole store, then the list is taken in
+    st.update([snap(0, 1.0, 1.0), snap(1, 2.0, 1.0)], 0.5)
+    assert set(st.tracks) == {0, 1} and all(len(s.tail) == 1 for s in st.tracks.values())
+    # Absent track is gone, empty list clears
+    st.update([snap(1, 2.0, 1.0, a_age=6)], 0.6)
+    assert set(st.tracks) == {1}
+    st.update([], None)
+    assert not st.tracks and st.t is None
+    # The same CPI again (paused re-render) replaces its point
+    st.update([snap(3, 5.0, 1.0)], 2.0)
+    st.update([snap(3, 6.0, 1.0)], 2.0)
+    assert len(st.tracks[3].tail) == 1 and st.tracks[3].r == 6.0
+
+
+def test_store_hysteresis():
+    from common import gui_tracks as gt
+
+    st = gt.TrackStore()
+
+    def cls_of(v, k=[0]):
+        k[0] += 1
+        st.update([snap(0, 100.0, v, a_age=k[0])], k[0] * 0.05)
+        return st.tracks[0].cls
+
+    assert cls_of(-0.4) == gt.NEUTRAL  # not yet in
+    assert cls_of(-0.6) == gt.APPROACHING
+    for v in (-0.4, -0.6) * 5:  # no flicker
+        assert cls_of(v) == gt.APPROACHING
+    assert cls_of(-0.31) == gt.APPROACHING
+    assert cls_of(-0.29) == gt.NEUTRAL  # out below 0.3
+    assert cls_of(0.4) == gt.NEUTRAL
+    assert cls_of(0.6) == gt.RECEDING
+    assert cls_of(0.4) == gt.RECEDING and cls_of(0.31) == gt.RECEDING
+    assert cls_of(0.2) == gt.NEUTRAL
+    assert cls_of(0.6) == gt.RECEDING and cls_of(-0.6) == gt.APPROACHING  # straight over
+
+
+def test_store_wrap_xy():
+    from common import gui_tracks as gt
+
+    st = gt.TrackStore(a_v_limit=10.0)
+    for k, v in enumerate((9.0, 9.6, 10.4, 11.0)):  # raw v passes +10: wraps to -9.6
+        st.update([snap(0, 100.0, v, a_age=k)], k * 0.1)
+    s = st.tracks[0]
+    assert abs(s.v - (-9.0)) < 1e-9
+    rv = s.tail_rv()
+    assert len(rv) == 5 and np.isnan(rv[2]).all(), "one NaN row breaks the line"
+    assert np.isfinite(rv[[0, 1, 3, 4]]).all()
+    assert abs(rv[3, 0] - (-9.6)) < 1e-9
+    # No theta: not on the PPI, still on the (r, v) plot
+    assert np.isnan(s.x) and np.isnan(s.y) and np.isnan(s.tail_xy()).all()
+    # theta (degrees): x = r sin, y = r cos
+    st.update([snap(1, 100.0, 1.0, 30.0)], 0.0)  # time backwards: new store
+    s = st.tracks[1]
+    assert abs(s.x - 50.0) < 1e-9 and abs(s.y - 100 * np.cos(np.radians(30))) < 1e-9
+    # Snapshot x, y win when present (L5)
+    st.update([snap(1, 100.0, 1.0, 30.0, x=7.0, y=8.0, a_age=6)], 0.1)
+    assert (st.tracks[1].x, st.tracks[1].y) == (7.0, 8.0)
+    # confirmed / tentative split
+    st.update([snap(1, 1.0, 1.0), snap(2, 1.0, 1.0, a_status="tentative")], 0.2)
+    assert [t.id for t in st.confirmed()] == [1] and [t.id for t in st.tentative()] == [2]
+
+
+def test_trail_levels():
+    from common import gui_tracks as gt
+
+    tr = gt.DetectionTrail()
+    pt = np.array([[1.0, 2.0]])
+    none = np.empty((0, 2))
+    tr.add(10.0, pt, pt)
+    for dt, level in ((0.0, 4), (0.3, 3), (0.55, 2), (0.8, 1)):
+        tr.add(10.0 + dt, none, none)
+        rv, lv, xy, lx = tr.arrays()
+        assert len(rv) == 1 and lv[0] == level and lx[0] == level, (dt, lv)
+    tr.add(11.05, none, none)
+    assert tr.n_points == 0 and len(tr.arrays()[0]) == 0
+    # Oldest first: the newest overwrites on a shared cell
+    tr.add(20.0, pt, pt)
+    tr.add(20.1, pt, pt)
+    assert list(tr.arrays()[1]) == [4, 4]
+    tr.add(20.4, pt, pt)
+    assert list(tr.arrays()[1]) == [3, 3, 4]
+    for k in range(50):  # cap on points kept
+        tr.add(30.0 + k * 0.001, np.ones((100, 2)), np.ones((100, 2)))
+    assert tr.n_points <= gt.DET_MAX_POINTS
+    tr.add(5.0, pt, pt)  # time backwards: restart
+    assert tr.n_points == 1
+
+
+def track_set(a_cfg):
+    """Confirmed approaching / receding / slow / coasting + one tentative."""
+    th = (lambda x: x) if a_cfg.TDM_EN else (lambda x: None)
+    return [
+        snap(0, 300.0, -3.0, th(-20.0), a_num=0),
+        snap(1, 500.0, 2.0, th(10.0), a_num=1),
+        snap(2, 700.0, 0.1, th(30.0), a_num=2),
+        snap(3, 900.0, -4.0, th(0.0), a_num=3, a_coasting=True),
+        snap(4, 400.0, 1.0, th(-30.0), a_status="tentative", a_num=None),
+    ]
+
+
+def head_colors(a_layer):
+    return [(b.color().name(), b.color().alpha()) for b in a_layer.heads.data["brush"]]
+
+
+def test_track_layer_modes_and_order():
+    rng = np.random.default_rng(SEED)
+    for name, fields in MODES:
+        for order in ("tracks_first", "frame_first"):
+            cfg = mode_cfg(**fields)
+            d = make_display(cfg)
+            d.show()
+            trks = track_set(cfg)
+            f = frame(cfg, 6, rng)
+            t = 50.0
+            if order == "tracks_first":
+                d.update_tracks(trks, t)
+                d.update(*f, a_t=t)
+            else:
+                d.update(*f, a_t=t)
+                d.update_tracks(trks, t)
+            d.draw_now()
+            lay = d.det_layer
+            xs, ys = lay.heads.data["x"], lay.heads.data["y"]
+            assert np.allclose(xs, [-3.0, 2.0, 0.1, -4.0]), (name, list(xs))
+            assert list(ys) == [300.0, 500.0, 700.0, 900.0]
+            cols = head_colors(lay)
+            assert cols == [
+                ("#ff6b6b", 255), ("#4da3ff", 255), ("#7cfc9a", 255), ("#ff6b6b", 102),
+            ], cols
+            shown = [l for l in lay.labels if l.isVisible()]
+            assert [l.toPlainText() for l in shown] == ["T0", "T1", "T2", "T3"]
+            assert lay.tentative.data["x"].size == 0, "rings only with the toggle"
+            d.tentative_box.setChecked(True)
+            d.draw_now()
+            assert list(lay.tentative.data["x"]) == [1.0]
+            assert [l.isVisible() for l in lay.labels].count(True) == 4, "no ring label"
+            for it in lay.tails:  # one point per track: single-point lines
+                assert it.xData is not None
+            if cfg.TDM_EN:
+                xy = d.xy_layer
+                th = np.radians([-20.0, 10.0, 30.0, 0.0])
+                r = np.array([300.0, 500.0, 700.0, 900.0])
+                assert np.allclose(xy.heads.data["x"], r * np.sin(th))
+                assert np.allclose(xy.heads.data["y"], r * np.cos(th))
+                assert head_colors(xy) == cols
+                assert [l.toPlainText() for l in xy.labels if l.isVisible()] == [
+                    "T0", "T1", "T2", "T3"
+                ]
+                assert np.allclose(xy.tentative.data["x"], 400 * np.sin(np.radians(-30)))
+            else:
+                assert d.xy_layer.heads.data["x"].size == 0
+            # Tentative toggle off again
+            d.tentative_box.setChecked(False)
+            d.draw_now()
+            assert lay.tentative.data["x"].size == 0
+            # Empty list clears both layers
+            d.update_tracks([], None)
+            d.draw_now()
+            for L in (d.det_layer, d.xy_layer):
+                assert L.heads.data["x"].size == 0
+                assert not any(l.isVisible() for l in L.labels)
+            assert not d._store.tracks
+            # Tracks again, then set_config clears
+            d.update_tracks(trks, t + 0.05)
+            d.draw_now()
+            assert d.det_layer.heads.data["x"].size == 4
+            d.set_config(cfg)
+            assert not d._store.tracks and d.det_layer.heads.data["x"].size == 0
+            assert not any(l.isVisible() for l in d.det_layer.labels)
+            d.close()
+    no_exceptions()
+
+
+def test_track_layer_tails_and_labels():
+    cfg = mode_cfg(TDM_EN=True)
+    d = make_display(cfg)
+    d.show()
+    # 70 confirmed tracks: only 30 labels; moving ones grow a tail
+    for k in range(40):
+        t = 10.0 + 0.1 * k
+        trks = [
+            snap(i, 100.0 + 10 * i + k, -3.0 if i % 2 else 3.0, -30.0 + i % 60,
+                 a_age=k, a_num=i)
+            for i in range(70)
+        ]
+        d.update_tracks(trks, t)
+    d.draw_now()
+    lay = d.det_layer
+    assert lay.heads.data["x"].size == 70
+    assert [l.isVisible() for l in lay.labels].count(True) == 30
+    recv = lay.tails[2]  # receding class: v = +3
+    appr = lay.tails[1]
+    n_pts = 21  # 2 s tail, 0.1 s steps
+    assert np.isfinite(recv.xData).sum() == 35 * n_pts
+    assert np.isfinite(appr.yData).sum() == 35 * n_pts
+    assert lay.tails[0].xData.size == 0
+    # A label follows its head
+    first = next(l for l in lay.labels if l.isVisible())
+    assert (first.pos().x(), first.pos().y()) == (3.0, 100.0 + 39)
+    d.close()
+    no_exceptions()
+
+
+def test_detection_fade():
+    cfg = mode_cfg()
+    d = make_display(cfg)
+    d.show()
+    rng = np.random.default_rng(SEED)
+    up, down, ranges, vels, _ = frame(cfg, 0, rng)
+    one = [{"r": 100.0, "v": 1.0, "kind": "up"}]
+
+    def step(a_t, a_dets):
+        d.update(up, down, ranges, vels, a_dets, a_t=a_t)
+        d.draw_now()
+        return list(np.bincount(d.det_dots.image.ravel(), minlength=5)[1:])
+
+    # Per level, oldest (1) .. newest (4)
+    assert step(100.0, one) == [0, 0, 0, 1]
+    assert step(100.3, []) == [0, 0, 1, 0]
+    assert step(100.55, []) == [0, 1, 0, 0]
+    assert step(100.8, []) == [1, 0, 0, 0]
+    assert step(101.05, []) == [0, 0, 0, 0] and not dots_visible(d)
+    # Cap
+    many = [{"r": 100.0 + i, "v": 1.0, "kind": "up"} for i in range(100)]
+    for k in range(30):
+        step(200.0 + k * 0.01, many)
+    assert n_dots(d) <= 1000 and d._trail.n_points <= 1000 and n_dots(d) > 0
+    # Alphas step down, all four buckets' styles fixed
+    alphas = list(d.det_dots.alphas[1:])  # level 1 (oldest) .. 4 (newest)
+    assert alphas == sorted(alphas) and len(set(alphas)) == 4 and alphas[0] > 0
+    d.dets_box.setChecked(False)
+    d.draw_now()
+    assert not dots_visible(d) and not dots_visible(d, d.xy_dots)
+    # Grid: exists, has data, rebuilt per config
+    n = d.det_grid.xData.size
+    assert n > 0 and np.isfinite(d.det_grid.xData).any()
+    d.set_config(mode_cfg(TRIANGLE_EN=True, TDM_EN=True))
+    assert d.det_grid.xData.size > 0 and d.det_grid.zValue() < 0
+    d.close()
+    no_exceptions()
+
+
+def test_grid_ticks():
+    from common import gui_tracks as gt
+
+    for lo, hi in [(0, 3000), (-19.3, 19.3), (0, 300), (-0.7, 0.7), (0, 1)]:
+        t = gt.nice_ticks(lo, hi)
+        assert 3 <= len(t) <= 12, (lo, hi, t)
+        assert t[0] >= lo - 1e-9 and t[-1] <= hi + 1e-9
+        assert np.allclose(np.diff(t), t[1] - t[0])
+
+
+def test_adaptive_draw_interval():
+    cfg = mode_cfg(TDM_EN=True)
+    d = make_display(cfg)
+    d.show()
+    d._draw_timer.stop()  # ticks by hand
+    d.update(*frame(cfg, 5, np.random.default_rng(SEED)))
+    real = d._draw_tracks
+
+    def tick(a_dirty=True):
+        d._tracks_dirty = a_dirty
+        d._on_tick()
+        pump(20)  # the cost is taken by a posted zero timer, after the paint
+
+    def slow(a_ms):
+        def draw():
+            time.sleep(a_ms / 1000)
+            return real()
+        d._draw_tracks = draw
+
+    for _ in range(25):  # the first draw carries the window's first paint
+        tick()
+    assert d._draw_timer.interval() == d.DRAW_INTERVAL_MS, "cheap scene: the minimum"
+    slow(30)
+    for _ in range(8):
+        tick()
+    assert 110 <= d._draw_timer.interval() <= 150, d._draw_timer.interval()
+    # Nothing dirty: nothing drawn, no cost taken, interval unchanged
+    cost, interval = d._draw_cost_ms, d._draw_timer.interval()
+    for _ in range(5):
+        tick(False)
+    assert d._draw_cost_ms == cost and d._draw_timer.interval() == interval
+    # Back to cheap: returns to the minimum
+    del d._draw_tracks
+    for _ in range(20):
+        tick()
+    assert d._draw_timer.interval() == d.DRAW_INTERVAL_MS
+    # Cap
+    slow(100)
+    for _ in range(10):
+        tick()
+    assert d._draw_timer.interval() == d.DRAW_INTERVAL_MAX_MS
+    # draw_now / tab change stay immediate whatever the interval
+    del d._draw_tracks
+    up = d._frame[0]
+    d.update(*frame(cfg, 2, np.random.default_rng(SEED + 1)))
+    d.draw_now()
+    assert np.array_equal(shown_up(d), d._frame[0]) and not np.array_equal(shown_up(d), up)
+    d.close()
     no_exceptions()
 
 
@@ -672,6 +1042,56 @@ def test_playback():
     no_exceptions()
 
 
+def test_playback_tracks():
+    # A session recorded with TRACK_EN: tracks reach the display, a seek back clears
+    cfg = fabric_cfg(TRACK_EN=True)
+    blocks = if_blocks(cfg, 14, a_ranges=(150.0, 420.0))
+    with tempfile.TemporaryDirectory() as tmp:
+        session_dir, _ = record_session(Path(tmp), cfg, blocks, TargetSim())
+        display, bar, worker = playback.build_app()
+        errors, positions, track_emits = [], [], []
+        worker.error.connect(errors.append)
+        worker.position.connect(positions.append)
+        worker.tracks.connect(lambda trks, t: track_emits.append((len(trks), t)))
+        display.show()
+        worker.start()
+        try:
+            def command(a_fn, a_what):
+                n = len(positions)
+                a_fn()
+                wait_for(lambda: len(positions) > n, a_what)
+                pump(30)
+                assert not errors, errors
+                return positions[-1]
+
+            worker.open(session_dir)
+            wait_for(lambda: positions, "open")
+            for _ in range(3):
+                command(lambda: worker.step(1), "step")
+            pump(30)
+            assert track_emits and track_emits[-1][1] is not None
+            assert display._store.tracks, "tracks reached the store"
+            assert display._store.t == track_emits[-1][1]
+            display.draw_now()
+            n_before = max(len(s.tail) for s in display._store.tracks.values())
+            assert n_before > 1
+            command(lambda: worker.seek(0), "seek back")
+            # Tracker restarted on the jump: one point per track, nothing from before
+            assert all(len(s.tail) <= 1 for s in display._store.tracks.values())
+            display.draw_now()
+            worker.set_speed(0.0)
+            worker.set_playing(True)
+            wait_for(lambda: positions[-1]["block"] == len(blocks) - 1, "play to end")
+            pump(100)
+            assert not errors, errors
+            assert display._store.t == track_emits[-1][1]
+        finally:
+            worker.stop()
+        pump(50)
+        display.close()
+    no_exceptions()
+
+
 if __name__ == "__main__":
     tests = [
         test_update_all_modes,
@@ -691,8 +1111,19 @@ if __name__ == "__main__":
         test_signal_tab_draws_maps_only_when_current,
         test_playback_mode_toolbar,
         test_rd_alignment,
+        test_store_tail_trim,
+        test_store_restart_and_clear,
+        test_store_hysteresis,
+        test_store_wrap_xy,
+        test_trail_levels,
+        test_grid_ticks,
+        test_track_layer_modes_and_order,
+        test_track_layer_tails_and_labels,
+        test_detection_fade,
+        test_adaptive_draw_interval,
         test_playback_paused_step_shows_cpi,
         test_playback,
+        test_playback_tracks,
     ]
     failures = 0
     for t in tests:

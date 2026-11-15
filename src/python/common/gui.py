@@ -30,6 +30,7 @@ from PySide6.QtWidgets import (
     QFileDialog,
     QStyle,
     QSizePolicy,
+    QGraphicsItem,
 )
 from PySide6.QtGui import (
     QBrush,
@@ -41,6 +42,7 @@ from PySide6.QtGui import (
 import pyqtgraph as pg
 
 import common.dsp as dsp
+import common.gui_tracks as gui_tracks
 
 
 class RadarDisplay(QMainWindow):
@@ -85,6 +87,12 @@ class RadarDisplay(QMainWindow):
     current tab when dirty; tab change draws new tab at once; draw_now() = one full
     draw without timer. Frames held by reference until drawn, so callers pass fresh
     arrays per CPI (process_cpi does).
+
+    Track layer (common/gui_tracks.py): update_tracks(tracks, t) takes Track.snapshot()
+    dicts into a TrackStore (intake only, order against update() does not matter); the
+    Tracks tab draws heads, 2 s tails and T<num> labels on the (r, v) plot and PPI.
+    Detections are faint dots fading over ~1 s: 4 age levels in one image per plot
+    (DotImage), no per-CPI scatter. Up/down-only detections stay crosses (newest CPI).
     """
 
     reconfigure_requested = Signal(object)
@@ -110,14 +118,16 @@ class RadarDisplay(QMainWindow):
     HISTORY_FLOOR_DB = -80.0  # RD maps' display floor
 
     # One timer draws current tab
-    DRAW_INTERVAL_MS = 33
+    # Interval adapts: DUTY x smoothed draw cost (incl. Qt paint after slot) -> GUI <= 1/DUTY of time
+    DRAW_INTERVAL_MS = 33  # min: ~30 draws/s cheap scene
+    DRAW_INTERVAL_MAX_MS = 250  # max: never freezes below 4 draws/s
+    DRAW_DUTY = 4  # interval = 4 x cost -> <= 25 % duty
+    DRAW_COST_ALPHA = 0.3  # EMA: one slow draw does not stall, cheap scene recovers
     # (r, v) plot background: CET-L9 brightness
     RD_BG_DIM = 0.35
     TRACK_COLUMNS = ["ID", "r [m]", "v [m/s]", "az [deg]", "SNR [dB]", "age [s]"]
     TRACK_AZ_COL = 3
 
-    # Detections faster than this coloured receding (v > 0) or approaching
-    MOVING_V_MS = 5.0
     # Sector-PPI: fan drawn, spoke spacing inside it
     XY_FOV_DEG = 60
     XY_SPOKE_DEG = 30
@@ -131,6 +141,9 @@ class RadarDisplay(QMainWindow):
         self._tabs = tabs
 
         self._config = a_config
+        # Track layer state (intake side): tracks and fading detections
+        self._store = gui_tracks.TrackStore(a_v_limit=a_config.MAX_VELOCITY)
+        self._trail = gui_tracks.DetectionTrail()
         # Intake state: newest frame / spectrograms, drawn by timer when dirty
         self._frame = None  # (up, down, ranges, velocities, targets)
         self._tracks_dirty = False  # Tracks tab: RD background, dots, rings
@@ -334,6 +347,7 @@ class RadarDisplay(QMainWindow):
         # Setup GUI
         self.set_config(a_config)
 
+        self._draw_cost_ms = None  # EMA of a draw incl. paint
         self._draw_timer = QTimer(self)
         self._draw_timer.setInterval(self.DRAW_INTERVAL_MS)
         self._draw_timer.timeout.connect(self._on_tick)
@@ -357,9 +371,9 @@ class RadarDisplay(QMainWindow):
         self.dets_box = QCheckBox("Detections")
         self.dets_box.setChecked(True)
         self.dets_box.toggled.connect(self._mark_tracks_dirty)
-        # Stored only: the track layer (WP5) reads it
         self.tentative_box = QCheckBox("Tentative")
         self.tentative_box.setChecked(False)
+        self.tentative_box.toggled.connect(self._mark_tracks_dirty)
         self.xs_toggle = QCheckBox("Up/Down")
         self.xs_toggle.setChecked(False)
         self.xs_toggle.toggled.connect(self._mark_tracks_dirty)
@@ -423,25 +437,37 @@ class RadarDisplay(QMainWindow):
             connect="finite",
         )
         self.xy_plot.addItem(self.xy_xlines, ignoreBounds=True)
-        self.xy_scatter = pg.ScatterPlotItem(pen=pg.mkPen(None))
-        self.xy_plot.addItem(self.xy_scatter)
-        self._xy_brushes = {
-            "receding": pg.mkBrush("#4da3ff"),
-            "approaching": pg.mkBrush("#ff6b6b"),
-            "slow": pg.mkBrush("yellow"),
-        }
-
-        self.scatter_both = pg.ScatterPlotItem(
-            size=10, symbol="o", pen=pg.mkPen(None), brush=pg.mkBrush("yellow")
+        # Single-ramp detections (triangle, Up/Down on): newest CPI only, crosses
+        self.xy_scatter = pg.ScatterPlotItem(
+            size=8, symbol="x", pen=pg.mkPen((255, 255, 255, 100), width=2)
         )
+        self.xy_plot.addItem(self.xy_scatter, ignoreBounds=True)
+
+        # Cheap grid of the (r, v) plot (showGrid costs ~4 ms per axis per paint):
+        # one NaN-separated curve, rebuilt per config. Between RD image and scatters
+        self.det_grid = pg.PlotCurveItem(
+            pen=pg.mkPen((255, 255, 255, 40), width=1), connect="finite"
+        )
+        self.det_grid.setZValue(-5)
+        # Static grids: blit a cached pixmap instead of re-stroking every frame (the
+        # fading dots and tracks change each CPI, which repaints the whole plot)
+        for item in (self.xy_grid, self.xy_xlines, self.det_grid):
+            item.setCacheMode(QGraphicsItem.DeviceCoordinateCache)
+        self.det_plot.addItem(self.det_grid, ignoreBounds=True)
+
+        # Fading detection dots: one image per plot (see DotImage)
+        self.det_dots = gui_tracks.DotImage(self.det_plot)
+        self.xy_dots = gui_tracks.DotImage(self.xy_plot)
         self.scatter_up = pg.ScatterPlotItem(
             size=8, symbol="x", pen=pg.mkPen((255, 255, 255, 100), width=2)
         )
         self.scatter_down = pg.ScatterPlotItem(
             size=8, symbol="x", pen=pg.mkPen((0, 255, 255, 100), width=2)
         )
-        for item in (self.scatter_both, self.scatter_up, self.scatter_down):
+        for item in (self.scatter_up, self.scatter_down):
             self.det_plot.addItem(item, ignoreBounds=True)
+        self.det_layer = gui_tracks.TrackLayer(self.det_plot, "rv")
+        self.xy_layer = gui_tracks.TrackLayer(self.xy_plot, "xy")
         # Playback only: live-recorded detections, rings around replayed dots.
         # Drawn last (on top), hidden until update_recorded()
         self.scatter_recorded = pg.ScatterPlotItem(
@@ -649,19 +675,62 @@ class RadarDisplay(QMainWindow):
         self._frame = (a_rd_up_db, a_rd_down_db, a_ranges, a_velocities, a_targets)
         self._tracks_dirty = True
         self._maps_dirty = True
-        self._update_history(
-            time.monotonic() if a_t is None else a_t,
-            a_rd_up_db,
-            a_ranges,
-            a_velocities,
-            a_targets,
-        )
+        t = time.monotonic() if a_t is None else a_t
+        self._take_detections(t, a_targets, a_rd_down_db is None)
+        self._update_history(t, a_rd_up_db, a_ranges, a_velocities, a_targets)
+
+    def _take_detections(self, a_t, a_targets, a_sawtooth):
+        """Paired detections ("both", or any in sawtooth) join the fading trail as
+        (v, r) and, with theta, (x, y). Single-ramp ones are drawn for the newest CPI
+        only (crosses), straight from the frame."""
+        tri = self._config.TRIANGLE_EN and not a_sawtooth
+        shown = [d for d in a_targets if not tri or d["kind"] == "both"]
+        rv = np.array([(d["v"], d["r"]) for d in shown], dtype=float).reshape(-1, 2)
+        xy = np.array(
+            [
+                (d["r"] * np.sin(th), d["r"] * np.cos(th))
+                for d in shown
+                if d.get("theta") is not None
+                for th in (np.radians(d["theta"]),)
+            ],
+            dtype=float,
+        ).reshape(-1, 2)
+        self._trail.add(a_t, rv, xy)
+
+    def update_tracks(self, a_tracks, a_t):
+        """Intake only: Track.snapshot() dicts of one CPI, a_t = its capture time.
+        [] / None t = cleared (tracker rebuilt or stopped). Order against update()
+        does not matter."""
+        if not a_tracks or a_t is None:
+            self._store.clear()
+        else:
+            self._store.update(a_tracks, a_t)
+        self._tracks_dirty = True
 
     # ---------------------------------
     # Drawing (timer, tab change, draw_now)
     # ---------------------------------
     def _on_tick(self):
-        self._draw_current(a_now=False)
+        t0 = time.perf_counter()
+        if self._draw_current(a_now=False):
+            # Qt paints after this slot returns: measure once the posted paint
+            # events have run. Nothing drawn costs nothing: no update then
+            QTimer.singleShot(0, lambda: self._draw_cost_done(t0))
+
+    def _draw_cost_done(self, a_t0):
+        ms = 1e3 * (time.perf_counter() - a_t0)
+        a = self.DRAW_COST_ALPHA
+        self._draw_cost_ms = ms if self._draw_cost_ms is None else (
+            a * ms + (1 - a) * self._draw_cost_ms
+        )
+        interval = int(
+            min(
+                max(self.DRAW_DUTY * self._draw_cost_ms, self.DRAW_INTERVAL_MS),
+                self.DRAW_INTERVAL_MAX_MS,
+            )
+        )
+        if interval != self._draw_timer.interval():
+            self._draw_timer.setInterval(interval)
 
     def draw_now(self):
         """One full draw of current tab, ignoring timer and throttles. For tests and
@@ -676,19 +745,22 @@ class RadarDisplay(QMainWindow):
         change, draw_now). Configuration has nothing per frame."""
         tab = self._tabs.currentWidget()
         if tab is self._tracks_tab:
-            self._draw_tracks()
-        elif tab is self._signal_tab:
-            self._draw_signals()
-        elif tab is self._history_tab:
-            self._draw_history_tab(a_now)
+            return self._draw_tracks()
+        if tab is self._signal_tab:
+            return self._draw_signals()
+        if tab is self._history_tab:
+            return self._draw_history_tab(a_now)
+        return False
 
     def _draw_tracks(self):
         if not self._tracks_dirty:
-            return
+            return False
         self._tracks_dirty = False
         if self._frame is not None:
             self._draw_rd_and_dets(*self._frame)
+        self._draw_track_layers()
         self._draw_recorded()
+        return True
 
     def _draw_rd_and_dets(
         self, a_rd_up_db, a_rd_down_db, a_ranges, a_velocities, a_targets
@@ -697,65 +769,49 @@ class RadarDisplay(QMainWindow):
         self.det_image.setImage(a_rd_up_db, levels=(-80, 0))
         self.det_image.setRect(self._image_rect(a_velocities, a_ranges))
 
-        # -------------------------
-        # Detections; UP/DOWN toggle
-        # -------------------------
+        # Detections: fading dots (both plots), crosses for the newest CPI
         show_xs = self.xs_toggle.isChecked()
         show_dets = self.dets_box.isChecked()
-        both = [(t["v"], t["r"]) for t in a_targets if t["kind"] == "both"]
+        tdm = self._config.TDM_EN
+        crosses = a_rd_down_db is not None and show_xs
         up = [(t["v"], t["r"]) for t in a_targets if t["kind"] == "up"]
         down = [(t["v"], t["r"]) for t in a_targets if t["kind"] == "down"]
+        for item, pts in ((self.scatter_up, up), (self.scatter_down, down)):
+            show = show_dets and crosses and len(pts) > 0
+            if show:
+                item.setData(pos=pts, size=8)
+            item.setVisible(show)
+        if show_dets:
+            rv, lrv, xy, lxy = self._trail.arrays()
+            self.det_dots.set_points(rv, lrv)
+            if tdm:
+                self.xy_dots.set_points(xy, lxy)
+        else:
+            self.det_dots.item.setVisible(False)
+            self.xy_dots.item.setVisible(False)
+        if tdm:
+            xy_pts = np.array(
+                [
+                    (t["r"] * np.sin(np.radians(t["theta"])),
+                     t["r"] * np.cos(np.radians(t["theta"])))
+                    for t in a_targets
+                    if t.get("theta") is not None and t["kind"] != "both"
+                ]
+            ).reshape(-1, 2)
+            show = show_dets and crosses and len(xy_pts) > 0
+            if show:
+                self.xy_scatter.setData(x=xy_pts[:, 0], y=xy_pts[:, 1], size=8)
+            self.xy_scatter.setVisible(show)
 
-        if a_rd_down_db is None:
-            both = up
-            up, down = [], []
-
-        self.scatter_both.setData(pos=both or [(0, 0)], size=10)
-        self.scatter_up.setData(pos=up or [(0, 0)], size=8)
-        self.scatter_down.setData(pos=down or [(0, 0)], size=8)
-
-        self.scatter_both.setVisible(show_dets and len(both) > 0)
-        self.scatter_up.setVisible(show_dets and show_xs and len(up) > 0)
-        self.scatter_down.setVisible(show_dets and show_xs and len(down) > 0)
-
+    def _draw_track_layers(self):
+        tent = self.tentative_box.isChecked()
+        self.det_layer.draw(self._store, tent)
         if self._config.TDM_EN:
-            self._update_xy(a_targets, show_xs)
-            self.xy_scatter.setVisible(show_dets)
+            self.xy_layer.draw(self._store, tent)
 
     # ---------------------------------
     # Sector-PPI (TDM)
     # ---------------------------------
-    def _update_xy(self, a_targets, a_show_xs):
-        """Detections with angle, same kind filter as (r, v) scatter. Dots for "both"
-        (or sawtooth), crosses for single-ramp; colour by v."""
-        tri = self._config.TRIANGLE_EN
-        shown = [
-            t
-            for t in a_targets
-            if t.get("theta") is not None
-            and (not tri or t["kind"] == "both" or a_show_xs)
-        ]
-        r = np.array([t["r"] for t in shown], dtype=float)
-        theta = np.radians([t["theta"] for t in shown])
-        paired = [not tri or t["kind"] == "both" for t in shown]
-        brushes = [
-            self._xy_brushes[
-                (
-                    "receding"
-                    if t["v"] > self.MOVING_V_MS
-                    else "approaching" if t["v"] < -self.MOVING_V_MS else "slow"
-                )
-            ]
-            for t in shown
-        ]
-        self.xy_scatter.setData(
-            x=r * np.sin(theta),
-            y=r * np.cos(theta),
-            brush=brushes,
-            symbol=["o" if p else "x" for p in paired],
-            size=[10 if p else 8 for p in paired],
-        )
-
     def _draw_xy_grid(self, a_max_range):
         """Range rings at a round step and spokes every XY_SPOKE_DEG across the fan."""
         step = 10 ** np.floor(np.log10(a_max_range))
@@ -949,12 +1005,14 @@ class RadarDisplay(QMainWindow):
 
     def _draw_history_tab(self, a_now):
         if not self._hist_dirty or self._hist_t is None:
-            return
+            return False
         now = time.monotonic()
         if a_now or now - self._hist_last_draw >= self.HISTORY_REDRAW_S:
             self._hist_dirty = False
             self._hist_last_draw = now
             self._draw_history()
+            return True
+        return False
 
     def _draw_history(self):
         # x = s relative to newest CPI; newest column ends where its time bin ends,
@@ -987,7 +1045,9 @@ class RadarDisplay(QMainWindow):
         self._spec_axes = (a_t, a_f)
 
     def _draw_signals(self):
+        drew = False
         if self._maps_dirty and self._frame is not None:
+            drew = True
             self._maps_dirty = False
             up, down, ranges, vels, _ = self._frame
             self.rd_up_image.setImage(up, levels=(-80, 0))
@@ -997,7 +1057,7 @@ class RadarDisplay(QMainWindow):
                 # Doppler-reversed, as the down chirp sees it
                 self.rd_down_image.setRect(self._image_rect(vels, ranges, True))
         if self._spec_rx is None and self._spec_if is None:
-            return
+            return drew
         a_t, a_f = self._spec_axes
         rect = QRectF(
             float(a_t[0]),
@@ -1013,6 +1073,7 @@ class RadarDisplay(QMainWindow):
             self.if_spec_image.setImage(self._spec_if, levels=(-80, 0))
             self.if_spec_image.setRect(rect)
             self._spec_if = None
+        return True
 
     def _fake_target_add_row(self):
         t = self.fake_targets_table
@@ -1067,6 +1128,12 @@ class RadarDisplay(QMainWindow):
         self._spec_rx = self._spec_if = self._spec_axes = None
         self._recorded = []
         self._tracks_dirty = True
+        # Tracks, fading dots, layers: shaped by the old config
+        self._store.clear()
+        self._store.set_v_limit(a_config.MAX_VELOCITY)
+        self._trail.clear()
+        self.det_layer.clear()
+        self.xy_layer.clear()
         # Sawtooth never writes down map: no stale triangle one
         if not a_config.TRIANGLE_EN:
             self.rd_down_image.clear()
@@ -1076,7 +1143,7 @@ class RadarDisplay(QMainWindow):
 
         # Angle only with TDM: Sector-PPI, azimuth column, slot of the (r, v) plot
         self._layout_tracks(a_config.TDM_EN)
-        self.xy_scatter.setData(x=[], y=[])
+        self.xy_scatter.setVisible(False)
         self._draw_xy_grid(a_config.MAX_RANGE)
 
         # Fabric IF mode: captured array is IF so hide IF spectrogram
@@ -1116,6 +1183,22 @@ class RadarDisplay(QMainWindow):
         f = dsp.inst_freq(a_signal=tx_seq, a_radar_config=a_config)
         t = np.arange(len(tx_seq)) / a_config.FS
         self.tx_curve.setData(t[: len(f)], f)
+
+        # Cheap grid at round steps: fixed per config
+        v_max, r_max = a_config.MAX_VELOCITY, a_config.MAX_RANGE
+        gx, gy = gui_tracks.grid_lines(
+            gui_tracks.nice_ticks(-v_max, v_max),
+            gui_tracks.nice_ticks(0.0, r_max),
+            (-v_max, v_max),
+            (0.0, r_max),
+        )
+        self.det_grid.setData(x=gx, y=gy)
+        # Fading-dot grids: ~5 px cells ((r, v) plot) / rmax / 140 (PPI)
+        self.det_dots.configure(-v_max, v_max, 0.0, r_max, 128, 100)
+        half_w = r_max * np.sin(np.radians(self.XY_FOV_DEG))
+        self.xy_dots.configure(
+            -half_w, half_w, 0.0, r_max, int(round(2 * half_w / r_max * 140)), 140
+        )
 
         # Set detections limits
         self.set_detection_limits(
@@ -1355,6 +1438,43 @@ if __name__ == "__main__":
     ]
 
     window.update(rd_up, rd_down, ranges, velocities, targets)
+
+    # Fake moving tracks so the layer can be seen: (num, status, r0, v, theta0,
+    # coasting). Confirmed approaching / receding / slow, one coasting, one tentative
+    fakes = [
+        (0, "confirmed", 1800.0, -9.0, -20.0, False),
+        (1, "confirmed", 600.0, 7.0, 15.0, False),
+        (2, "confirmed", 1200.0, 0.1, 35.0, False),
+        (3, "confirmed", 2200.0, -4.0, 0.0, True),
+        (None, "tentative", 900.0, 3.0, -35.0, False),
+    ]
+    clock = {"t": 0.0}
+
+    def tick():
+        clock["t"] += 0.05
+        t = clock["t"]
+        snaps = []
+        for i, (num, status, r0, v, th0, coast) in enumerate(fakes):
+            r = 300.0 + (r0 - 300.0 + v * t) % 2500.0
+            snaps.append(
+                {
+                    "id": i, "num": num, "status": status, "r": r, "v": v,
+                    "theta": th0 + 5 * np.sin(0.5 * t + i), "birth_t": 0.0,
+                    "snr_db": 20.0, "age": int(t / 0.05), "nis": None,
+                    "kin_ok": True, "coasting": coast,
+                }
+            )
+        window.update(
+            rd_up, rd_down, ranges, velocities,
+            [{"r": s["r"], "v": s["v"], "theta": s["theta"], "kind": "both"}
+             for s in snaps[:3]],
+            a_t=t,
+        )
+        window.update_tracks(snaps, t)
+
+    demo_timer = QTimer(window)
+    demo_timer.timeout.connect(tick)
+    demo_timer.start(50)
 
     n_time, n_freq = 128, 256
     t_ax = np.linspace(0, 6.4e-3, n_time)

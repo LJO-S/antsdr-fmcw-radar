@@ -23,7 +23,7 @@ class RadarWorker(QThread):
     reconfigure_done = Signal(bool, object)
     signals = Signal(object, object, object, object)  # rx, if, t, f
     recording = Signal(object)  # session dir (Path), or None when not recording
-    tracks = Signal(object)  # list of Track.snapshot() dicts
+    tracks = Signal(object, object)  # (Track.snapshot() dicts, CPI capture t); ([], None) clears
 
     def __init__(self, a_config: config.RadarConfig):
         super().__init__()
@@ -139,7 +139,7 @@ class RadarWorker(QThread):
                         radio.start()
                         fabric_on = fabric_up(new_cfg)
                         self.tracker = make_tracker(a_cfg=new_cfg)
-                        self.tracks.emit([])  # the old tracks are gone
+                        self.tracks.emit([], None)  # the old tracks are gone
                         self.reconfigure_done.emit(True, new_cfg)
                     except Exception:
                         self.error.emit(traceback.format_exc())
@@ -151,7 +151,7 @@ class RadarWorker(QThread):
                         radio.start()
                         fabric_on = fabric_up(old_cfg)
                         self.tracker = make_tracker(a_cfg=old_cfg)
-                        self.tracks.emit([])
+                        self.tracks.emit([], None)
                         self.reconfigure_done.emit(False, old_cfg)
                 if self.pending_targets is not None:
                     targets, self.pending_targets = self.pending_targets, None
@@ -183,12 +183,12 @@ class RadarWorker(QThread):
                 if self.tracker is not None:
                     try:
                         trks = self.tracker.update(detections, t, self.config.MTI_EN)
-                        self.tracks.emit([k.snapshot() for k in trks])
+                        self.tracks.emit([k.snapshot() for k in trks], t)
                     except Exception:
                         # A tracker error ends tracking, never the radar
                         self.error.emit("Tracker stopped:\n" + traceback.format_exc())
                         self.tracker = None
-                        self.tracks.emit([])
+                        self.tracks.emit([], None)
 
                 if block_no is not None:
                     # The MTI_EN this CPI actually ran with, not _mti_en, which the
@@ -285,6 +285,8 @@ def main():
     worker.reconfigure_done.connect(
         lambda ok, cfg: display.on_reconfigure_done(ok, cfg)
     )
+
+    worker.tracks.connect(display.update_tracks)
 
     worker.signals.connect(
         lambda rx_spec, if_spec, t, f: display.update_signals(rx_spec, if_spec, t, f)

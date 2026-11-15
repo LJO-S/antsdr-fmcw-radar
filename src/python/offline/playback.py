@@ -33,7 +33,7 @@ class PlaybackWorker(QThread):
     results = Signal(object, object, object, object, object, float)
     signals = Signal(object, object, object, object)  # rx, if, t, f
     recorded = Signal(object)  # the CPI's recorded targets, or None
-    tracks = Signal(object)  # Track.snapshot() dicts; only emitted with TRACK_EN
+    tracks = Signal(object, object)  # (Track.snapshot() dicts, frame.t); ([], None) clears
     error = Signal(str)
     loaded = Signal(object)  # session dict, see _session_info()
     position = Signal(object)  # dict: block, t, mti, mti_forced, n_replayed, ...
@@ -142,10 +142,10 @@ class PlaybackWorker(QThread):
             self.results.emit(up, down, targets, ranges, velocities, frame.t)
             self.recorded.emit(recorded)
             if frame.tracks is not None:
-                self.tracks.emit(frame.tracks)
+                self.tracks.emit(frame.tracks, frame.t)
                 tracks_shown = True
             elif tracks_shown:
-                self.tracks.emit([])  # a session without TRACK_EN: clear the old ones
+                self.tracks.emit([], None)  # a session without TRACK_EN: clear the old ones
                 tracks_shown = False
             self.position.emit(
                 {
@@ -274,6 +274,7 @@ def build_app():
     worker.signals.connect(
         lambda rx_spec, if_spec, t, f: display.update_signals(rx_spec, if_spec, t, f)
     )
+    worker.tracks.connect(display.update_tracks)
     worker.recorded.connect(display.update_recorded)
     worker.loaded.connect(on_loaded)
     worker.position.connect(on_position)

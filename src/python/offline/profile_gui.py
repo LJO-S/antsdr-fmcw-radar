@@ -3,11 +3,14 @@ L4 GUI profiler: median ms per CPI of RadarDisplay.update() (intake) and of
 draw_now() + QApplication.processEvents() after it (draw and paint), synthetic frames.
 Timer not involved: each frame taken in, then drawn once.
 
-    python -m offline.profile_gui [--screen] [--frames N] [--tracks M]
+    python -m offline.profile_gui [--screen] [--frames N] [--tracks M] [--tentative]
     python -m offline.profile_gui --mode TDM --tab Tracks   (one cell, JSON)
 
 Per mode (sawtooth, TDM, triangle + TDM), detection count (0 / 20 / 100) and shown
 tab (Tracks, History, Signal; Config draws nothing per frame).
+--tracks M: M confirmed tracks (3 of them coasting, theta in TDM modes) moving smoothly
+plus 4 tentative, fed through update_tracks() every frame with the frame's time
+(0.02 s steps); --tentative ticks the Tentative box (rings drawn).
 Signal tab: intake also covers update_signals(), fed each frame with spectrogram
 shaped like processing.spectrograms fabric output. Offscreen unless --screen.
 Config: fabric /8 (FABRIC_DECHIRP_EN) = 128 x 707 map.
@@ -30,6 +33,8 @@ N_DOPPLER, N_RANGE = 128, 707
 DETECTIONS = (0, 20, 100)
 POOL = 8  # distinct frames cycled, no CPI repeats predecessor
 WARMUP = 10
+DT = 0.02  # s between synthetic CPIs (~50 CPIs/s)
+N_COASTING, N_TENTATIVE = 3, 4
 TABS = ["Tracks", "History", "Signal"]
 MODES = [
     ("Sawtooth", dict()),
@@ -65,6 +70,41 @@ def make_frames(a_cfg, a_n_det, a_rng):
     return frames
 
 
+def make_tracks(a_cfg, a_m, a_rng):
+    """Static start state of a_m confirmed + N_TENTATIVE tentative tracks:
+    (r0, v, theta0, status, coasting) rows."""
+    rows = []
+    for i in range(a_m + (N_TENTATIVE if a_m else 0)):
+        rows.append(
+            (
+                float(a_rng.uniform(50, a_cfg.MAX_RANGE - 50)),
+                float(a_rng.uniform(-8, 8)),
+                float(a_rng.uniform(-40, 40)),
+                "confirmed" if i < a_m else "tentative",
+                a_m - N_COASTING <= i < a_m,
+            )
+        )
+    return rows
+
+
+def tracks_at(a_cfg, a_rows, a_k):
+    """Snapshots at CPI a_k: straight motion, range wrapped, theta swaying."""
+    t = a_k * DT
+    out = []
+    for i, (r0, v, th0, status, coast) in enumerate(a_rows):
+        r = 20.0 + (r0 - 20.0 + v * t) % (a_cfg.MAX_RANGE - 40.0)
+        out.append(
+            {
+                "id": i, "num": i if status == "confirmed" else None, "status": status,
+                "r": r, "v": v,
+                "theta": th0 + 3 * np.sin(t + i) if a_cfg.TDM_EN else None,
+                "birth_t": 0.0, "snr_db": 20.0, "age": a_k, "nis": None,
+                "kin_ok": True, "coasting": coast,
+            }
+        )
+    return out
+
+
 def make_specs(a_cfg, a_rng):
     """POOL (spec, t, f) like processing.spectrograms returns in fabric mode: 2
     period slice of IF stream through dsp.spectrogram."""
@@ -80,14 +120,17 @@ def make_specs(a_cfg, a_rng):
     return specs
 
 
-def measure(a_app, a_display, a_frames, a_n, a_specs=None):
-    """Median ms of update() (+ update_signals() when a_specs) and of draw_now() +
-    following processEvents()."""
+def measure(a_app, a_display, a_frames, a_n, a_specs=None, a_cfg=None, a_rows=None):
+    """Median ms of update() (+ update_tracks(), update_signals() when given) and of
+    draw_now() + following processEvents()."""
     intake, paint = [], []
     for k in range(WARMUP + a_n):
         up, down, ranges, vels, targets = a_frames[k % len(a_frames)]
+        trks = tracks_at(a_cfg, a_rows, k) if a_rows else None
         t0 = time.perf_counter()
-        a_display.update(up, down, ranges, vels, targets)
+        a_display.update(up, down, ranges, vels, targets, a_t=k * DT)
+        if a_rows:
+            a_display.update_tracks(trks, k * DT)
         if a_specs:
             spec, t, f = a_specs[k % len(a_specs)]
             a_display.update_signals(spec, None, t, f)
@@ -125,6 +168,7 @@ def run_cell(a_args):
     cfg = config.RadarConfig(FABRIC_DECHIRP_EN=True, SDR_LOOPBACK_EN=False, **fields)
     assert cfg.N_IF == N_RANGE and cfg.CHIRP_REPS == N_DOPPLER, "not a 128 x 707 map"
     display = gui.RadarDisplay(a_config=cfg)
+    display.tentative_box.setChecked(a_args.tentative)
     display.resize(1600, 900)
     display.show()
     tabs = display.centralWidget()
@@ -139,7 +183,8 @@ def run_cell(a_args):
         display.set_config(cfg)  # fresh History per cell
         frames = make_frames(cfg, n_det, rng)
         specs = make_specs(cfg, rng) if a_args.tab == "Signal" else None
-        row.append(measure(app, display, frames, a_args.frames, specs))
+        rows = make_tracks(cfg, a_args.tracks, rng) if a_args.tracks else None
+        row.append(measure(app, display, frames, a_args.frames, specs, cfg, rows))
     display.close()
     return row
 
@@ -148,7 +193,8 @@ def main():
     ap = argparse.ArgumentParser(description="Profile RadarDisplay per CPI")
     ap.add_argument("--screen", action="store_true", help="real platform, not offscreen")
     ap.add_argument("--frames", type=int, default=100, help="measured frames per cell")
-    ap.add_argument("--tracks", type=int, default=0, help="tracks per frame (no-op until WP5)")
+    ap.add_argument("--tracks", type=int, default=0, help="confirmed tracks per frame")
+    ap.add_argument("--tentative", action="store_true", help="Tentative box on")
     ap.add_argument("--warmup-s", type=float, default=8.0, help="CPU spin before measuring (0 = off)")
     ap.add_argument("--mode", choices=[m for m, _ in MODES], help="one cell, in-process")
     ap.add_argument("--tab", choices=TABS, help="one cell, in-process")
@@ -172,6 +218,8 @@ def main():
             cmd = [sys.executable, "-m", "offline.profile_gui", "--mode", mode,
                    "--tab", tab, "--frames", str(args.frames),
                    "--tracks", str(args.tracks), "--child"]
+            if args.tentative:
+                cmd.append("--tentative")
             if args.screen:
                 cmd.append("--screen")
             out = subprocess.run(cmd, capture_output=True, text=True, check=True)
@@ -179,16 +227,26 @@ def main():
 
     for tab in TABS:
         print(f"\n{tab} tab, {N_DOPPLER} x {N_RANGE} map, 1600x900, "
-              f"{args.frames} frames/cell, median per CPI (draw = draw_now + paint)")
-        print("| Mode | Detections | intake | draw |")
-        print("|---|---|---|---|")
+              f"{args.frames} frames/cell, {args.tracks} confirmed tracks"
+              f"{', tentative on' if args.tentative else ''}, "
+              f"median per CPI (draw = draw_now + paint; intake incl. update_tracks;\n  Tracks tab: draws/s and GUI duty = draw x draws/s at the adaptive interval)")
+        adaptive = tab == "Tracks"
+        print("| Mode | Detections | intake | draw |"
+              + (" draws/s | GUI duty |" if adaptive else ""))
+        print("|---|---|---|---|" + ("---|---|" if adaptive else ""))
         for mode, _ in MODES:
             row = results[(tab, mode)]
             det = " / ".join(str(n) for n in DETECTIONS)
             upd = " / ".join(f"{r[0]:.1f}" for r in row)
             pnt = " / ".join(f"{r[1]:.1f}" for r in row)
-            print(f"| {mode} | {det} | {upd} ms | {pnt} ms |")
-
+            line = f"| {mode} | {det} | {upd} ms | {pnt} ms |"
+            if adaptive:
+                # Timer interval the display would settle at (RadarDisplay.DRAW_*)
+                rates = [1000 / min(max(4 * r[1], 33), 250) for r in row]
+                rate = " / ".join(f"{x:.0f}" for x in rates)
+                duty = " / ".join(f"{r[1] * x / 10:.0f}" for r, x in zip(row, rates))
+                line += f" {rate} | {duty} % |"
+            print(line)
 
 if __name__ == "__main__":
     main()
