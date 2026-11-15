@@ -393,6 +393,8 @@ class Track:  # data only, no logic
     # Running sums over history for kinematic check: [n, t, t^2, r, t*r, v],
     # t relative to birth_t (keeps cancellation harmless). See _hist_add / _hist_drop.
     sums: list
+    num: int | None = None  # display number, set at confirmation, never reused
+    theta: float | None = None  # deg, last matched detection's; None without TDM
 
     def snapshot(self) -> dict:
         """Plain copy for signals: worker keeps mutating live Track."""
@@ -406,6 +408,9 @@ class Track:  # data only, no logic
             "nis": None if self.nis is None else float(self.nis),
             "kin_ok": bool(self.kin_ok),
             "coasting": self.misses > 0,  # no detection this CPI
+            "num": self.num,
+            "theta": None if self.theta is None else float(self.theta),
+            "birth_t": float(self.birth_t),
         }
 
 
@@ -486,6 +491,7 @@ class Tracker:
         # tracks=[], next_id=0, t=None, pair_n={}, vbin/rbin/gate computed once
         self.tracks = []
         self.next_id = 0
+        self.next_num = 0  # confirmation counter (Track.num)
         self.t = None
         self.pair_n = {}
         self.gate = GATE_RV
@@ -575,6 +581,7 @@ class Tracker:
             trk.last_t = a_t
             trk.snr_db = det.get("snr_db", np.nan)
             trk.nis = ni
+            trk.theta = det.get("theta")
             _hist_add(trk, a_t, r, v)
             while trk.history[0][0] < a_t - self.cfg.TRACK_KINEMATIC_WINDOW_S:
                 _hist_drop(trk)
@@ -653,6 +660,7 @@ class Tracker:
                     met=False,
                     history=deque(maxlen=HISTORY_CAP),
                     sums=[0, 0.0, 0.0, 0.0, 0.0, 0.0],
+                    theta=det.get("theta"),
                 )
             )
             _hist_add(self.tracks[-1], a_t, filt.x[0], filt.x[1])
@@ -678,6 +686,8 @@ class Tracker:
                 and sum(trk.hits) >= cfg.TRACK_CONFIRM_M
             ):
                 trk.status = CONFIRMED
+                trk.num = self.next_num
+                self.next_num += 1
 
             if trk.status == CONFIRMED or trk.met:
                 # Confirmed, or tentative only waiting for check: by time.

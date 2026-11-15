@@ -925,6 +925,95 @@ def test_confirmation_delay():
         assert p90 <= 2 * limit, f"{name}: p90 {p90:.2f} s > {2 * limit} s"
 
 
+def _mk_dets(a_t, a_targets, a_theta=True):
+    """Noise-free detections at a_t from (r0, v, t_on, t_off) tuples."""
+    dets = []
+    for r0, v, t_on, t_off in a_targets:
+        if t_on <= a_t < t_off:
+            d = {"r": r0 + v * (a_t - t_on), "v": v, "kind": "both", "snr_db": 25.0}
+            if a_theta:
+                d["theta"] = 10.0 + a_t
+            dets.append(d)
+    return dets
+
+
+def test_track_num_confirmation_order():
+    """num: None while tentative, 0, 1, 2 in confirmation order, never reused."""
+    cfg = RadarConfig()
+    trk = make_tracker(cfg)
+    dt = 0.05
+    # slow (kinematic check waits for W), fast, then a late one after B is gone
+    scene = [
+        (100.0, 0.3, 0.0, 1e9),
+        (50.0, 12.0, 0.5, 6.0),
+        (60.0, 9.0, 12.0, 1e9),
+    ]
+    first_conf, born, seen_tentative = {}, [], False
+    for i in range(int(25.0 / dt)):
+        t = T0 + i * dt
+        dets = _mk_dets(i * dt, scene)
+        if i == 100:  # lone false alarm, one CPI only
+            dets.append({"r": 150.0, "v": 5.0, "kind": "both", "snr_db": 15.0})
+        for tr in trk.update(dets, t, False):
+            s = tr.snapshot()
+            if s["id"] not in born:
+                born.append(s["id"])
+            if s["status"] == TENTATIVE:
+                seen_tentative = True
+                assert s["num"] is None, f"tentative track {s['id']} has num"
+            elif s["id"] not in first_conf:
+                first_conf[s["id"]] = (i, s["num"])
+            else:
+                assert s["num"] == first_conf[s["id"]][1], "num changed"
+    assert seen_tentative
+    order = sorted(first_conf, key=lambda k: first_conf[k][0])
+    nums = [first_conf[k][1] for k in order]
+    assert nums == list(range(len(nums))), f"nums {nums} not 0.. in confirm order"
+    assert len(nums) >= 3, f"only {len(nums)} confirmed"
+    assert order != sorted(order), "confirmation order equals birth order: weak test"
+    assert trk.next_num == len(nums)
+
+
+def test_track_theta_snapshot():
+    """theta: last matched detection's; kept while coasting; None without theta."""
+    cfg = RadarConfig()
+    dt = 0.05
+    for with_theta in (True, False):
+        trk = make_tracker(cfg)
+        scene = [(100.0, 8.0, 0.0, 1e9)]
+        last = None
+        for i in range(60):
+            t = T0 + i * dt
+            coast = i >= 40 and i < 43
+            dets = [] if coast else _mk_dets(i * dt, scene, with_theta)
+            tracks = trk.update(dets, t, False)
+            assert len(tracks) == 1
+            s = tracks[0].snapshot()
+            want = dets[0].get("theta") if dets else last
+            assert s["theta"] == want, f"CPI {i}: theta {s['theta']} != {want}"
+            if dets:
+                last = want
+            if coast:
+                assert s["coasting"]
+        assert (last is not None) == with_theta
+
+
+def test_track_birth_t_snapshot():
+    """birth_t in the snapshot is the time of the birth CPI."""
+    cfg = RadarConfig()
+    trk = make_tracker(cfg)
+    dt, t_on = 0.05, 0.5
+    scene = [(100.0, 8.0, t_on, 1e9)]
+    for i in range(40):
+        t = T0 + i * dt
+        tracks = trk.update(_mk_dets(i * dt, scene), t, False)
+        for tr in tracks:
+            s = tr.snapshot()
+            assert isinstance(s["birth_t"], float)
+            assert abs(s["birth_t"] - (T0 + t_on)) < 1e-9, s["birth_t"]
+    assert tracks
+
+
 # ===================================================================================
 if __name__ == "__main__":
     tests = [
@@ -950,6 +1039,9 @@ if __name__ == "__main__":
         test_s_spur_handover,
         test_confirm_needs_a_hit,
         test_confirmation_delay,
+        test_track_num_confirmation_order,
+        test_track_theta_snapshot,
+        test_track_birth_t_snapshot,
     ]
     failures = skipped = 0
     for t in tests:
