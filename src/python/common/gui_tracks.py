@@ -18,7 +18,7 @@ from collections import deque
 
 import numpy as np
 import pyqtgraph as pg
-from pyqtgraph.Qt import QtCore, QtGui
+from pyqtgraph.Qt import QtCore, QtGui, QtWidgets
 
 TAIL_S = 2.0  # tail length
 # Direction classes (also the index into the layer's brush table)
@@ -28,10 +28,11 @@ V_OUT = 0.3  # m/s: back to neutral only below this
 COLORS = {NEUTRAL: "#7cfc9a", APPROACHING: "#ff6b6b", RECEDING: "#4da3ff"}
 COAST_ALPHA = 0.4
 MAX_LABELS = 30
+SEL_COLOR = "#ffd400"  # selected track: ring, label
 
 # Detection fade: bucket k holds ages in [k, k+1) * DET_FADE_S / 4
 DET_FADE_S = 1.0
-DET_ALPHAS = (0.6, 0.4, 0.25, 0.12)
+DET_ALPHAS = (0.3, 0.2, 0.12, 0.06)
 DET_MAX_POINTS = 1000
 
 
@@ -238,8 +239,10 @@ class DetectionTrail:
             e, el = np.empty((0, 2)), np.empty(0, np.uint8)
             return e, el, e, el
         return (
-            np.concatenate(rv), np.concatenate(lrv),
-            np.concatenate(xy), np.concatenate(lxy),
+            np.concatenate(rv),
+            np.concatenate(lrv),
+            np.concatenate(xy),
+            np.concatenate(lxy),
         )
 
 
@@ -322,7 +325,9 @@ class DotImage:
         alphas = np.zeros(n + 1, np.uint32)
         for level in range(1, n + 1):  # level n = newest
             alphas[level] = int(255 * DET_ALPHAS[n - level])
-        self._lut = alphas * np.uint32(0x01010101)  # premultiplied white: alpha in every byte
+        self._lut = alphas * np.uint32(
+            0x01010101
+        )  # premultiplied white: alpha in every byte
         self.alphas = alphas
         self.item = _PremultImage()
         self.item.setZValue(0)
@@ -373,6 +378,111 @@ class DotImage:
         return self.item.isVisible()
 
 
+# ===================================================================================
+class TrackTableModel(QtCore.QAbstractTableModel):
+    """Confirmed tracks sorted by num, one row each. refresh() formats every cell once
+    (cached strings, data() only indexes), at most REFRESH_HZ; same id list in the same
+    order -> one dataChanged, else model reset (view selection is restored by the owner
+    by id). Columns: ID, r, v (display-wrapped), az, SNR, age."""
+
+    REFRESH_HZ = 5
+    COL_V = 2
+    GREY = QtGui.QBrush(QtGui.QColor(130, 130, 130))
+    DIR_BRUSH = {c: QtGui.QBrush(QtGui.QColor(h)) for c, h in COLORS.items()}
+
+    def __init__(self, a_columns, a_parent=None):
+        super().__init__(a_parent)
+        self._columns = list(a_columns)
+        self._ids = []
+        self._cells = []  # per row: list of str
+        self._coast = []  # per row: bool
+        self._cls = []  # per row: direction class
+        self._last = None  # monotonic time of the last refresh
+        self.n_resets = 0  # counters, for tests
+        self.n_changes = 0
+
+    @staticmethod
+    def _fmt(a_val, a_spec):
+        return "-" if a_val is None or a_val != a_val else format(a_val, a_spec)
+
+    def refresh(self, a_store, a_force=False, a_now=None):
+        """-> None (throttled), "changed" (dataChanged) or "reset"."""
+        now = time.monotonic() if a_now is None else a_now
+        if (
+            not a_force
+            and self._last is not None
+            and now - self._last < 1 / self.REFRESH_HZ
+        ):
+            return None
+        self._last = now
+        rows = sorted(
+            a_store.confirmed(), key=lambda s: s.num if s.num is not None else s.id
+        )
+        ids = [s.id for s in rows]
+        cells = [
+            [
+                f"T{s.num if s.num is not None else s.id}",
+                self._fmt(s.r, ".1f"),
+                self._fmt(s.v, "+.2f"),
+                self._fmt(s.snap.get("theta"), ".1f"),
+                self._fmt(s.snap.get("snr_db"), ".0f"),
+                self._fmt(s.age_s, ".1f"),
+            ]
+            for s in rows
+        ]
+        same = ids == self._ids
+        if not same:
+            self.beginResetModel()
+        self._ids, self._cells = ids, cells
+        self._coast = [s.coasting for s in rows]
+        self._cls = [s.cls for s in rows]
+        if same:
+            self.n_changes += 1
+            if ids:
+                self.dataChanged.emit(
+                    self.index(0, 0), self.index(len(ids) - 1, len(self._columns) - 1)
+                )
+            return "changed"
+        self.endResetModel()
+        self.n_resets += 1
+        return "reset"
+
+    def ids(self):
+        return list(self._ids)
+
+    def id_at(self, a_row):
+        return self._ids[a_row] if 0 <= a_row < len(self._ids) else None
+
+    def row_of(self, a_id):
+        try:
+            return self._ids.index(a_id)
+        except ValueError:
+            return -1
+
+    def rowCount(self, a_parent=QtCore.QModelIndex()):
+        return 0 if a_parent.isValid() else len(self._ids)
+
+    def columnCount(self, a_parent=QtCore.QModelIndex()):
+        return 0 if a_parent.isValid() else len(self._columns)
+
+    def headerData(self, a_section, a_orient, a_role=QtCore.Qt.DisplayRole):
+        if a_role == QtCore.Qt.DisplayRole and a_orient == QtCore.Qt.Horizontal:
+            return self._columns[a_section]
+        return None
+
+    def data(self, a_index, a_role=QtCore.Qt.DisplayRole):
+        r, c = a_index.row(), a_index.column()
+        if not a_index.isValid() or r >= len(self._cells):
+            return None
+        if a_role == QtCore.Qt.DisplayRole:
+            return self._cells[r][c]
+        if a_role == QtCore.Qt.ForegroundRole:
+            if self._coast[r]:
+                return self.GREY
+            if c == self.COL_V:
+                return self.DIR_BRUSH[self._cls[r]]
+        return None
+
 
 # ===================================================================================
 class TrackLayer:
@@ -380,8 +490,10 @@ class TrackLayer:
     a_kind "rv": x = v, y = r. "xy": PPI, x, y from snapshot / r and theta.
     draw() only setData / setVisible / setText on existing items."""
 
-    Z_TAIL, Z_HEAD, Z_LABEL = 5, 6, 7
+    Z_TAIL, Z_SEL_TAIL, Z_HEAD, Z_RING, Z_LABEL = 5, 5.5, 6, 6.5, 7
     HEAD_SIZE = 12
+    RING_SIZE = 22
+    SEL_TAIL_W = 4
 
     def __init__(self, a_plot, a_kind):
         assert a_kind in ("rv", "xy")
@@ -394,9 +506,13 @@ class TrackLayer:
             dim = pg.mkColor(COLORS[cls])
             dim.setAlphaF(COAST_ALPHA)
             self._brushes.append((pg.mkBrush(c), pg.mkBrush(dim)))
-        self.heads = pg.ScatterPlotItem(size=self.HEAD_SIZE, symbol="o", pen=pg.mkPen(None))
+        self.heads = pg.ScatterPlotItem(
+            size=self.HEAD_SIZE, symbol="o", pen=pg.mkPen(None)
+        )
         self.tentative = pg.ScatterPlotItem(
-            size=12, symbol="o", pen=pg.mkPen((190, 190, 190, 230), width=1.5),
+            size=12,
+            symbol="o",
+            pen=pg.mkPen((190, 190, 190, 230), width=1.5),
             brush=pg.mkBrush(None),
         )
         self.tails = []
@@ -406,6 +522,28 @@ class TrackLayer:
             self.tails.append(
                 pg.PlotCurveItem(pen=pg.mkPen(c, width=2), connect="finite")
             )
+        # Selected track: yellow ring, thick tail (pen table [direction][coasting]),
+        # yellow label. All built once
+        # Ring = one screen-sized ellipse moved with setPos (a one-point scatter's
+        # setData cost ~0.2 ms per frame and plot)
+        h = self.RING_SIZE / 2
+        self.ring = QtWidgets.QGraphicsEllipseItem(-h, -h, 2 * h, 2 * h)
+        ring_pen = pg.mkPen(SEL_COLOR, width=2.5)
+        ring_pen.setCosmetic(True)
+        self.ring.setPen(ring_pen)
+        self.ring.setFlag(QtWidgets.QGraphicsItem.ItemIgnoresTransformations)
+        self.ring.setVisible(False)
+        self._sel_pens = []
+        for cls in (NEUTRAL, APPROACHING, RECEDING):
+            c, dim = pg.mkColor(COLORS[cls]), pg.mkColor(COLORS[cls])
+            c.setAlpha(235)
+            dim.setAlpha(110)
+            self._sel_pens.append(
+                tuple(pg.mkPen(col, width=self.SEL_TAIL_W) for col in (c, dim))
+            )
+        self.sel_tail = pg.PlotCurveItem(pen=self._sel_pens[0][0], connect="finite")
+        self._sel_pen = (NEUTRAL, False)
+        self._label_colors = (pg.mkColor((235, 235, 235)), pg.mkColor(SEL_COLOR))
         self.labels = []
         for _ in range(MAX_LABELS):
             lab = pg.TextItem("", color=(235, 235, 235), anchor=(0, 1))
@@ -413,8 +551,13 @@ class TrackLayer:
             self.labels.append(lab)
         self._label_text = [""] * MAX_LABELS
         self._label_on = [False] * MAX_LABELS
+        self._label_sel = [False] * MAX_LABELS
         for it in self.tails:
             it.setZValue(self.Z_TAIL)
+            a_plot.addItem(it, ignoreBounds=True)
+        self.sel_tail.setZValue(self.Z_SEL_TAIL)
+        self.ring.setZValue(self.Z_RING)
+        for it in (self.sel_tail, self.ring):
             a_plot.addItem(it, ignoreBounds=True)
         for it in (self.heads, self.tentative):
             it.setZValue(self.Z_HEAD)
@@ -426,7 +569,8 @@ class TrackLayer:
         self._empty = np.empty(0)
 
     def clear(self):
-        for it in (self.heads, self.tentative, *self.tails):
+        self.ring.setVisible(False)
+        for it in (self.heads, self.tentative, self.sel_tail, *self.tails):
             set_points(it, self._empty, self._empty)
         self._hide_labels(0)
 
@@ -436,31 +580,61 @@ class TrackLayer:
                 self.labels[i].setVisible(False)
                 self._label_on[i] = False
 
-    def draw(self, a_store, a_show_tentative):
+    def _put_label(self, a_slot, a_st, a_x, a_y, a_sel):
+        lab = self.labels[a_slot]
+        text = f"T{a_st.num if a_st.num is not None else a_st.id}"
+        if self._label_text[a_slot] != text:
+            lab.setText(text)
+            self._label_text[a_slot] = text
+        if self._label_sel[a_slot] != a_sel:
+            lab.setColor(self._label_colors[a_sel])
+            self._label_sel[a_slot] = a_sel
+        lab.setPos(a_x, a_y)
+        if not self._label_on[a_slot]:
+            lab.setVisible(True)
+            self._label_on[a_slot] = True
+
+    def draw(self, a_store, a_show_tentative, a_sel_id=None):
+        """a_sel_id: id of the selected track (ring, thick tail, yellow label)."""
         rv = self._kind == "rv"
         hx, hy, hb = [], [], []
         per_cls = ([], [], [])
-        n_lab = 0
+        shown = []  # (state, x, y) of confirmed tracks on this plot
+        sel_i = None
         for st in a_store.confirmed():
             x, y = (st.v, st.r) if rv else (st.x, st.y)
             if x != x:  # NaN: no theta, not on the PPI
                 continue
+            if st.id == a_sel_id:
+                sel_i = len(shown)
+            shown.append((st, x, y))
             hx.append(x)
             hy.append(y)
             hb.append(self._brushes[st.cls][1 if st.coasting else 0])
             per_cls[st.cls].append(st.tail_rv() if rv else st.tail_xy())
-            if n_lab < MAX_LABELS:
-                lab = self.labels[n_lab]
-                text = f"T{st.num if st.num is not None else st.id}"
-                if self._label_text[n_lab] != text:
-                    lab.setText(text)
-                    self._label_text[n_lab] = text
-                lab.setPos(x, y)
-                if not self._label_on[n_lab]:
-                    lab.setVisible(True)
-                    self._label_on[n_lab] = True
-                n_lab += 1
-        self._hide_labels(n_lab)
+        # Labels: first MAX_LABELS, the selected one always (takes the last slot)
+        order = list(range(min(len(shown), MAX_LABELS)))
+        if sel_i is not None and sel_i >= MAX_LABELS:
+            order[-1] = sel_i
+        for slot, i in enumerate(order):
+            st, x, y = shown[i]
+            self._put_label(slot, st, x, y, i == sel_i)
+        self._hide_labels(len(order))
+        if sel_i is None:
+            if self.ring.isVisible():
+                self.ring.setVisible(False)
+            set_points(self.sel_tail, self._empty, self._empty)
+        else:
+            st, x, y = shown[sel_i]
+            self.ring.setPos(x, y)
+            if not self.ring.isVisible():
+                self.ring.setVisible(True)
+            key = (st.cls, st.coasting)
+            if key != self._sel_pen:
+                self.sel_tail.setPen(self._sel_pens[key[0]][key[1]])
+                self._sel_pen = key
+            tail = st.tail_rv() if rv else st.tail_xy()
+            set_points(self.sel_tail, tail[:, 0], tail[:, 1])
         set_points(self.heads, np.array(hx), np.array(hy), brush=hb)
         for cls, item in enumerate(self.tails):
             parts = []

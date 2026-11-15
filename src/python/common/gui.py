@@ -37,7 +37,6 @@ from PySide6.QtGui import (
     QColor,
     QDoubleValidator,
     QKeySequence,
-    QStandardItemModel,
 )
 import pyqtgraph as pg
 
@@ -127,6 +126,7 @@ class RadarDisplay(QMainWindow):
     RD_BG_DIM = 0.35
     TRACK_COLUMNS = ["ID", "r [m]", "v [m/s]", "az [deg]", "SNR [dB]", "age [s]"]
     TRACK_AZ_COL = 3
+    CLICK_PICK_PX = 12  # plot click picks a track head within this
 
     # Sector-PPI: fan drawn, spoke spacing inside it
     XY_FOV_DEG = 60
@@ -481,15 +481,24 @@ class RadarDisplay(QMainWindow):
         self._recorded = []
         self._show_recorded = False
 
-        # Track list: headers only until the table model (WP6)
+        # Track list (confirmed tracks); selection = one track id (see _select)
+        self._sel_id = None
+        self._sel_state = None  # TrackState it was selected on: identity = same track
+        self._sync = False  # programmatic row change: ignore selectionChanged
+        self._table_pending = False  # refresh skipped by the 5 Hz throttle
         self.track_view = QTableView()
-        self.track_model = QStandardItemModel(0, len(self.TRACK_COLUMNS), self)
-        self.track_model.setHorizontalHeaderLabels(self.TRACK_COLUMNS)
+        self.track_model = gui_tracks.TrackTableModel(self.TRACK_COLUMNS, self)
         self.track_view.setModel(self.track_model)
         self.track_view.verticalHeader().setVisible(False)
         self.track_view.setEditTriggers(QTableView.NoEditTriggers)
         self.track_view.setSelectionBehavior(QTableView.SelectRows)
+        self.track_view.setSelectionMode(QTableView.SingleSelection)
         self.track_view.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        self.track_view.selectionModel().selectionChanged.connect(self._on_row_selected)
+        for plot, kind in ((self.det_plot, "rv"), (self.xy_plot, "xy")):
+            plot.scene().sigMouseClicked.connect(
+                lambda ev, p=plot, k=kind: self._on_plot_click(p, k, ev)
+            )
 
     def _layout_tracks(self, a_tdm):
         """TDM: PPI left, (r, v) plot over the track list right. No TDM: (r, v) plot
@@ -705,7 +714,88 @@ class RadarDisplay(QMainWindow):
             self._store.clear()
         else:
             self._store.update(a_tracks, a_t)
+        # Selected track gone, or restarted (store makes a new state on a restart)
+        if (
+            self._sel_id is not None
+            and self._store.tracks.get(self._sel_id) is not self._sel_state
+        ):
+            self._clear_selection()
         self._tracks_dirty = True
+
+    # ---------------------------------
+    # Selection: one track id from row or plot click
+    # ---------------------------------
+    def selected_id(self):
+        return self._sel_id
+
+    def _select(self, a_id):
+        if a_id == self._sel_id:
+            return
+        st = self._store.tracks.get(a_id)
+        if st is None or not st.confirmed:
+            return
+        self._sel_id, self._sel_state = a_id, st
+        self._tracks_dirty = True  # redraw, also paused with no new data
+        self._refresh_table(a_force=True)  # the row must exist
+        self._show_row()
+
+    def _clear_selection(self):
+        if self._sel_id is None:
+            return
+        self._sel_id = self._sel_state = None
+        self._tracks_dirty = True
+        self._show_row()
+
+    def _show_row(self):
+        """Row of the view follows the selected id (no feedback into _on_row_selected)."""
+        row = self.track_model.row_of(self._sel_id) if self._sel_id is not None else -1
+        self._sync = True
+        try:
+            if row >= 0:
+                self.track_view.selectRow(row)
+            else:
+                self.track_view.clearSelection()
+        finally:
+            self._sync = False
+
+    def _refresh_table(self, a_force=False):
+        kind = self.track_model.refresh(self._store, a_force)
+        self._table_pending = kind is None
+        if kind == "reset":
+            self._show_row()  # reset drops the view selection: restore by id
+        return kind
+
+    def _on_row_selected(self, *_args):
+        if self._sync:
+            return
+        rows = self.track_view.selectionModel().selectedRows()
+        if rows:
+            self._select(self.track_model.id_at(rows[0].row()))
+        else:
+            self._clear_selection()
+
+    def _on_plot_click(self, a_plot, a_kind, a_ev):
+        """Left click on the data area: nearest head within CLICK_PICK_PX selects, none
+        clears. Drags (pan / zoom) never emit sigMouseClicked."""
+        if a_ev.button() != Qt.LeftButton:
+            return
+        vb = a_plot.getPlotItem().vb
+        pos = a_ev.scenePos()
+        if not vb.sceneBoundingRect().contains(pos):
+            return
+        best, best_d = None, self.CLICK_PICK_PX
+        for st in self._store.confirmed():
+            x, y = (st.v, st.r) if a_kind == "rv" else (st.x, st.y)
+            if x != x:
+                continue
+            p = vb.mapViewToScene(QPointF(x, y))
+            d = np.hypot(p.x() - pos.x(), p.y() - pos.y())
+            if d <= best_d:
+                best, best_d = st.id, d
+        if best is None:
+            self._clear_selection()
+        else:
+            self._select(best)
 
     # ---------------------------------
     # Drawing (timer, tab change, draw_now)
@@ -720,8 +810,10 @@ class RadarDisplay(QMainWindow):
     def _draw_cost_done(self, a_t0):
         ms = 1e3 * (time.perf_counter() - a_t0)
         a = self.DRAW_COST_ALPHA
-        self._draw_cost_ms = ms if self._draw_cost_ms is None else (
-            a * ms + (1 - a) * self._draw_cost_ms
+        self._draw_cost_ms = (
+            ms
+            if self._draw_cost_ms is None
+            else (a * ms + (1 - a) * self._draw_cost_ms)
         )
         interval = int(
             min(
@@ -732,30 +824,36 @@ class RadarDisplay(QMainWindow):
         if interval != self._draw_timer.interval():
             self._draw_timer.setInterval(interval)
 
-    def draw_now(self):
+    def draw_now(self, a_table=False):
         """One full draw of current tab, ignoring timer and throttles. For tests and
-        profiler."""
+        profiler. The track list stays on its 5 Hz throttle unless a_table (a forced
+        refresh repaints the list: ~6 ms, not part of a per-CPI draw)."""
         self._tracks_dirty = True
         self._maps_dirty = True
         self._hist_dirty = True
-        self._draw_current(a_now=True)
+        self._draw_current(a_now=True, a_table=a_table)
 
-    def _draw_current(self, a_now):
+    def _draw_current(self, a_now, a_table=None):
         """Draw tab on screen if anything new. a_now ignores 5 Hz throttles (tab
         change, draw_now). Configuration has nothing per frame."""
         tab = self._tabs.currentWidget()
+        if a_table is None:
+            a_table = a_now  # tab change: the list shows the current state
         if tab is self._tracks_tab:
-            return self._draw_tracks()
+            return self._draw_tracks(a_table)
         if tab is self._signal_tab:
             return self._draw_signals()
         if tab is self._history_tab:
             return self._draw_history_tab(a_now)
         return False
 
-    def _draw_tracks(self):
+    def _draw_tracks(self, a_table=False):
         if not self._tracks_dirty:
+            if self._table_pending:  # last refresh was throttled: no stale list at rest
+                self._refresh_table()
             return False
         self._tracks_dirty = False
+        self._refresh_table(a_table)
         if self._frame is not None:
             self._draw_rd_and_dets(*self._frame)
         self._draw_track_layers()
@@ -792,8 +890,10 @@ class RadarDisplay(QMainWindow):
         if tdm:
             xy_pts = np.array(
                 [
-                    (t["r"] * np.sin(np.radians(t["theta"])),
-                     t["r"] * np.cos(np.radians(t["theta"])))
+                    (
+                        t["r"] * np.sin(np.radians(t["theta"])),
+                        t["r"] * np.cos(np.radians(t["theta"])),
+                    )
                     for t in a_targets
                     if t.get("theta") is not None and t["kind"] != "both"
                 ]
@@ -805,9 +905,9 @@ class RadarDisplay(QMainWindow):
 
     def _draw_track_layers(self):
         tent = self.tentative_box.isChecked()
-        self.det_layer.draw(self._store, tent)
+        self.det_layer.draw(self._store, tent, self._sel_id)
         if self._config.TDM_EN:
-            self.xy_layer.draw(self._store, tent)
+            self.xy_layer.draw(self._store, tent, self._sel_id)
 
     # ---------------------------------
     # Sector-PPI (TDM)
@@ -1033,7 +1133,9 @@ class RadarDisplay(QMainWindow):
             m[:, 1:] |= mask[:, :-1]
             m[:, :-1] |= mask[:, 1:]
             item.setImage(m, levels=(0, 1), autoLevels=False)
-            item.setRect(QRectF(x_left, rect[0], self._hist_window_s, rect[1] - rect[0]))
+            item.setRect(
+                QRectF(x_left, rect[0], self._hist_window_s, rect[1] - rect[0])
+            )
 
     def update_signals(self, a_rx_spec, a_if_spec, a_t, a_f):
         """Intake only; drawn while Signals tab current. None keeps that plot's
@@ -1131,6 +1233,8 @@ class RadarDisplay(QMainWindow):
         # Tracks, fading dots, layers: shaped by the old config
         self._store.clear()
         self._store.set_v_limit(a_config.MAX_VELOCITY)
+        self._sel_id = self._sel_state = None
+        self._refresh_table(a_force=True)  # empties the list (and its selection)
         self._trail.clear()
         self.det_layer.clear()
         self.xy_layer.clear()
@@ -1458,16 +1562,29 @@ if __name__ == "__main__":
             r = 300.0 + (r0 - 300.0 + v * t) % 2500.0
             snaps.append(
                 {
-                    "id": i, "num": num, "status": status, "r": r, "v": v,
-                    "theta": th0 + 5 * np.sin(0.5 * t + i), "birth_t": 0.0,
-                    "snr_db": 20.0, "age": int(t / 0.05), "nis": None,
-                    "kin_ok": True, "coasting": coast,
+                    "id": i,
+                    "num": num,
+                    "status": status,
+                    "r": r,
+                    "v": v,
+                    "theta": th0 + 5 * np.sin(0.5 * t + i),
+                    "birth_t": 0.0,
+                    "snr_db": 20.0,
+                    "age": int(t / 0.05),
+                    "nis": None,
+                    "kin_ok": True,
+                    "coasting": coast,
                 }
             )
         window.update(
-            rd_up, rd_down, ranges, velocities,
-            [{"r": s["r"], "v": s["v"], "theta": s["theta"], "kind": "both"}
-             for s in snaps[:3]],
+            rd_up,
+            rd_down,
+            ranges,
+            velocities,
+            [
+                {"r": s["r"], "v": s["v"], "theta": s["theta"], "kind": "both"}
+                for s in snaps[:3]
+            ],
             a_t=t,
         )
         window.update_tracks(snaps, t)

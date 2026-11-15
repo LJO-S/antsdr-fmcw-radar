@@ -8,6 +8,7 @@ Timer not involved: each frame taken in, then drawn once.
 
 Per mode (sawtooth, TDM, triangle + TDM), detection count (0 / 20 / 100) and shown
 tab (Tracks, History, Signal; Config draws nothing per frame).
+--select: first confirmed track selected before the timed frames.
 --tracks M: M confirmed tracks (3 of them coasting, theta in TDM modes) moving smoothly
 plus 4 tentative, fed through update_tracks() every frame with the frame's time
 (0.02 s steps); --tentative ticks the Tentative box (rings drawn).
@@ -120,7 +121,8 @@ def make_specs(a_cfg, a_rng):
     return specs
 
 
-def measure(a_app, a_display, a_frames, a_n, a_specs=None, a_cfg=None, a_rows=None):
+def measure(a_app, a_display, a_frames, a_n, a_specs=None, a_cfg=None, a_rows=None,
+            a_select=False):
     """Median ms of update() (+ update_tracks(), update_signals() when given) and of
     draw_now() + following processEvents()."""
     intake, paint = [], []
@@ -131,6 +133,8 @@ def measure(a_app, a_display, a_frames, a_n, a_specs=None, a_cfg=None, a_rows=No
         a_display.update(up, down, ranges, vels, targets, a_t=k * DT)
         if a_rows:
             a_display.update_tracks(trks, k * DT)
+            if a_select and k == 0:  # first confirmed track, before the timed frames
+                a_display._select(a_display._store.confirmed()[0].id)
         if a_specs:
             spec, t, f = a_specs[k % len(a_specs)]
             a_display.update_signals(spec, None, t, f)
@@ -184,7 +188,8 @@ def run_cell(a_args):
         frames = make_frames(cfg, n_det, rng)
         specs = make_specs(cfg, rng) if a_args.tab == "Signal" else None
         rows = make_tracks(cfg, a_args.tracks, rng) if a_args.tracks else None
-        row.append(measure(app, display, frames, a_args.frames, specs, cfg, rows))
+        row.append(measure(app, display, frames, a_args.frames, specs, cfg, rows,
+                           a_args.select))
     display.close()
     return row
 
@@ -195,6 +200,7 @@ def main():
     ap.add_argument("--frames", type=int, default=100, help="measured frames per cell")
     ap.add_argument("--tracks", type=int, default=0, help="confirmed tracks per frame")
     ap.add_argument("--tentative", action="store_true", help="Tentative box on")
+    ap.add_argument("--select", action="store_true", help="select the first confirmed track")
     ap.add_argument("--warmup-s", type=float, default=8.0, help="CPU spin before measuring (0 = off)")
     ap.add_argument("--mode", choices=[m for m, _ in MODES], help="one cell, in-process")
     ap.add_argument("--tab", choices=TABS, help="one cell, in-process")
@@ -220,6 +226,8 @@ def main():
                    "--tracks", str(args.tracks), "--child"]
             if args.tentative:
                 cmd.append("--tentative")
+            if args.select:
+                cmd.append("--select")
             if args.screen:
                 cmd.append("--screen")
             out = subprocess.run(cmd, capture_output=True, text=True, check=True)

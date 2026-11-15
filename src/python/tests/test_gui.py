@@ -22,6 +22,8 @@ import traceback
 from pathlib import Path
 
 import numpy as np
+from PySide6.QtCore import QPoint, QPointF, Qt
+from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
 
 import common.config as config
@@ -909,9 +911,9 @@ def test_adaptive_draw_interval():
         pump(20)  # the cost is taken by a posted zero timer, after the paint
 
     def slow(a_ms):
-        def draw():
+        def draw(*a):
             time.sleep(a_ms / 1000)
-            return real()
+            return real(*a)
         d._draw_tracks = draw
 
     for _ in range(25):  # the first draw carries the window's first paint
@@ -1092,6 +1094,288 @@ def test_playback_tracks():
     no_exceptions()
 
 
+# ===================================================================================
+# Track list and selection (WP6)
+# ===================================================================================
+YELLOW = "#ffd400"
+
+
+def sel_display(a_fields, a_steps=6):
+    """Shown display with the track_set moving for a_steps CPIs (tails > 1 point)."""
+    cfg = mode_cfg(**a_fields)
+    d = make_display(cfg)
+    d.resize(1400, 800)
+    d.show()
+    rng = np.random.default_rng(SEED)
+    for k in range(a_steps):
+        feed_tracks(d, cfg, k, a_t=20.0 + 0.1 * k)
+    d.update(*frame(cfg, 3, rng), a_t=20.0 + 0.1 * a_steps)
+    d.draw_now(a_table=True)
+    pump(30)
+    return d, cfg
+
+
+def feed_tracks(a_d, a_cfg, a_k, a_t, a_extra=(), a_drop=()):
+    """track_set advanced a_k steps (range grows 2 m per step), age = a_k."""
+    trks = [
+        dict(t, r=t["r"] + 2.0 * a_k, age=a_k + 5)
+        for t in track_set(a_cfg)
+        if t["id"] not in a_drop
+    ]
+    a_d.update_tracks(list(a_extra) + trks, a_t)
+    return trks
+
+
+def label_of(a_layer, a_text):
+    return next(l for l in a_layer.labels if l.isVisible() and l.toPlainText() == a_text)
+
+
+def check_selected(a_d, a_id, a_tdm):
+    """Ring, thick tail, yellow label on each plot of the selected track; row selected."""
+    st = a_d._store.tracks[a_id]
+    layers = [(a_d.det_layer, (st.v, st.r), st.tail_rv())]
+    if a_tdm:
+        layers.append((a_d.xy_layer, (st.x, st.y), st.tail_xy()))
+    for lay, (x, y), tail in layers:
+        assert lay.ring.isVisible() and (lay.ring.pos().x(), lay.ring.pos().y()) == (x, y)
+        assert lay.sel_tail.xData.size == len(tail) > 1
+        assert lay.sel_tail.opts["pen"].width() > lay.tails[0].opts["pen"].width()
+        for lab in lay.labels:
+            if lab.isVisible():
+                yellow = lab.toPlainText() == f"T{st.num}"
+                assert (lab.color.name() == YELLOW) == yellow, lab.toPlainText()
+        assert head_colors(lay)[0][0] in ("#ff6b6b", "#4da3ff", "#7cfc9a"), "head keeps colour"
+    rows = a_d.track_view.selectionModel().selectedRows()
+    assert [a_d.track_model.id_at(r.row()) for r in rows] == [a_id]
+
+
+def check_none_selected(a_d):
+    assert a_d.selected_id() is None
+    for lay in (a_d.det_layer, a_d.xy_layer):
+        assert not lay.ring.isVisible() and lay.sel_tail.xData.size == 0
+        assert all(l.color.name() != YELLOW for l in lay.labels if l.isVisible())
+    assert not a_d.track_view.selectionModel().selectedRows()
+
+
+def test_select_by_row():
+    for name, fields in MODES:
+        d, cfg = sel_display(fields)
+        tdm = cfg.TDM_EN
+        check_none_selected(d)
+        row = d.track_model.row_of(1)
+        assert row == 1
+        d.track_view.selectRow(row)
+        assert d.selected_id() == 1
+        # Redraw by the timer alone: no new data, no draw_now
+        wait_for(lambda: d.det_layer.ring.isVisible(), "ring drawn by the timer")
+        check_selected(d, 1, tdm)
+        d.track_view.selectRow(d.track_model.row_of(3))  # moves, coasting track
+        wait_for(lambda: d.selected_id() == 3 and d.det_layer.ring.pos().y() == d._store.tracks[3].r,
+                 "selection moved")
+        d.draw_now(a_table=True)
+        check_selected(d, 3, tdm)
+        d.close()
+    no_exceptions()
+
+
+def test_select_label_past_cap():
+    cfg = mode_cfg(TDM_EN=True)
+    d = make_display(cfg)
+    d.show()
+    for k in range(3):
+        d.update_tracks(
+            [snap(i, 100.0 + 10 * i + k, 1.0, -30.0 + i, a_age=k, a_num=i) for i in range(40)],
+            10.0 + 0.1 * k,
+        )
+    d.draw_now(a_table=True)
+    d.track_view.selectRow(d.track_model.row_of(37))
+    d.draw_now(a_table=True)
+    for lay in (d.det_layer, d.xy_layer):
+        assert [l.isVisible() for l in lay.labels].count(True) == 30
+        assert label_of(lay, "T37").color.name() == YELLOW
+    d.track_view.selectRow(0)  # label slot of T37 goes back to normal colour
+    d.draw_now(a_table=True)
+    assert all(l.color.name() != YELLOW or l.toPlainText() == "T0" for l in d.det_layer.labels)
+    d.close()
+    no_exceptions()
+
+
+def head_pixel(a_plot, a_x, a_y):
+    """Viewport pixel of a data point of a PlotWidget."""
+    sp = a_plot.getPlotItem().vb.mapViewToScene(QPointF(a_x, a_y))
+    p = a_plot.mapFromScene(sp)
+    assert a_plot.viewport().rect().contains(p), (a_x, a_y, p)
+    return p
+
+
+def head_xy(a_d, a_id, a_kind):
+    st = a_d._store.tracks[a_id]
+    return (st.v, st.r) if a_kind == "rv" else (st.x, st.y)
+
+
+def click(a_plot, a_pos, a_button=Qt.LeftButton):
+    QTest.mouseClick(a_plot.viewport(), a_button, pos=a_pos)
+    pump(20)
+
+
+def test_select_by_plot_click():
+    # Real QTest clicks on the viewport; they reach scene().sigMouseClicked offscreen
+    for name, fields, plots in (
+        ("sawtooth", {}, ("rv",)),
+        ("tdm", dict(TDM_EN=True), ("rv", "xy")),
+    ):
+        d, cfg = sel_display(fields)
+        for kind in plots:
+            plot = d.det_plot if kind == "rv" else d.xy_plot
+            d._clear_selection()
+            for tid in (2, 0):
+                pos = head_pixel(plot, *head_xy(d, tid, kind))
+                click(plot, pos + QPoint(5, -4))  # within 12 px
+                assert d.selected_id() == tid, (name, kind, tid)
+                d.draw_now(a_table=True)
+                check_selected(d, tid, cfg.TDM_EN)
+                assert d.track_model.row_of(tid) == d.track_view.currentIndex().row()
+            # Right click: ignored
+            before = d.selected_id()
+            click(plot, head_pixel(plot, *head_xy(d, 1, kind)), Qt.RightButton)
+            assert d.selected_id() == before
+            # A click 40 px from every head picks nothing -> clears
+            pos = head_pixel(plot, *head_xy(d, before, kind))
+            far = pos + QPoint(0, 40) if pos.y() < plot.viewport().height() - 80 else pos - QPoint(0, 40)
+            vb = plot.getPlotItem().vb
+            for t in d._store.confirmed():
+                p = vb.mapViewToScene(QPointF(*head_xy(d, t.id, kind)))
+                q = plot.mapToScene(far)
+                assert np.hypot(p.x() - q.x(), p.y() - q.y()) > 12, "test spot must be empty"
+            click(plot, far)
+            assert d.selected_id() is None, (name, kind)
+            d.draw_now(a_table=True)
+            check_none_selected(d)
+        d.close()
+    no_exceptions()
+
+
+def test_selection_survives_reset():
+    d, cfg = sel_display(dict(TDM_EN=True))
+    d.track_view.selectRow(d.track_model.row_of(2))
+    state = d._sel_state
+    resets = d.track_model.n_resets
+    # New track with the lowest num: every row shifts by one
+    new = snap(10, 250.0, 0.0, 5.0, a_age=9, a_num=-1)
+    feed_tracks(d, cfg, 7, 20.7, a_extra=[new])
+    d.draw_now(a_table=True)
+    assert d.track_model.n_resets == resets + 1
+    assert d.track_model.row_of(10) == 0 and d.track_model.row_of(2) == 3
+    assert d.selected_id() == 2 and d._sel_state is state
+    check_selected(d, 2, True)
+    # Same cells under the highlighted row
+    row = d.track_view.selectionModel().selectedRows()[0].row()
+    assert d.track_model.index(row, 0).data() == "T2"
+    d.close()
+    no_exceptions()
+
+
+def test_selection_clears():
+    for how in ("gone", "restart", "config", "empty", "later_gone"):
+        d, cfg = sel_display(dict(TDM_EN=True))
+        d.track_view.selectRow(d.track_model.row_of(1))
+        d.draw_now(a_table=True)
+        assert d.selected_id() == 1
+        if how == "gone":
+            feed_tracks(d, cfg, 7, 20.7, a_drop=(1,))
+        elif how == "restart":  # age drops: store makes a new state for the same id
+            trks = [dict(t, age=0, birth_t=0.0) if t["id"] == 1 else t for t in track_set(cfg)]
+            d.update_tracks(trks, 20.7)
+        elif how == "config":
+            d.set_config(cfg)
+        elif how == "empty":
+            d.update_tracks([], None)
+        else:  # other tracks go, selected stays: not cleared
+            feed_tracks(d, cfg, 7, 20.7, a_drop=(0, 2, 3))
+            assert d.selected_id() == 1
+            d.draw_now(a_table=True)
+            check_selected(d, 1, True)
+            d.close()
+            continue
+        assert d.selected_id() is None, how
+        d.draw_now(a_table=True)
+        check_none_selected(d)
+        d.close()
+    no_exceptions()
+
+
+def test_track_table_model():
+    from common import gui_tracks as gt
+
+    st = gt.TrackStore(a_v_limit=20.0)
+    st.update(
+        [snap(0, 100.0, -2.0, 12.0, a_num=1), snap(1, 200.0, 3.0, None, a_num=0, a_coasting=True),
+         snap(2, 300.0, 0.0, 0.0, a_status="tentative", a_num=None)],
+        1.0,
+    )
+    m = gt.TrackTableModel(gui.RadarDisplay.TRACK_COLUMNS)
+    changed = []
+    m.dataChanged.connect(lambda *a: changed.append(a))
+    assert m.refresh(st, a_now=10.0) == "reset"
+    assert m.rowCount() == 2 and m.ids() == [1, 0], "confirmed only, sorted by num"
+    assert [m.index(0, c).data() for c in range(6)] == ["T0", "200.0", "+3.00", "-", "20", "1.0"]
+    assert m.index(1, 3).data() == "12.0"
+    DR, FG = Qt.DisplayRole, Qt.ForegroundRole
+    assert m.index(0, 0).data(FG) == m.GREY, "coasting row grey"
+    assert m.index(1, 2).data(FG) == m.DIR_BRUSH[gt.APPROACHING], "v tinted by direction"
+    assert m.index(1, 1).data(FG) is None
+    assert m.headerData(2, Qt.Horizontal) == "v [m/s]"
+    # Throttle: inside 200 ms nothing happens
+    assert m.refresh(st, a_now=10.1) is None
+    assert (m.n_resets, m.n_changes, len(changed)) == (1, 0, 0)
+    # Same id list: dataChanged over the whole range, no reset
+    st.update([snap(0, 101.0, -2.0, 12.0, a_num=1, a_age=6), snap(1, 201.0, 3.0, None, a_num=0,
+              a_coasting=True, a_age=6)], 1.1)
+    assert m.refresh(st, a_now=10.25) == "changed"
+    assert (m.n_resets, m.n_changes, len(changed)) == (1, 1, 1)
+    assert changed[0][0].row() == 0 and changed[0][1].row() == 1 and changed[0][1].column() == 5
+    assert m.index(0, 1).data() == "201.0"
+    # Different ids: reset. Force ignores the throttle
+    st.update([snap(5, 50.0, 0.0, 0.0, a_num=5)], 1.2)
+    assert m.refresh(st, a_force=True, a_now=10.26) == "reset"
+    assert m.ids() == [5] and m.n_resets == 2
+    # Wall clock path: two back to back refreshes, the second is dropped
+    assert m.refresh(st, a_force=True) is not None and m.refresh(st) is None
+    # Empty store: empty list, no az column without TDM
+    st.clear()
+    assert m.refresh(st, a_force=True) == "reset" and m.rowCount() == 0
+    d = make_display(mode_cfg())
+    assert d.track_view.isColumnHidden(d.TRACK_AZ_COL)
+    d.set_config(mode_cfg(TDM_EN=True))
+    assert not d.track_view.isColumnHidden(d.TRACK_AZ_COL)
+    d.close()
+    no_exceptions()
+
+
+def test_table_refresh_from_draw_only():
+    cfg = mode_cfg()
+    d = make_display(cfg)
+    d.show()
+    d.update_tracks(track_set(cfg), 5.0)
+    assert d.track_model.rowCount() == 0, "intake does not touch the list"
+    d.draw_now(a_table=True)
+    assert d.track_model.rowCount() == 4
+    # Another tab: no refresh, the Tracks draw never runs
+    d.centralWidget().setCurrentWidget(d._history_tab)
+    d.update_tracks(track_set(cfg)[:2], 5.1)
+    d.draw_now(a_table=True)
+    assert d.track_model.rowCount() == 4
+    d.centralWidget().setCurrentWidget(d._tracks_tab)  # tab change draws at once
+    assert d.track_model.rowCount() == 2
+    # Throttled refresh is made up at rest: nothing dirty, still catches up
+    d.update_tracks(track_set(cfg)[:3], 5.2)
+    d._draw_tracks()
+    assert d.track_model.rowCount() in (2, 3)
+    wait_for(lambda: d.track_model.rowCount() == 3, "throttled refresh made up")
+    d.close()
+    no_exceptions()
+
+
 if __name__ == "__main__":
     tests = [
         test_update_all_modes,
@@ -1124,6 +1408,13 @@ if __name__ == "__main__":
         test_playback_paused_step_shows_cpi,
         test_playback,
         test_playback_tracks,
+        test_select_by_row,
+        test_select_label_past_cap,
+        test_select_by_plot_click,
+        test_selection_survives_reset,
+        test_selection_clears,
+        test_track_table_model,
+        test_table_refresh_from_draw_only,
     ]
     failures = 0
     for t in tests:
