@@ -4,7 +4,7 @@ import numpy as np
 import dataclasses
 from collections import defaultdict
 from pathlib import Path
-from PySide6.QtCore import QRectF, Qt, QLocale, Signal
+from PySide6.QtCore import QRectF, Qt, QLocale, QTimer, Signal
 from PySide6.QtWidgets import (
     QApplication,
     QMainWindow,
@@ -71,6 +71,12 @@ class RadarDisplay(QMainWindow):
     ├─────────────────────────├─────────────┤
     │  Radar Parameters       │ Cfg Button  │
     └─────────────────────────┴─────────────┘
+
+    Intake and draw split: update(), update_signals(), update_recorded() only keep
+    newest data (feed History buffers every CPI) and mark dirty. One 33 ms timer draws
+    current tab when dirty; tab change draws new tab at once; draw_now() = one full
+    draw without timer. Frames held by reference until drawn, so callers pass fresh
+    arrays per CPI (process_cpi does).
     """
 
     reconfigure_requested = Signal(object)
@@ -88,17 +94,20 @@ class RadarDisplay(QMainWindow):
         ("amp", "Amp", 0.1),
     ]
 
-    # History tab: image columns are fixed time bins (the strongest CPI in each wins),
-    # so a varying CPI rate cannot stretch the time axis. Images redraw at most 5 Hz;
-    # the data is taken every CPI.
+    # History tab: image columns = fixed time bins (strongest CPI wins), so varying
+    # CPI rate cannot stretch time axis. Images redraw <= 5 Hz, data taken every CPI
     HISTORY_WINDOWS_S = [10, 30, 60, 120]
     HISTORY_BIN_S = 0.1
     HISTORY_REDRAW_S = 0.2
-    HISTORY_FLOOR_DB = -80.0  # the RD maps' display floor
+    HISTORY_FLOOR_DB = -80.0  # RD maps' display floor
 
-    # Detections faster than this are coloured as receding (v > 0) or approaching
+    # One timer draws current tab; detection table redraws <= 5 Hz
+    DRAW_INTERVAL_MS = 33
+    TABLE_REDRAW_S = 0.2
+
+    # Detections faster than this coloured receding (v > 0) or approaching
     MOVING_V_MS = 5.0
-    # Sector-PPI: the fan drawn, and the spoke spacing inside it
+    # Sector-PPI: fan drawn, spoke spacing inside it
     XY_FOV_DEG = 60
     XY_SPOKE_DEG = 30
 
@@ -110,8 +119,26 @@ class RadarDisplay(QMainWindow):
         self.setCentralWidget(tabs)
 
         self._config = a_config
+        # Intake state: newest frame / spectrograms, drawn by timer when dirty
+        self._frame = None  # (up, down, ranges, velocities, targets)
+        self._radar_dirty = False
+        self._table_dirty = False
+        self._table_last = 0.0
+        self._spec_rx = None  # pending (spec) per plot, None once drawn
+        self._spec_if = None
+        self._spec_axes = None  # (t, f)
+        # Detection table items, one row of 5 per pool slot, kept for reuse
+        self._table_pool = []
+        self._table_state = []  # velocity cell colour per pool row: -1, 0, 1
+        self._table_fg = QBrush(QColor("white"))
+        self._table_bg = {
+            1: QBrush(QColor("#25415c")),
+            -1: QBrush(QColor("#5c2a2a")),
+            0: QBrush(),
+        }
         # --------- Tab 0: Radar ---------
         radar_tab = QWidget()
+        self._radar_tab = radar_tab
         tabs.addTab(radar_tab, "Radar")
         radar_layout = QHBoxLayout(radar_tab)
 
@@ -153,13 +180,13 @@ class RadarDisplay(QMainWindow):
         # Sector-PPI (plan position indicator), TDM only (set_config):
         # x = r sin(theta), y = r cos(theta)
         self.xy_plot = pg.PlotWidget(title="Sector-PPI")
-        # No y axis: the bottom ticks label each range ring where it meets the fan edge
+        # No y axis: bottom ticks label each range ring where it meets fan edge
         self.xy_plot.hideAxis("left")
         self.xy_plot.setLabel("bottom", "Range", units="m")
         self.xy_plot.getAxis("bottom").enableAutoSIPrefix(False)
         self.xy_plot.setBackground("#0a1628")
         self.xy_plot.setAspectLocked(True)
-        # Range rings and spokes, one NaN-separated curve; rebuilt per config
+        # Range rings and spokes, one NaN-separated curve, rebuilt per config
         self.xy_grid = pg.PlotCurveItem(
             pen=pg.mkPen((255, 255, 255, 60), width=1), connect="finite"
         )
@@ -181,6 +208,7 @@ class RadarDisplay(QMainWindow):
 
         self.xs_toggle = QCheckBox("Up/Down Detections")
         self.xs_toggle.setChecked(False)
+        self.xs_toggle.toggled.connect(self._mark_radar_dirty)
         middle_col.addWidget(self.xs_toggle)
 
         self.scatter_both = pg.ScatterPlotItem(
@@ -195,8 +223,8 @@ class RadarDisplay(QMainWindow):
         self.det_plot.addItem(self.scatter_both)
         self.det_plot.addItem(self.scatter_up)
         self.det_plot.addItem(self.scatter_down)
-        # Playback only: the detections recorded live, as rings around the replayed
-        # dots. Drawn last so they sit on top; hidden until update_recorded()
+        # Playback only: live-recorded detections, rings around replayed dots.
+        # Drawn last (on top), hidden until update_recorded()
         self.scatter_recorded = pg.ScatterPlotItem(
             size=16,
             symbol="o",
@@ -213,7 +241,7 @@ class RadarDisplay(QMainWindow):
         middle_col.addWidget(self.mti_en_box)
         self.mti_en_box.toggled.connect(self.mti_signal_changed)
 
-        # Record: the worker owns the session so on_recording() mirrors its state back
+        # Record: worker owns session, on_recording() mirrors state back
         record_row = QHBoxLayout()
         self.record_box = QCheckBox("Record")
         self.record_notes = QLineEdit()
@@ -224,8 +252,8 @@ class RadarDisplay(QMainWindow):
         record_row.addWidget(self.record_notes, stretch=1)
         middle_col.addLayout(record_row)
         self.record_box.toggled.connect(self.record_changed)
-        # Every edit, so a session opened later (RE-CONFIGURE, target edit) gets the
-        # current text, not the text from when Record was ticked
+        # Every edit, so later-opened session (RE-CONFIGURE, target edit) gets current
+        # text, not text from Record tick
         self.record_notes.textChanged.connect(self.record_notes_changed)
 
         # ---------------------------------
@@ -245,6 +273,7 @@ class RadarDisplay(QMainWindow):
 
         # --------- Tab 2: Signals ---------
         signals_tab = QWidget()
+        self._signals_tab = signals_tab
         tabs.addTab(signals_tab, "Signals")
         signals_layout = QVBoxLayout(signals_tab)
 
@@ -413,6 +442,11 @@ class RadarDisplay(QMainWindow):
         # Setup GUI
         self.set_config(a_config)
 
+        self._draw_timer = QTimer(self)
+        self._draw_timer.setInterval(self.DRAW_INTERVAL_MS)
+        self._draw_timer.timeout.connect(self._on_tick)
+        self._draw_timer.start()
+
     def reconfigure(self):
         values = {}
         for name, f in self._cfg_fields.items():
@@ -435,8 +469,8 @@ class RadarDisplay(QMainWindow):
             self.set_config(a_config)
 
     def on_recording(self, a_session_dir):
-        """Worker's session state: its directory, or None when not recording (or a
-        disk error stopped it). Does not re-emit record_changed."""
+        """Worker's session state: directory, or None when not recording (or disk
+        error stopped it). Does not re-emit record_changed."""
         self.record_box.blockSignals(True)
         self.record_box.setChecked(a_session_dir is not None)
         self.record_box.blockSignals(False)
@@ -451,14 +485,14 @@ class RadarDisplay(QMainWindow):
     # Playback (offline.playback)
     # ---------------------------------
     def set_playback_mode(self):
-        """The session owns the config and the fake targets, so both turn read-only
-        and RE-CONFIGURE goes; no recording; a status bar says this is not live.
-        The MTI box only shows what each CPI ran with (the player bar overrides)."""
+        """Session owns config and fake targets: both read-only, RE-CONFIGURE hidden,
+        no recording, status bar says not live. MTI box only shows what each CPI ran
+        with (player bar overrides)."""
         self.setWindowTitle("FMCW Radar - Playback")
         self.record_box.hide()
         self.record_notes.hide()
         self.mti_en_box.setEnabled(False)
-        # The form, not its scroll area, so the long form still scrolls
+        # Form, not scroll area, so long form still scrolls
         self._cfg_form_widget.setEnabled(False)
         self.fake_target_box.setEnabled(False)
         self.re_cfg_button.hide()
@@ -494,9 +528,12 @@ class RadarDisplay(QMainWindow):
         self.mti_en_box.blockSignals(False)
 
     def update_recorded(self, a_targets):
-        """The detections recorded live for this CPI (None: no recorded line), drawn
-        as rings. Same kind filter as update()."""
+        """Detections recorded live for this CPI (None: no recorded line), drawn as
+        rings with frame. Same kind filter as update()."""
         self._recorded = a_targets or []
+        self._radar_dirty = True
+
+    def _draw_recorded(self):
         show_xs = self.xs_toggle.isChecked()
         pos = [
             (t["v"], t["r"])
@@ -549,13 +586,69 @@ class RadarDisplay(QMainWindow):
             maxYRange=r_max - r_min,
         )
 
+    def _mark_radar_dirty(self, *_args):
+        self._radar_dirty = True
+
     def update(
         self, a_rd_up_db, a_rd_down_db, a_ranges, a_velocities, a_targets, a_t=None
     ):
-        """a_t: the CPI's time in seconds (playback passes the recorded one); None =
-        now, which is what the live app uses."""
+        """Intake only: keeps frame (by reference, see class docstring), feeds History
+        buffers; timer draws. a_t: CPI time in s (playback passes recorded one);
+        None = now (live app)."""
+        self._frame = (a_rd_up_db, a_rd_down_db, a_ranges, a_velocities, a_targets)
+        self._radar_dirty = True
+        self._table_dirty = True
+        self._update_history(
+            time.monotonic() if a_t is None else a_t,
+            a_rd_up_db,
+            a_ranges,
+            a_velocities,
+            a_targets,
+        )
+
+    # ---------------------------------
+    # Drawing (timer, tab change, draw_now)
+    # ---------------------------------
+    def _on_tick(self):
+        self._draw_current(a_now=False)
+
+    def draw_now(self):
+        """One full draw of current tab, ignoring timer and throttles. For tests and
+        profiler."""
+        self._radar_dirty = True
+        self._table_dirty = True
+        self._hist_dirty = True
+        self._draw_current(a_now=True)
+
+    def _draw_current(self, a_now):
+        """Draw tab on screen if anything new. a_now ignores 5 Hz throttles (tab
+        change, draw_now). Configuration has nothing per frame."""
+        tab = self._tabs.currentWidget()
+        if tab is self._radar_tab:
+            self._draw_radar(a_now)
+        elif tab is self._history_tab:
+            self._draw_history_tab(a_now)
+        elif tab is self._signals_tab:
+            self._draw_signals()
+
+    def _draw_radar(self, a_now):
+        if self._radar_dirty:
+            self._radar_dirty = False
+            if self._frame is not None:
+                self._draw_rd_and_dets(*self._frame)
+            self._draw_recorded()
+        if self._table_dirty and self._frame is not None:
+            now = time.monotonic()
+            if a_now or now - self._table_last >= self.TABLE_REDRAW_S:
+                self._table_dirty = False
+                self._table_last = now
+                self._draw_table(self._frame[4])
+
+    def _draw_rd_and_dets(
+        self, a_rd_up_db, a_rd_down_db, a_ranges, a_velocities, a_targets
+    ):
         # -------------------------
-        # Update RD Maps
+        # RD maps
         # -------------------------
         rect_up = QRectF(
             float(a_velocities[0]),
@@ -578,13 +671,9 @@ class RadarDisplay(QMainWindow):
             self.rd_down_image.setRect(rect_down)
 
         # -------------------------
-        # Toggle UP/DOWN detections plot
+        # Detections; UP/DOWN toggle
         # -------------------------
         show_xs = self.xs_toggle.isChecked()
-
-        # -------------------------
-        # Update detections
-        # -------------------------
         both = [(t["v"], t["r"]) for t in a_targets if t["kind"] == "both"]
         up = [(t["v"], t["r"]) for t in a_targets if t["kind"] == "up"]
         down = [(t["v"], t["r"]) for t in a_targets if t["kind"] == "down"]
@@ -604,42 +693,54 @@ class RadarDisplay(QMainWindow):
         if self._config.TDM_EN:
             self._update_xy(a_targets, show_xs)
 
-        # -------------------------
-        # Update target list
-        # -------------------------
-        # vel_res = float(a_velocities[1] - a_velocities[0])
-        self.det_table.setRowCount(len(a_targets))  # Flush rows
-        for i, t in enumerate(a_targets):
-            theta = t.get("theta")
+    def _draw_table(self, a_targets):
+        """Reuses items: text and velocity cell colour set on existing ones. Pool grows
+        only when row count exceeds earlier max; shrinking takes items out of table
+        (stay in pool)."""
+        t = self.det_table
+        n = len(a_targets)
+        have = t.rowCount()
+        if n < have:
+            for row in range(n, have):
+                for col in range(5):
+                    t.takeItem(row, col)
+            t.setRowCount(n)
+        elif n > have:
+            t.setRowCount(n)
+            for row in range(have, n):
+                if row == len(self._table_pool):
+                    items = []
+                    for _ in range(5):
+                        item = QTableWidgetItem("")
+                        item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+                        item.setForeground(self._table_fg)
+                        items.append(item)
+                    self._table_pool.append(items)
+                    self._table_state.append(0)
+                for col, item in enumerate(self._table_pool[row]):
+                    t.setItem(row, col, item)
+        for i, tgt in enumerate(a_targets):
+            theta = tgt.get("theta")
             theta_str = "-" if theta is None else f"{theta:+.1f}"
-            row = (str(i), f'{t["r"]:.1f}', f'{t["v"]:.2f}', theta_str, "-")
-            for col, item in enumerate(row):
-                table_item = QTableWidgetItem(item)
-                table_item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
-                table_item.setForeground(QBrush(QColor("white")))
-                # if t["v"] > 2 * vel_res and col == 2:
-                if t["v"] > self.MOVING_V_MS and col == 2:
-                    table_item.setBackground(QBrush(QColor("#25415c")))
-                    table_item.setForeground(QBrush(QColor("white")))
-                # elif t["v"] < -2 * vel_res and col == 2:
-                elif t["v"] < -self.MOVING_V_MS and col == 2:
-                    table_item.setBackground(QBrush(QColor("#5c2a2a")))
-                self.det_table.setItem(i, col, table_item)
-
-        self._update_history(
-            time.monotonic() if a_t is None else a_t,
-            a_rd_up_db,
-            a_ranges,
-            a_velocities,
-            a_targets,
-        )
+            row = (str(i), f'{tgt["r"]:.1f}', f'{tgt["v"]:.2f}', theta_str, "-")
+            for item, text in zip(self._table_pool[i], row):
+                if item.text() != text:
+                    item.setText(text)
+            state = (
+                1
+                if tgt["v"] > self.MOVING_V_MS
+                else -1 if tgt["v"] < -self.MOVING_V_MS else 0
+            )
+            if self._table_state[i] != state:
+                self._table_state[i] = state
+                self._table_pool[i][2].setBackground(self._table_bg[state])
 
     # ---------------------------------
     # Sector-PPI (TDM)
     # ---------------------------------
     def _update_xy(self, a_targets, a_show_xs):
-        """Detections with an angle, same kind filter as the (r, v) scatter. Dots
-        for "both" (or sawtooth), crosses for single-ramp ones; colour by v."""
+        """Detections with angle, same kind filter as (r, v) scatter. Dots for "both"
+        (or sawtooth), crosses for single-ramp; colour by v."""
         tri = self._config.TRIANGLE_EN
         shown = [
             t
@@ -687,7 +788,7 @@ class RadarDisplay(QMainWindow):
             x, y = a_max_range * np.sin(a), a_max_range * np.cos(a)
             xs += [[0, x], [np.nan]]
             ys += [[0, y], [np.nan]]
-            # Anchored on the text's side facing the origin, so it sits outside the arc
+            # Anchored on text side facing origin, so it sits outside arc
             label = pg.TextItem(
                 f"{deg:+d}°" if deg else "0°",
                 color=(255, 255, 255, 150),
@@ -698,13 +799,12 @@ class RadarDisplay(QMainWindow):
             self._xy_angle_labels.append(label)
         self.xy_grid.setData(x=np.concatenate(xs), y=np.concatenate(ys))
 
-        # Dotted verticals from below the axis up to where each ring meets the fan
-        # edge (x = r sin(fov)); the tick there is labelled with the ring's range.
-        # The axis sits wherever the locked aspect puts the view's bottom, hence the
-        # far start (the item ignores bounds).
+        # Dotted verticals from below axis up to where each ring meets fan edge
+        # (x = r sin(fov)); tick there labelled with ring range. Axis sits where
+        # locked aspect puts view bottom, hence far start (item ignores bounds).
         fov = np.radians(self.XY_FOV_DEG)
         half_w = a_max_range * np.sin(fov)
-        # Label every ring, or every second one when they crowd; the rest get a tick
+        # Label every ring, or every second when crowded; rest get a tick
         every = 2 if len(rings) > 4 else 1
         xs, ys = [[0.0, 0.0], [np.nan]], [[-10 * a_max_range, 0.0], [np.nan]]
         major, minor = [(0.0, "0")], []
@@ -720,7 +820,7 @@ class RadarDisplay(QMainWindow):
         self.xy_xlines.setData(x=np.concatenate(xs), y=np.concatenate(ys))
         self.xy_plot.getAxis("bottom").setTicks([major, minor])
 
-        # Side margin for the outer ring's tick label and the edge angle labels
+        # Side margin for outer ring tick label and edge angle labels
         self.xy_plot.setRange(
             xRange=(-1.25 * half_w, 1.25 * half_w),
             yRange=(0, a_max_range),
@@ -734,8 +834,8 @@ class RadarDisplay(QMainWindow):
         tab = QWidget()
         a_tabs.addTab(tab, "History")
         layout = QVBoxLayout(tab)
-        # Images drawn only while this tab is current (see _update_history); showing
-        # it draws at once, never stale
+        # Images drawn only while tab current (see _draw_history_tab); showing it
+        # draws at once, never stale
         self._history_tab = tab
         self._tabs = a_tabs
 
@@ -782,8 +882,7 @@ class RadarDisplay(QMainWindow):
         a_tabs.currentChanged.connect(self._on_tab_changed)
 
     def _reset_history(self):
-        """Empty the history. The next CPI sizes the buffers (the bin counts change
-        with the config)."""
+        """Empty history. Next CPI sizes buffers (bin counts change with config)."""
         self._hist_window_s = self.HISTORY_WINDOWS_S[
             self.history_window_box.currentIndex()
         ]
@@ -791,15 +890,16 @@ class RadarDisplay(QMainWindow):
         self._hist_vti = None  # (n_cols, n_velocity)
         self._hist_bin = None  # time bin of the newest column
         self._hist_t = None  # time of the newest CPI
-        self._hist_axes = None  # the range/velocity axes the buffers were built for
+        self._hist_axes = None  # range/velocity axes buffers were built for
         self._hist_rdet = None  # (n_cols, n_range) uint8 detection mask, same grid
         self._hist_vdet = None  # (n_cols, n_velocity)
         self._hist_last_draw = 0.0
+        self._hist_dirty = False
         self.rti_image.clear()
         self.vti_image.clear()
         self.rti_dets.clear()
         self.vti_dets.clear()
-        # The window is the time axis; auto-range would not follow the image anyway
+        # Window = time axis; auto-range would not follow image anyway
         self.rti_plot.enableAutoRange(x=False)
         self.rti_plot.setXRange(-self._hist_window_s, self.HISTORY_BIN_S, padding=0)
 
@@ -812,7 +912,7 @@ class RadarDisplay(QMainWindow):
             float(a_velocities[0]),
             float(a_velocities[-1]),
         )
-        # Time going backwards = a playback seek; new axes = a new config
+        # Time backwards = playback seek; new axes = new config
         if self._hist_t is not None and (a_t < self._hist_t or axes != self._hist_axes):
             self._reset_history()
         n_cols = int(round(self._hist_window_s / self.HISTORY_BIN_S))
@@ -837,13 +937,13 @@ class RadarDisplay(QMainWindow):
                 buf[:-shift] = buf[shift:].copy()
                 buf[-shift:] = 0
             self._hist_bin = new_bin
-        # RD maps are (velocity, range): strongest cell per range bin and per velocity
-        # bin, max-held within the newest time bin
+        # RD maps are (velocity, range): strongest cell per range and velocity bin,
+        # max-held within newest time bin
         np.maximum(self._hist_rti[-1], a_rd_db.max(axis=0), out=self._hist_rti[-1])
         np.maximum(self._hist_vti[-1], a_rd_db.max(axis=1), out=self._hist_vti[-1])
         self._hist_t = a_t
 
-        # Detections: nearest bin of the uniform axes, marked in the newest column
+        # Detections: nearest bin of uniform axes, marked in newest column
         if len(a_targets):
             rv = np.array([(t["r"], t["v"]) for t in a_targets], dtype=float)
             for vals, buf, (n, lo, hi) in (
@@ -854,27 +954,25 @@ class RadarDisplay(QMainWindow):
                 idx = np.clip(np.rint((vals - lo) / step), 0, n - 1).astype(int)
                 buf[-1, idx] = 1
 
-        # Buffers keep filling; draw (4x setImage) skipped while another
-        # tab is up
-        now = time.monotonic()
-        if (
-            self._tabs.currentWidget() is self._history_tab
-            and now - self._hist_last_draw >= self.HISTORY_REDRAW_S
-        ):
-            self._draw_history()
-            self._hist_last_draw = now
+        # Buffers fill every CPI; timer draws them (History tab only, <= 5 Hz)
+        self._hist_dirty = True
 
     def _on_tab_changed(self, _index):
-        if (
-            self._tabs.currentWidget() is self._history_tab
-            and self._hist_t is not None
-        ):
+        # Shown tab never stale: draw what it missed at once
+        self._draw_current(a_now=True)
+
+    def _draw_history_tab(self, a_now):
+        if not self._hist_dirty or self._hist_t is None:
+            return
+        now = time.monotonic()
+        if a_now or now - self._hist_last_draw >= self.HISTORY_REDRAW_S:
+            self._hist_dirty = False
+            self._hist_last_draw = now
             self._draw_history()
-            self._hist_last_draw = time.monotonic()
 
     def _draw_history(self):
-        # x = seconds relative to the newest CPI; the newest column ends where its
-        # time bin ends, just right of 0
+        # x = s relative to newest CPI; newest column ends where its time bin ends,
+        # just right of 0
         x_right = (self._hist_bin + 1) * self.HISTORY_BIN_S - self._hist_t
         x_left = x_right - self._hist_window_s
         n_r, r0, r1, n_v, v0, v1 = self._hist_axes
@@ -894,20 +992,32 @@ class RadarDisplay(QMainWindow):
             item.setRect(QRectF(x_left, rect[0], self._hist_window_s, rect[1] - rect[0]))
 
     def update_signals(self, a_rx_spec, a_if_spec, a_t, a_f):
+        """Intake only; drawn while Signals tab current. None keeps that plot's
+        pending or drawn image."""
+        if a_rx_spec is not None:
+            self._spec_rx = a_rx_spec
+        if a_if_spec is not None:
+            self._spec_if = a_if_spec
+        self._spec_axes = (a_t, a_f)
+
+    def _draw_signals(self):
+        if self._spec_rx is None and self._spec_if is None:
+            return
+        a_t, a_f = self._spec_axes
         rect = QRectF(
             float(a_t[0]),
             float(a_f[0]),
             float(a_t[-1] - a_t[0]),
             float(a_f[-1] - a_f[0]),
         )
-        for image, spec in [
-            (self.rx_spec_image, a_rx_spec),
-            (self.if_spec_image, a_if_spec),
-        ]:
-            if spec is None:
-                continue
-            image.setImage(spec, levels=(-80, 0))
-            image.setRect(rect)
+        if self._spec_rx is not None:
+            self.rx_spec_image.setImage(self._spec_rx, levels=(-80, 0))
+            self.rx_spec_image.setRect(rect)
+            self._spec_rx = None
+        if self._spec_if is not None:
+            self.if_spec_image.setImage(self._spec_if, levels=(-80, 0))
+            self.if_spec_image.setRect(rect)
+            self._spec_if = None
 
     def _fake_target_add_row(self):
         t = self.fake_targets_table
@@ -955,13 +1065,20 @@ class RadarDisplay(QMainWindow):
     def set_config(self, a_config):
         # Store new config
         self._config = a_config
-        # Sawtooth never writes the down map: do not leave a stale triangle one up
+        # Pending data shaped by old config (axes, map size): drop it. Recorded rings
+        # go too, next draw clears them
+        self._frame = None
+        self._table_dirty = False
+        self._spec_rx = self._spec_if = self._spec_axes = None
+        self._recorded = []
+        self._radar_dirty = True
+        # Sawtooth never writes down map: no stale triangle one
         if not a_config.TRIANGLE_EN:
             self.rd_down_image.clear()
-        # A new config (or a new playback session) starts a new history
+        # New config (or playback session) starts new history
         self._reset_history()
 
-        # Angle exists only with TDM: the Sector-PPI and the azimuth column
+        # Angle only with TDM: Sector-PPI and azimuth column
         self.xy_plot.setVisible(a_config.TDM_EN)
         self.det_table.setColumnHidden(3, not a_config.TDM_EN)
         self.xy_scatter.setData(x=[], y=[])
@@ -977,7 +1094,7 @@ class RadarDisplay(QMainWindow):
 
         # Update radar params
         radar_params = a_config.derived_params()
-        # Flag when the chirp, not MAX_RANGE_M, caps the range axis.
+        # Flag when chirp, not MAX_RANGE_M, caps range axis
         range_short = a_config.EFFECTIVE_RANGE < a_config.MAX_RANGE_M
         self.param_widget.setRowCount(len(radar_params))  # Flush rows
         for i, (name, (value, unit)) in enumerate(radar_params.items()):
@@ -1020,8 +1137,8 @@ class PlayerBar(QToolBar):
 
     [Open] session "notes" | |< < > > | ====o======== block/time | speed | MTI | rings
 
-    Emits requests only. The worker owns the position and reports it back through
-    on_loaded / on_position / on_playing, so the bar never runs ahead of the data.
+    Emits requests only. Worker owns position, reports back via on_loaded /
+    on_position / on_playing, so bar never runs ahead of data.
     Shortcuts: Ctrl+O open, Space play/pause, Left/Right step, Home first CPI.
     """
 
@@ -1102,8 +1219,8 @@ class PlayerBar(QToolBar):
         self.slider = QSlider(Qt.Horizontal)
         self.slider.setMinimumWidth(200)
         self.slider.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        # Seek on release while dragging (each seek replays a CPI), at once on a
-        # click in the groove or a key
+        # Seek on release while dragging (each seek replays a CPI), at once on
+        # groove click or key
         self.slider.valueChanged.connect(self._slider_changed)
         self.slider.sliderReleased.connect(
             lambda: self.seek_requested.emit(self.slider.value())
@@ -1161,7 +1278,7 @@ class PlayerBar(QToolBar):
             self.seek_requested.emit(a_value)
 
     def _show_position(self, a_block, a_t):
-        # Fixed widths from the session's size, so the label does not jitter
+        # Fixed widths from session size, label does not jitter
         n_width = len(str(max(self._n_blocks, 1)))
         t_width = len(f"{self._duration:.1f}")
         self.pos_label.setText(
@@ -1184,7 +1301,7 @@ class PlayerBar(QToolBar):
         self.slider.blockSignals(True)
         self.slider.setRange(0, self._n_blocks - 1)
         self.slider.blockSignals(False)
-        # A new session replays with the MTI it was recorded with
+        # New session replays with MTI it was recorded with
         self.mti_box.blockSignals(True)
         self.mti_box.setCurrentIndex(0)
         self.mti_box.blockSignals(False)
