@@ -4,11 +4,11 @@ draw_now() + QApplication.processEvents() after it (draw and paint), synthetic f
 Timer not involved: each frame taken in, then drawn once.
 
     python -m offline.profile_gui [--screen] [--frames N] [--tracks M]
-    python -m offline.profile_gui --mode TDM --tab Radar   (one cell, JSON)
+    python -m offline.profile_gui --mode TDM --tab Tracks   (one cell, JSON)
 
 Per mode (sawtooth, TDM, triangle + TDM), detection count (0 / 20 / 100) and shown
-tab (Radar, History, Signals; Configuration draws nothing per frame).
-Signals tab: intake also covers update_signals(), fed each frame with spectrogram
+tab (Tracks, History, Signal; Config draws nothing per frame).
+Signal tab: intake also covers update_signals(), fed each frame with spectrogram
 shaped like processing.spectrograms fabric output. Offscreen unless --screen.
 Config: fabric /8 (FABRIC_DECHIRP_EN) = 128 x 707 map.
 CPU boost ramps under sustained load; without warm-up spin first cells read ~1.6x slow.
@@ -30,7 +30,7 @@ N_DOPPLER, N_RANGE = 128, 707
 DETECTIONS = (0, 20, 100)
 POOL = 8  # distinct frames cycled, no CPI repeats predecessor
 WARMUP = 10
-TABS = [("Radar", 0), ("History", 1), ("Signals", 2)]
+TABS = ["Tracks", "History", "Signal"]
 MODES = [
     ("Sawtooth", dict()),
     ("TDM", dict(TDM_EN=True)),
@@ -129,13 +129,16 @@ def run_cell(a_args):
     display.show()
     tabs = display.centralWidget()
     assert isinstance(tabs, QTabWidget)
-    tabs.setCurrentIndex(dict(TABS)[a_args.tab])
+    tabs.setCurrentWidget(
+        {"Tracks": display._tracks_tab, "History": display._history_tab,
+         "Signal": display._signal_tab}[a_args.tab]
+    )
     app.processEvents()
     row = []
     for n_det in DETECTIONS:
         display.set_config(cfg)  # fresh History per cell
         frames = make_frames(cfg, n_det, rng)
-        specs = make_specs(cfg, rng) if a_args.tab == "Signals" else None
+        specs = make_specs(cfg, rng) if a_args.tab == "Signal" else None
         row.append(measure(app, display, frames, a_args.frames, specs))
     display.close()
     return row
@@ -148,14 +151,14 @@ def main():
     ap.add_argument("--tracks", type=int, default=0, help="tracks per frame (no-op until WP5)")
     ap.add_argument("--warmup-s", type=float, default=8.0, help="CPU spin before measuring (0 = off)")
     ap.add_argument("--mode", choices=[m for m, _ in MODES], help="one cell, in-process")
-    ap.add_argument("--tab", choices=[t for t, _ in TABS], help="one cell, in-process")
+    ap.add_argument("--tab", choices=TABS, help="one cell, in-process")
     ap.add_argument("--child", action="store_true", help=argparse.SUPPRESS)
     args = ap.parse_args()
 
     if args.mode or args.tab:
         # one cell by hand, or child of full run: JSON on last line
         args.mode = args.mode or MODES[0][0]
-        args.tab = args.tab or TABS[0][0]
+        args.tab = args.tab or TABS[0]
         if not args.child:
             warm_up(args.warmup_s)
         print(json.dumps(run_cell(args)))
@@ -164,7 +167,7 @@ def main():
     # one spin, then cells back to back (fresh process each) keep boost
     warm_up(args.warmup_s)
     results = {}
-    for tab, _ in TABS:
+    for tab in TABS:
         for mode, _ in MODES:
             cmd = [sys.executable, "-m", "offline.profile_gui", "--mode", mode,
                    "--tab", tab, "--frames", str(args.frames),
@@ -174,7 +177,7 @@ def main():
             out = subprocess.run(cmd, capture_output=True, text=True, check=True)
             results[(tab, mode)] = json.loads(out.stdout.strip().splitlines()[-1])
 
-    for tab, _ in TABS:
+    for tab in TABS:
         print(f"\n{tab} tab, {N_DOPPLER} x {N_RANGE} map, 1600x900, "
               f"{args.frames} frames/cell, median per CPI (draw = draw_now + paint)")
         print("| Mode | Detections | intake | draw |")
