@@ -23,14 +23,14 @@ their design conclusions move to `.claude/rules/` (area rules) or `CLAUDE.md`
 (project-wide), per the close-out rule in `CLAUDE.md` - don't grow narrative back in
 here as parts close.
 
-Current state (2026-11-15): Parts A-G and I are done. **Parts K (Phase 6) and L
+Current state (2026-11-16): Parts A-G and I are done. **Parts K (Phase 6) and L
 (Phase 7, tracking) are active**:
-K0-K2, K4, K5, K7, K8, K10, L0-L3 done. FMC5 (TDM + `tx_sel` on J30) on hardware;
-fabric /8 has run on cable RF (K7 bench, K10) but not on air (K6). K9 boards arrived
-2026-11-09, S-params measured, turntable next.
+K0-K2, K4, K5, K7, K8, K10, L0-L4 done. FMC5 (TDM +
+`tx_sel` on J30) on hardware; fabric /8 has run on cable RF (K7 bench, K10) but not
+on air (K6). K9 boards arrived 2026-11-09, S-params measured, turntable next.
 **Next: K6 on first dry day** - only source of real data for L6a; tracker tuned on
-synthetic noise until then. Meanwhile K9 turntable, L4 (r, v) parts, then L5. L4 full
-layout (PPI tracks) waits for L5.
+synthetic noise until then. Meanwhile K9 turntable, then L5 (the PPI takes x, y from
+it).
 Part H deferred. Part J (`docs/archive/optionals.md`) blocks nothing, can run in parallel.
 
 ---
@@ -176,19 +176,15 @@ reference sessions (spur test, L1 check) are on the laptop, not the desktop.
       `20261114-141729` (fabric, loopback, 762 CPIs) `replay --check` OK.
 - [x] L2 - tracker in (r, v), `common/tracking.py` (G7 6; 3152b8f, fba89b4, f22ea44):
       tests (a)-(k), (p)-(s) pass (2026-11-15, bars and numbers in G7 6.9); confirm needs
-      a hit on that CPI; 0.3 ms/CPI at 4 tracks, 1.7 at 96. Fail floor -> L6a,
-      `TRACK_EN` -> L4
+      a hit on that CPI; 0.3 ms/CPI at 4 tracks, 1.7 at 96. Fail floor -> L6a
 - [x] L3 - app, playback, replay (G7 7, fba89b4, rules in `app.md`; capture stamp in
       `sdr.md`): board 2026-11-14, loopback /8, 3 fake targets: one ID each, held 100 %,
       no other confirmed track; tracker 0.47 ms/CPI, 45.8 vs 47.0 CPIs/s off.
-- [ ] L4 - GUI layout A (G7 8)
-  - Toolbar row; PPI left ~60 % (r-v plot there with TDM off); r-v plot + track list
-    right
-  - Tracks: ID + ~2 s tail, coasting dimmed, tentative toggle, click to select
-  - RD maps to Signals; track lines in History
-  - Done: live and playback in loopback; GUI slot re-measured
-  - [ ] Number tracks at confirmation: IDs are spent at birth, 23-40/s
-  - [ ] Flip `TRACK_EN` to True (G7 6.7); K6 tracks offline with `replay --track` until then
+- [x] L4 - GUI layout A (G7 8 + 8.1, from 141e42f; rules in `app.md`): board 2026-11-16,
+      loopback /8, 3 fake targets, also TDM and triangle + TDM: click-select, History
+      track colours, MTI, Record, RE-CONFIGURE incl. a failing one, playback with seek OK.
+      Sawtooth 40.6 / 42.3 / 44.3 CPIs/s on Tracks / Signal / History, under L3's 45.8:
+      accepted (G7 8.1).
 - [ ] L5 - tracker in (x, y) (G7 9)
   - EKF `[x, y, vx, vy]` on (r, theta, v_r), `sa` 10; R per detection from `snr_db`;
     gate 11.34

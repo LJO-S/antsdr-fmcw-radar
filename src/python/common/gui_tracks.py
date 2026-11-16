@@ -2,14 +2,14 @@
 Track layer of the Tracks tab (L4 WP5).
 
 TrackStore  - no Qt. Per track id: ~2 s tail, direction class (hysteresis), age,
-              latest snapshot. Fed Track.snapshot() dicts by RadarDisplay.update_tracks();
-              read by layers (later track list, selection, History).
-DetectionTrail - no Qt. Last ~1 s of detections as age buckets (fading dots).
+              latest snapshot. Fed Track.snapshot() dicts by RadarDisplay.update_tracks()
+              read by layers (later track list, selection, History)
+DetectionTrail - no Qt. Last ~1 s of detections as age buckets (fading dots)
 TrackLayer  - Qt items of one plot, built once: heads, tails, labels, tentative
-              rings. One per plot: (r, v) plot (x = v, y = r) and PPI (x, y).
-nice_ticks  - round tick positions (1-2-5 x 10^n) for cheap grid.
+              rings. One per plot: (r, v) plot (x = v, y = r) and PPI (x, y)
+nice_ticks  - round tick positions (1-2-5 x 10^n) for cheap grid
 
-Sign conventions as the repo: v > 0 receding, theta > 0 towards B,
+Sign conventions as repo: v > 0 receding, theta > 0 towards B,
 x = r sin(theta), y = r cos(theta).
 """
 
@@ -37,7 +37,7 @@ DET_MAX_POINTS = 1000
 
 
 def direction(a_prev, a_v):
-    """Direction class of velocity a_v with hysteresis: in at V_IN, out at V_OUT."""
+    """Direction class of a_v with hysteresis: in at V_IN, out at V_OUT"""
     if a_v < -V_IN:
         return APPROACHING
     if a_v > V_IN:
@@ -50,13 +50,51 @@ def direction(a_prev, a_v):
 
 
 # ===================================================================================
-class TrackState:
-    """One track as store sees it. Tail = float64 ring, rows (t, v, r, x, y):
-    (v, r) and (x, y) contiguous column pairs, slice = plot-ready view.
-    NaN row (t kept) = gap: velocity wrap, or no theta for PPI pair."""
+class _Rows:
+    """Growable float rows, oldest first, trimmed from front"""
 
-    def __init__(self, a_snap, a_t):
+    def __init__(self, a_cols):
+        self._buf = np.empty((64, a_cols))
+        self._s = 0
+        self._e = 0
+
+    def __len__(self):
+        return self._e - self._s
+
+    def view(self):
+        return self._buf[self._s : self._e]
+
+    def pop(self):
+        self._e -= 1
+
+    def push(self, a_row):
+        if self._e == len(self._buf):
+            n = self._e - self._s
+            if self._s > 0:  # compact first, grow only when full
+                self._buf[:n] = self._buf[self._s : self._e].copy()
+            else:
+                self._buf = np.concatenate([self._buf, np.empty_like(self._buf)])
+            self._s, self._e = 0, n
+        self._buf[self._e] = a_row
+        self._e += 1
+
+    def trim(self, a_col, a_min):
+        """Drop leading rows with column a_col < a_min (column non-decreasing)"""
+        self._s += int(np.searchsorted(self._buf[self._s : self._e, a_col], a_min))
+
+
+# ===================================================================================
+class TrackState:
+    """One track as store sees it. Tail = float64 ring, rows (t, v, r, x, y)
+    (v, r) and (x, y) contiguous column pairs, slice = plot-ready view
+    NaN row (t kept) = gap: velocity wrap, or no theta for PPI pair"""
+
+    def __init__(self, a_snap, a_t, a_hist_s=None, a_bin_s=0.1):
         self.id = a_snap["id"]
+        # History tab rows (bin, t, r, v), one per a_bin_s (last value wins),
+        # a_hist_s long, None = off. Dies with track
+        self._hist_s, self._bin_s = a_hist_s, a_bin_s
+        self._hist = None
         self.cls = NEUTRAL
         self.birth_t = a_snap["birth_t"]
         self._buf = np.empty((64, 5))
@@ -101,6 +139,31 @@ class TrackState:
         self._buf[self._e] = a_row
         self._e += 1
 
+    def hist_add(self, a_t, a_r, a_v, a_break):
+        """Record (t, r, v). Break (velocity wrap) puts NaN-v row before it:
+        v curve breaks, r curve does not"""
+        if self._hist_s is None:
+            return
+        if self._hist is None:
+            self._hist = _Rows(4)
+        h = self._hist
+        b = int(a_t // self._bin_s)
+        if a_break:
+            h.push((-1, a_t, a_r, np.nan))
+        elif len(h) and h.view()[-1, 0] == b:
+            h.pop()  # same bin: last value wins
+        h.push((b, a_t, a_r, a_v))
+        h.trim(1, a_t - self._hist_s)
+
+    def hist_window(self, a_t_min):
+        """(t, r, v) views of history rows with t >= a_t_min (empty if none)"""
+        if self._hist is None:
+            e = np.empty(0)
+            return e, e, e
+        v = self._hist.view()
+        v = v[int(np.searchsorted(v[:, 1], a_t_min)) :]
+        return v[:, 1], v[:, 2], v[:, 3]
+
     def add(self, a_t, a_v, a_r, a_x, a_y, a_break, a_tail_s):
         if self._e > self._s and self._buf[self._e - 1, 0] == a_t:
             self._e -= 1  # same CPI again (paused re-render): replace
@@ -114,16 +177,17 @@ class TrackState:
 
 
 class TrackStore:
-    """Per-id track state for GUI. update() takes one snapshot list per CPI.
+    """Per-id track state for GUI. update() takes one snapshot list per CPI
 
     - new track (state reset): id unseen, or age dropped / birth_t changed (tracker
-      rebuilt: seek or RE-CONFIGURE restarts IDs at 0);
-    - time backwards, or empty list, clears all;
-    - tracks absent from list are gone.
+      rebuilt: seek or RE-CONFIGURE restarts IDs at 0)
+    - time backwards, or empty list, clears all
+    - tracks absent from list are gone
     """
 
-    def __init__(self, a_tail_s=TAIL_S, a_v_limit=None):
+    def __init__(self, a_tail_s=TAIL_S, a_v_limit=None, a_hist_s=None, a_bin_s=0.1):
         self.tail_s = a_tail_s
+        self._hist_s, self._bin_s = a_hist_s, a_bin_s
         self._lo = None
         self._span = None
         self.set_v_limit(a_v_limit)
@@ -131,7 +195,7 @@ class TrackStore:
         self.t = None  # time of the newest update
 
     def set_v_limit(self, a_v_limit):
-        """Display velocity wraps into [-a_v_limit, a_v_limit); None = no wrap."""
+        """Display v wraps into [-a_v_limit, a_v_limit), None = no wrap"""
         if a_v_limit is None:
             self._lo = self._span = None
         else:
@@ -157,7 +221,7 @@ class TrackStore:
         for s in a_snaps:
             st = self.tracks.get(s["id"])
             if st is None or s["age"] < st.snap["age"] or s["birth_t"] != st.birth_t:
-                st = TrackState(s, a_t)
+                st = TrackState(s, a_t, self._hist_s, self._bin_s)
             r, v = float(s["r"]), float(s["v"])
             theta = s.get("theta")
             if s.get("x") is not None and s.get("y") is not None:
@@ -179,6 +243,8 @@ class TrackStore:
             st.r, st.v, st.x, st.y = r, vw, x, y
             st.age_s = a_t - st.birth_t
             st.add(a_t, vw, r, x, y, broke, self.tail_s)
+            if st.confirmed:
+                st.hist_add(a_t, r, vw, broke)
             new[s["id"]] = st
         self.tracks = new
 
@@ -191,9 +257,9 @@ class TrackStore:
 
 # ===================================================================================
 class DetectionTrail:
-    """Last DET_FADE_S of detections, newest CPI last. Per CPI: (t, rv, xy), rv
+    """Last DET_FADE_S of detections, newest CPI last. Per CPI (t, rv, xy), rv
     (n, 2) = (v, r), xy (m, 2) = (x, y) (only with theta). Max DET_MAX_POINTS (v, r)
-    points total. Age bucket k = ages in [k, k+1) * fade / 4."""
+    points total. Age bucket k = ages in [k, k+1) * fade / 4"""
 
     def __init__(self):
         self._cpis = deque()
@@ -223,9 +289,9 @@ class DetectionTrail:
         return self._n
 
     def arrays(self):
-        """(rv, rv_level, xy, xy_level), oldest CPI first (newest wins when drawn).
-        Level = DET_LEVELS for newest age bucket down to 1; older than DET_FADE_S
-        left out."""
+        """(rv, rv_level, xy, xy_level), oldest CPI first (newest wins when drawn)
+        Level = DET_LEVELS for newest age bucket down to 1, older than DET_FADE_S
+        left out"""
         n = len(DET_ALPHAS)
         rv, xy, lrv, lxy = [], [], [], []
         for t, a, b in self._cpis:
@@ -248,7 +314,7 @@ class DetectionTrail:
 
 # ===================================================================================
 def nice_ticks(a_lo, a_hi, a_target=6):
-    """Round tick positions in [a_lo, a_hi]: step 1, 2 or 5 x 10^n, ~a_target lines."""
+    """Round tick positions in [a_lo, a_hi]: step 1, 2 or 5 x 10^n, ~a_target lines"""
     raw = (a_hi - a_lo) / a_target
     mag = 10.0 ** np.floor(np.log10(raw))
     step = next(m * mag for m in (1, 2, 5, 10) if m * mag >= raw)
@@ -269,8 +335,8 @@ def grid_lines(a_x_ticks, a_y_ticks, a_x_range, a_y_range):
 
 
 def set_points(a_item, a_x, a_y, **a_kw):
-    """setData on scatter / curve, skipped for empty update of already empty item
-    (setData costs ~0.15 ms even then)."""
+    """setData on scatter / curve, skipped for empty update of empty item
+    (setData costs ~0.15 ms even then)"""
     if len(a_x) == 0:
         old = a_item.data if isinstance(a_item, pg.ScatterPlotItem) else a_item.xData
         if old is None or len(old) == 0:
@@ -280,7 +346,7 @@ def set_points(a_item, a_x, a_y, **a_kw):
 
 class _PremultImage(pg.GraphicsObject):
     """Draws premultiplied ARGB32 QImage over data rect. pyqtgraph ImageItem hands Qt
-    non-premultiplied RGBA, scaled alpha blit ~3x slower."""
+    non-premultiplied RGBA, scaled alpha blit ~3x slower"""
 
     def __init__(self):
         super().__init__()
@@ -315,10 +381,10 @@ class _PremultImage(pg.GraphicsObject):
 
 class DotImage:
     """Fading dots of one plot as one image on coarse (nx, ny) grid over plot data
-    rect: cell = one dot, level 1..4 = age bucket (white, alpha DET_ALPHAS).
+    rect: cell = one dot, level 1..4 = age bucket (white, alpha DET_ALPHAS)
     Dense, so image: ScatterPlotItem looks up style per point on every setData
     (1000 dots on two plots ~7 ms), stroked curve of dots ~3 ms paint. Positions
-    snap to cell (~5 px)."""
+    snap to cell (~5 px)"""
 
     def __init__(self, a_plot):
         n = len(DET_ALPHAS)
@@ -337,7 +403,7 @@ class DotImage:
         self.level_img = None
 
     def configure(self, a_x0, a_x1, a_y0, a_y1, a_nx, a_ny):
-        """Data rect and grid. Clears."""
+        """Data rect and grid. Clears"""
         self._cfg = (a_x0, a_x1, a_y0, a_y1, a_nx, a_ny)
         self.item.set_rect(QtCore.QRectF(a_x0, a_y0, a_x1 - a_x0, a_y1 - a_y0))
         self.clear()
@@ -349,13 +415,13 @@ class DotImage:
         self.item.setVisible(False)
 
     def set_points(self, a_pts, a_level):
-        """a_pts (n, 2), a_level (n,) uint8, oldest first (later points win a cell)."""
+        """a_pts (n, 2), a_level (n,) uint8, oldest first (later points win a cell)"""
         x0, x1, y0, y1, nx, ny = self._cfg
         img = np.zeros((nx, ny), np.uint8)
         if len(a_pts):
             ix = np.floor((a_pts[:, 0] - x0) / (x1 - x0) * nx).astype(int)
             iy = np.floor((a_pts[:, 1] - y0) / (y1 - y0) * ny).astype(int)
-            # edges inclusive (v = +vmax is real bin): clip into last cell
+            # edges inclusive (v = +vmax is real bin) -> clip into last cell
             ok = (ix >= 0) & (ix <= nx) & (iy >= 0) & (iy <= ny)
             ix, iy = np.minimum(ix[ok], nx - 1), np.minimum(iy[ok], ny - 1)
             img[ix, iy] = a_level[ok]
@@ -368,7 +434,7 @@ class DotImage:
 
     @property
     def image(self):
-        """(nx, ny) levels of the last draw, 0 = none."""
+        """(nx, ny) levels of last draw, 0 = none"""
         return self.level_img
 
     def setVisible(self, a_on):
@@ -381,9 +447,9 @@ class DotImage:
 # ===================================================================================
 class TrackTableModel(QtCore.QAbstractTableModel):
     """Confirmed tracks sorted by num, one row each. refresh() formats every cell once
-    (cached strings, data() only indexes), at most REFRESH_HZ; same id list in the same
-    order -> one dataChanged, else model reset (view selection is restored by the owner
-    by id). Columns: ID, r, v (display-wrapped), az, SNR, age."""
+    (cached strings, data() only indexes), at most REFRESH_HZ. Same id list, same
+    order -> one dataChanged, else model reset (owner restores view selection
+    by id). Columns: ID, r, v (display-wrapped), az, SNR, age"""
 
     REFRESH_HZ = 5
     COL_V = 2
@@ -397,7 +463,7 @@ class TrackTableModel(QtCore.QAbstractTableModel):
         self._cells = []  # per row: list of str
         self._coast = []  # per row: bool
         self._cls = []  # per row: direction class
-        self._last = None  # monotonic time of the last refresh
+        self._last = None  # monotonic time of last refresh
         self.n_resets = 0  # counters, for tests
         self.n_changes = 0
 
@@ -486,9 +552,9 @@ class TrackTableModel(QtCore.QAbstractTableModel):
 
 # ===================================================================================
 class TrackLayer:
-    """Qt items of track layer on one plot, built once, added with ignoreBounds.
-    a_kind "rv": x = v, y = r. "xy": PPI, x, y from snapshot / r and theta.
-    draw() only setData / setVisible / setText on existing items."""
+    """Qt items of track layer on one plot, built once, added with ignoreBounds
+    a_kind "rv": x = v, y = r. "xy": PPI, x, y from snapshot / r and theta
+    draw() only setData / setVisible / setText on existing items"""
 
     Z_TAIL, Z_SEL_TAIL, Z_HEAD, Z_RING, Z_LABEL = 5, 5.5, 6, 6.5, 7
     HEAD_SIZE = 12
@@ -524,8 +590,8 @@ class TrackLayer:
             )
         # Selected track: yellow ring, thick tail (pen table [direction][coasting]),
         # yellow label. All built once
-        # Ring = one screen-sized ellipse moved with setPos (a one-point scatter's
-        # setData cost ~0.2 ms per frame and plot)
+        # Ring = one screen-sized ellipse moved with setPos (one-point scatter
+        # setData ~0.2 ms per frame and plot)
         h = self.RING_SIZE / 2
         self.ring = QtWidgets.QGraphicsEllipseItem(-h, -h, 2 * h, 2 * h)
         ring_pen = pg.mkPen(SEL_COLOR, width=2.5)
@@ -595,7 +661,7 @@ class TrackLayer:
             self._label_on[a_slot] = True
 
     def draw(self, a_store, a_show_tentative, a_sel_id=None):
-        """a_sel_id: id of the selected track (ring, thick tail, yellow label)."""
+        """a_sel_id: id of selected track (ring, thick tail, yellow label)"""
         rv = self._kind == "rv"
         hx, hy, hb = [], [], []
         per_cls = ([], [], [])
@@ -612,7 +678,7 @@ class TrackLayer:
             hy.append(y)
             hb.append(self._brushes[st.cls][1 if st.coasting else 0])
             per_cls[st.cls].append(st.tail_rv() if rv else st.tail_xy())
-        # Labels: first MAX_LABELS, the selected one always (takes the last slot)
+        # Labels: first MAX_LABELS, selected one always (takes last slot)
         order = list(range(min(len(shown), MAX_LABELS)))
         if sel_i is not None and sel_i >= MAX_LABELS:
             order[-1] = sel_i

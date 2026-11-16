@@ -18,12 +18,12 @@ class RadarWorker(QThread):
     # Class Attributes
     # --------------------------------
     # 'object' lets us pass numpy arrays / lists / None through untouched
-    results = Signal(object, object, object, object, object)
+    results = Signal(object, object, object, object, object, float)
     error = Signal(str)
     reconfigure_done = Signal(bool, object)
     signals = Signal(object, object, object, object)  # rx, if, t, f
-    recording = Signal(object)  # session dir (Path), or None when not recording
-    tracks = Signal(object, object)  # (Track.snapshot() dicts, CPI capture t); ([], None) clears
+    recording = Signal(object)  # session dir (Path) or None when not recording
+    tracks = Signal(object, object)  # (Track.snapshot(), CPI capture t)
 
     def __init__(self, a_config: config.RadarConfig):
         super().__init__()
@@ -200,7 +200,7 @@ class RadarWorker(QThread):
                         a_targets=detections,
                     )
                 self.results.emit(
-                    rd_map_db_up, rd_map_db_down, detections, ranges, velocities
+                    rd_map_db_up, rd_map_db_down, detections, ranges, velocities, t
                 )
                 if time.monotonic() - self._last_spec_update > 0.5:
                     self.signals.emit(
@@ -262,8 +262,8 @@ def main():
     worker = RadarWorker(a_config=cfg)
     worker.config.describe()
     worker.results.connect(
-        lambda rd_map_db_up, rd_map_db_down, detections, ranges, velocities: display.update(
-            rd_map_db_up, rd_map_db_down, ranges, velocities, detections
+        lambda rd_map_db_up, rd_map_db_down, detections, ranges, velocities, t: display.update(
+            rd_map_db_up, rd_map_db_down, ranges, velocities, detections, a_t=t
         )  # slot runs on the GUI thread and Qt queues it because the emit came from the worker
     )
     worker.error.connect(

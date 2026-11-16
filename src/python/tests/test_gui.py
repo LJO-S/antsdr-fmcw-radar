@@ -24,7 +24,7 @@ from pathlib import Path
 import numpy as np
 from PySide6.QtCore import QPoint, QPointF, Qt
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QLabel
 
 import common.config as config
 from common import gui
@@ -1352,6 +1352,216 @@ def test_track_table_model():
     no_exceptions()
 
 
+# ---------------------------------
+# History tab: class masks, track intake, selected curve (L4 WP7)
+# ---------------------------------
+def hist_display(a_fields=None, a_t0=100.0):
+    """Sawtooth display on the History tab, buffers made by one CPI at a_t0."""
+    cfg = mode_cfg(**(a_fields or {}))
+    d = make_display(cfg)
+    d.resize(1000, 700)
+    d.show()
+    d.centralWidget().setCurrentWidget(d._history_tab)
+    rng = np.random.default_rng(SEED)
+    up, down, ranges, vels, _ = frame(cfg, 0, rng)
+    d.update(up, down, ranges, vels, [], a_t=a_t0)
+    return d, cfg, (up, down, ranges, vels)
+
+
+def nearest(a_axis, a_val):
+    return int(np.argmin(np.abs(a_axis - a_val)))
+
+
+def hist_cpi(a_d, a_maps, a_t, a_trks, a_dets, a_tracks_first):
+    up, down, ranges, vels = a_maps
+    dets = [{"r": r, "v": v, "kind": "up", "snr_db": 20.0} for r, v in a_dets]
+    if a_tracks_first:
+        a_d.update_tracks(a_trks, a_t)
+        a_d.update(up, down, ranges, vels, dets, a_t=a_t)
+    else:
+        a_d.update(up, down, ranges, vels, dets, a_t=a_t)
+        a_d.update_tracks(a_trks, a_t)
+
+
+def test_history_class_masks():
+    cols = []
+    for first in (True, False):
+        d, cfg, maps = hist_display()
+        ranges, vels = maps[2], maps[3]
+        r_a, r_b, r_n, r_d = ranges[100], ranges[200], ranges[300], ranges[400]
+        v_a, v_b, v_d = vels[20], vels[100], vels[50]
+        trks = [
+            snap(1, r_a, v_a),  # approaching
+            snap(2, r_b, v_b),  # receding
+            snap(3, r_n, 0.0),  # neutral
+            snap(4, ranges[500], 0.0, a_status="tentative"),  # not drawn
+        ]
+        hist_cpi(d, maps, 100.1, trks, [(r_a, v_a), (r_d, v_d)], first)
+        ri = [nearest(ranges, r) for r in (r_a, r_b, r_n, r_d, ranges[500])]
+        vi = [nearest(vels, v) for v in (v_a, v_b, 0.0, v_d)]
+        rm, vm = d._hist_rdet[-1], d._hist_vdet[-1]
+        # track over detection in the same cell, in both orders
+        assert (rm[ri[0]], rm[ri[1]], rm[ri[2]]) == (3, 4, 2), (first, rm[ri[:3]])
+        assert rm[ri[3]] == 1 and rm[ri[4]] == 0
+        assert (vm[vi[0]], vm[vi[1]], vm[vi[2]]) == (3, 4, 2)
+        assert vm[vi[3]] == 1
+        cols.append((rm.copy(), vm.copy()))
+        d.close()
+    assert np.array_equal(cols[0][0], cols[1][0]) and np.array_equal(cols[0][1], cols[1][1])
+    no_exceptions()
+
+
+def test_history_tracks_skip_without_buffers_or_older():
+    cfg = mode_cfg()
+    d = make_display(cfg)
+    d.update_tracks([snap(1, 100.0, 1.0)], 50.0)  # no buffers yet: no write, no reset
+    assert d._hist_rti is None
+    d.close()
+    d, cfg, maps = hist_display()
+    ranges, vels = maps[2], maps[3]
+    hist_cpi(d, maps, 100.1, [snap(1, ranges[100], vels[100])], [], False)
+    before = d._hist_rdet.copy()
+    d.update_tracks([snap(1, ranges[300], vels[100], a_age=9)], 90.0)  # seek: skipped
+    assert np.array_equal(d._hist_rdet, before) and d._hist_t == 100.1
+    d.close()
+    no_exceptions()
+
+
+def test_history_widened_mask_keeps_track_class():
+    d, cfg, maps = hist_display()
+    ranges, vels = maps[2], maps[3]
+    i = 200
+    hist_cpi(d, maps, 100.1, [snap(1, ranges[i], vels[100])], [(ranges[i + 1], vels[10])], True)
+    assert d._hist_rdet[-1, i] == 4 and d._hist_rdet[-1, i + 1] == 1
+    d.draw_now()
+    m = d.rti_dets.image
+    assert m[-1, i] == 4 and m[-1, i + 1] == 4 and m[-1, i - 1] == 4  # track wins nearby
+    assert m[-1, i + 2] == 1 or m[-1, i + 2] == 4  # detection widens to i + 2
+    assert m[-1, i + 3] == 0
+    d.close()
+    no_exceptions()
+
+
+def test_history_reset_seek_and_config():
+    d, cfg, maps = hist_display()
+    ranges, vels = maps[2], maps[3]
+    for k in range(1, 6):
+        hist_cpi(d, maps, 100.0 + 0.3 * k, [snap(1, ranges[100], vels[100], a_age=k)],
+                 [(ranges[50], vels[50])], k % 2 == 0)
+    assert d._hist_rdet[:-1].any() and len(d._store.tracks[1].hist_window(0)[0]) == 5
+    # Seek: tracks (older) clear the store, results reset the history
+    d.update_tracks([snap(1, ranges[100], vels[100], a_age=0)], 100.2)
+    assert len(d._store.tracks[1].hist_window(0)[0]) == 1
+    d.update(maps[0], maps[1], ranges, vels, [], a_t=100.2)
+    assert not d._hist_rdet[:-1].any() and not d._hist_vdet[:-1].any()
+    assert not d._hist_rdet[-1].any()  # tracks were skipped: the older write is gone
+    # Window change empties the masks too
+    d.history_window_box.setCurrentIndex(0)
+    assert d._hist_rdet is None
+    # New config empties masks and the per-track history
+    hist_cpi(d, maps, 101.0, [snap(1, ranges[100], vels[100], a_age=9)], [], False)
+    assert d._store.tracks
+    d.set_config(mode_cfg(TDM_EN=True))
+    assert d._hist_rdet is None and not d._store.tracks
+    d.close()
+    no_exceptions()
+
+
+def sel_hist(a_d):
+    """(x, y) of the History curves, rti then vti."""
+    a_d.draw_now()
+    return a_d.rti_sel.getData(), a_d.vti_sel.getData()
+
+
+def test_history_selected_curve():
+    d, cfg, maps = hist_display()
+    ranges, vels = maps[2], maps[3]
+    vmax = cfg.MAX_VELOCITY
+    assert not d.rti_sel.isVisible() and not d.vti_sel.isVisible()
+    assert d.rti_sel.opts["connect"] == "finite" and d.rti_sel.opts["pen"].color().name() == "#ffd400"
+    sent = []
+    for k in range(1, 21):
+        t = 100.0 + 0.25 * k
+        r, v = 100.0 + k, 1.0
+        trk = [snap(1, r, v, a_age=k), snap(2, 300.0, -1.0, a_age=k)]
+        hist_cpi(d, maps, t, trk, [], k % 2 == 0)
+        sent.append((t, r, v))
+        if k == 1:
+            d._select(1)
+    d.draw_now()
+    assert d.rti_sel.isVisible() and d.vti_sel.isVisible()
+    (xr, yr), (xv, yv) = sel_hist(d)
+    exp_t = np.array([s[0] for s in sent])
+    assert np.allclose(xr, exp_t - 105.0) and np.allclose(xv, xr)
+    assert np.allclose(yr, [s[1] for s in sent]) and np.allclose(yv, 1.0)
+    assert d.rti_sel.zValue() > d.rti_dets.zValue()
+    # Deselect hides, reselect shows, again after a redraw with nothing new
+    d._clear_selection()
+    d.draw_now()
+    assert not d.rti_sel.isVisible() and not d.vti_sel.isVisible()
+    d._select(1)
+    d.draw_now()
+    assert d.rti_sel.isVisible()
+    # Selection change alone marks the tab dirty (paused redraw)
+    d._hist_dirty = False
+    d._clear_selection()
+    assert d._hist_dirty
+    d._hist_dirty = False
+    d._select(2)
+    assert d._hist_dirty
+    # Velocity wrap: a NaN row breaks the v curve only
+    d._select(1)
+    hist_cpi(d, maps, 106.0, [snap(1, 125.0, vmax - 0.5, a_age=21)], [], False)
+    hist_cpi(d, maps, 106.25, [snap(1, 126.0, vmax + 0.5, a_age=22)], [], False)
+    (xr, yr), (xv, yv) = sel_hist(d)
+    assert np.isnan(yv).sum() == 1 and not np.isnan(yr).any() and len(xr) == len(xv)
+    i = int(np.flatnonzero(np.isnan(yv))[0])
+    assert yv[i - 1] > 0 > yv[i + 1]
+    # Track death hides it
+    hist_cpi(d, maps, 106.5, [snap(2, 300.0, -1.0, a_age=30)], [], False)
+    assert d.selected_id() is None
+    d.draw_now()
+    assert not d.rti_sel.isVisible() and not d.vti_sel.isVisible()
+    d.close()
+    no_exceptions()
+
+
+def test_history_curve_window_trim_and_store_bins():
+    from common import gui_tracks as gt
+
+    st = gt.TrackStore(a_v_limit=20.0, a_hist_s=5.0, a_bin_s=0.1)
+    for k in range(400):  # 0.04 s steps: ~2.5 CPIs per bin, last one wins
+        t = 10.0 + 0.04 * k
+        st.update([snap(0, 100.0 + k, 1.0, a_age=k)], t)
+    t, r, v = st.tracks[0].hist_window(-1e9)
+    assert t[0] >= t[-1] - 5.0 - 1e-9 and len(t) <= 51
+    assert np.all(np.diff(t // 0.1) >= 1)  # one row per bin
+    assert r[-1] == 100.0 + 399
+    # Tentative tracks keep none; the history dies with the track
+    st.update([snap(7, 5.0, 0.0, a_status="tentative")], 30.0)
+    assert len(st.tracks[7].hist_window(0)[0]) == 0
+    st.update([], 31.0)
+    assert not st.tracks
+    no_exceptions()
+
+
+def test_history_plot_text():
+    d, cfg, maps = hist_display()
+    for plot, title in ((d.rti_plot, "Range"), (d.vti_plot, "Velocity")):
+        txt = plot.getPlotItem().titleLabel.text
+        assert title in txt and "vs time" not in txt, txt
+    assert not [l for l in d._history_tab.findChildren(QLabel) if "Strongest" in l.text()]
+    assert d.history_window_box.count() == 4
+    for i in range(4):
+        d.history_window_box.setCurrentIndex(i)
+        pump(20)
+        for plot in (d.rti_plot, d.vti_plot):
+            lab = plot.getAxis("bottom").labelString()
+            assert "Time to CPI (s)" in lab, lab
+    d.close()
+    no_exceptions()
+
+
 def test_table_refresh_from_draw_only():
     cfg = mode_cfg()
     d = make_display(cfg)
@@ -1415,6 +1625,13 @@ if __name__ == "__main__":
         test_selection_clears,
         test_track_table_model,
         test_table_refresh_from_draw_only,
+        test_history_class_masks,
+        test_history_tracks_skip_without_buffers_or_older,
+        test_history_widened_mask_keeps_track_class,
+        test_history_reset_seek_and_config,
+        test_history_selected_curve,
+        test_history_curve_window_trim_and_store_bins,
+        test_history_plot_text,
     ]
     failures = 0
     for t in tests:

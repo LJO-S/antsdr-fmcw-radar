@@ -23,7 +23,7 @@ tests, data association.
 | L1 SNR per detection | Measurement noise per detection | Nothing |
 | L2 tracker in (r, v) | Tracks from detections, offline tests | L1 |
 | L3 app, playback, replay | Tracks live and on recordings | L2 |
-| L4 GUI | PPI-first Radar tab, track list | L3 |
+| L4 GUI | PPI-first Tracks tab, track list | L3 |
 | L5 tracker in (x, y) | EKF on (r, theta, v_r) | L2 (L4 to display) |
 | L6 real targets | Validation on field recordings | K6 for (r, v), field day 2 for (x, y) |
 
@@ -460,8 +460,6 @@ where k = CHIRP_FC_HZ * T_EFF / CHIRP_BW_HZ   # ~0.012 s, dsp.md "Range-Doppler 
 
 The gates (9.21, 11.34) are chi-square constants, not config.
 
-As built, `config.py` differs in one default: `TRACK_EN` False (flipped with L4).
-
 ### 6.8 Cost
 
 CPI budget ~33 ms, of which `process_cpi` takes ~25: the tracker gets a few ms at most.
@@ -561,33 +559,112 @@ table in `TODO.md`.
 
 ## 8. L4 - GUI (layout A)
 
-**Radar tab**
+What the build changed is in 8.1. Tabs: Tracks, Signal, History, Config.
+
+**Tracks tab**
 - One toolbar row: MTI, Detections, Tentative, Up/Down, Record and the notes field. It
   replaces the checkboxes under the plots.
 - Left, ~60 %: the Sector-PPI. With TDM off, the range-velocity plot takes this slot and
   the right column holds only the track list.
-- Right top: the range-velocity plot, tracks and detections. In playback the magenta rings
+- Right top: the range-velocity plot, tracks and detections, drawn over the up-chirp RD
+  map, dimmed: a moving noise floor shows the radar is live. In playback the magenta rings
   for recorded detections stay here.
-- Right bottom: the track list. Confirmed tracks only, sorted by ID so rows do not jump.
-  Columns: ID, r, v, az (TDM only), SNR, age. The current RCS column goes: nothing fills it.
+- Right bottom: the track list. Confirmed tracks only, sorted by track number so rows do
+  not jump. Columns: ID, r, v, az (TDM only), SNR, age. The current RCS column goes:
+  nothing fills it.
 
-**Tracks on the plots**: appear automatically once confirmed, as an ID label with a ~2 s
-tail, in green. Coasting tracks are dimmed (e.g. a person stopped in the MTI notch).
-Tentative tracks are hidden unless the toggle is on.
+**Tracks on the plots**: appear automatically once confirmed, as a label with a ~2 s
+tail. One colour for all (green), red while approaching (v < 0), blue while receding; the
+colour follows the track's v, with hysteresis (in at 0.5 m/s, out at 0.3). Coasting tracks
+are dimmed (e.g. a person stopped in the MTI notch). Tentative tracks are hidden unless
+the toggle is on.
+- **Track number**: assigned at confirmation (`num` in the snapshot: T0, T1, ...). `id`
+  stays the birth ID, spent at 23-40/s.
+- **PPI before L5**: the track sits at (filtered r, theta of its last detection), so it
+  jitters sideways by the angle noise. The GUI takes `x`, `y` from the snapshot once L5
+  adds them.
 
 **Detections**: faint dots fading over ~1 s; the Detections toggle hides them.
 
-**Selecting**: click a track in either plot or in the list. It turns yellow with a ring in
-all three and stands out in the History tab.
+**Selecting**: click a track in either plot or in the list. It gets a yellow ring and a
+thicker tail in both plots and its row is selected; it keeps its direction colour and
+stands out in the History tab.
 
 **Other tabs**
-- Signals: the up and down RD maps on top, the spectrogram(s) below (one in fabric mode).
-- History: track lines over the range-vs-time and velocity-vs-time images.
+- Signal: the up and down RD maps on top, the spectrogram(s) below (one in fabric mode).
+- History: tracks over the range-vs-time and velocity-vs-time images, coloured as on the
+  plots; the selected one as a yellow line.
 
-K1 measured the GUI slot at ~5 ms with 20 detections, in the GUI thread. Measure it again
-with tracks and tails; throttle like the History images (<= 5 Hz) if needed.
+**Speed**: the GUI shares the GIL with the worker. The old Radar tab cost ~13.5 ms per CPI
+at 20 detections and ~25 ms at 100 (table below). So: every CPI is taken in, only the
+current tab is drawn, tables refresh at <= 5 Hz. Budget for one Tracks-tab draw: 8 ms at 20
+detections per CPI + 10 tracks with TDM, 15 ms at 100 + 96 with Tentative on.
 
-Done when live and playback show the layout with fake targets tracked in loopback.
+Done when live and playback show the layout with fake targets tracked in loopback, at no
+lower CPI rate than before (45.8 CPIs/s, L3).
+
+### 8.1 As built
+
+Built 2026-11-15 (8224403, 141e42f to 7b8c0c6, then the History tab). The rules are in
+`.claude/rules/app.md`. The spec above stands, except:
+
+- **Draw rate**: adaptive instead of a fixed ~30/s (user's choice): the GUI takes ~25 % of
+  the time whatever is on screen.
+- **`tracks` signal** carries the capture time too, `(snapshots, t)`; `([], None)` clears.
+  `TRACK_EN` defaults to True.
+- **Detection dots**: a coarse ~5 px image per plot, not scatter. Blocky; kept (user's
+  choice). Four age steps at alpha 0.3 / 0.2 / 0.12 / 0.06.
+- **Track list**: the default (white) Qt style (user's choice). Coasting rows are grey.
+- **History**: detections are white at 50 %, because yellow is the selection colour.
+
+Known limits:
+- History: tracks that arrive before the very first map are not written (one CPI).
+- T-numbers have gaps: a duplicate that is merged away takes its number with it.
+- The profiler's draw leaves out the track-list repaint (5 Hz, ~6 ms each, ~3 % of the
+  time).
+
+Profiler, `python -m offline.profile_gui --tracks 10`: laptop (Ryzen 5 4500U), offscreen,
+1600x900, 128 x 707 map, median ms at 0 / 20 / 100 detections per CPI.
+
+Before (WP1 baseline: the old Radar tab, drawn every CPI):
+
+| Mode | intake | paint |
+|---|---|---|
+| Sawtooth | 0.5 / 2.3 / 8.3 | 1.7 / 8.0 / 9.0 |
+| TDM | 0.6 / 2.4 / 8.7 | 2.3 / 8.2 / 9.3 |
+| Triangle + TDM | 0.6 / 2.4 / 8.4 | 3.9 / 10.0 / 11.2 |
+
+After (Tracks tab, 10 confirmed tracks). Intake is per CPI, draw per draw; draws/s is the
+rate the adaptive interval settles at, duty = draw x draws/s:
+
+| Mode | intake | draw | draws/s | duty |
+|---|---|---|---|---|
+| Sawtooth | 0.3 / 0.4 / 0.4 | 7.5 / 8.3 / 8.4 | 30 / 30 / 30 | 23 / 25 / 25 % |
+| TDM | 0.4 / 0.5 / 0.8 | 8.1 / 9.2 / 9.5 | 30 / 27 / 26 | 24 / 25 / 25 % |
+| Triangle + TDM | 0.4 / 0.4 / 0.6 | 7.9 / 9.5 / 9.3 | 30 / 26 / 27 | 24 / 25 / 25 % |
+
+- Other tabs, 10 tracks: History ~10.5 ms per draw, Signal 5.2-5.7 ms.
+- 96 tracks with Tentative on: ~17 ms per Tracks draw at ~15 draws/s, still ~25 %.
+- The 8 / 15 ms budget is missed a little (9.2 and ~17 ms): that costs draw rate, not CPI rate.
+- GUI share at ~47 CPIs/s (sawtooth; TDM runs slower): before 48-58 % at 20 detections and
+  81-92 % at 100; after ~27 % and 27-29 %.
+
+Board 2026-11-16 (sawtooth, loopback /8, 3 fake targets, tracker on, Record on, ~3
+detections per CPI), from the sessions' `index.csv`:
+
+| Tab | CPIs/s | Loop median | Loop p90 | Loops > 30 ms |
+|---|---|---|---|---|
+| Tracks | 40.6 | 21.5 ms | 33.2 ms | 23 % |
+| Signal | 42.3 | 23.2 ms | 26.6 ms | 4 % |
+| History | 44.3 | 21.1 ms | 28.8 ms | 9 % |
+
+- All under L3's 45.8; accepted. How 45.8 was measured (Record, machine) is not recorded.
+- The fastest 10 % of loops took 20.6 ms, 17.5 ms on 2026-11-14 (1 fake target, tracker
+  off): ~3 ms per CPI is the worker side (target synthesis, tracker), not drawing.
+- The Tracks tab adds ~2 ms per CPI over History: its draws (~8 ms, ~27/s) hold the GIL
+  while the worker waits. If the rate matters later: record on the Config tab (draws
+  nothing) for the ceiling, then raise the draw-cost multiplier 4 -> 6 (GUI <= ~17 %).
+- TDM and triangle + TDM: layout, selection and playback checked, rates not recorded.
 
 ---
 

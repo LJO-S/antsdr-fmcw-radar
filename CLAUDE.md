@@ -24,7 +24,7 @@ work.
 |---|---|---|
 | `CLAUDE.md` | Project-wide: sign conventions, config, firmware stack, RF safety | Always |
 | `.claude/rules/dsp.md` | DSP conventions, detection pipeline, TargetSim / `apply_if`, soft model | `dsp.py`, `target_sim.py`, `processing.py`, `offline/` soft model + profiler, `scripts/angle/` |
-| `.claude/rules/app.md` | Worker invariants, recording, playback, GUI | `app.py`, `capture.py`, `recorder.py`, `gui.py`, `replay.py`, `playback.py` |
+| `.claude/rules/app.md` | Worker invariants, recording, playback, GUI (incl. its speed rules) | `app.py`, `capture.py`, `recorder.py`, `gui.py`, `gui_tracks.py`, `replay.py`, `playback.py`, `test_gui.py`, `profile_gui.py` |
 | `.claude/rules/sdr.md` | AntSDR lifecycle, libiio, real-board behaviour | `sdr.py`, `capture.py`, `block_clock.py` |
 | `.claude/rules/hdl.md` | Firmware/HDL, register map, hardware rules, fabric control, decimator, 2R2T, J30 | `firmware/**`, `scripts/bringup/`, `fabric_regs.py`, `fabric_ctl.py` |
 | `docs/rf_and_regulatory.md` | AD9361 RF numbers, bench and field results, PTS/EMF rules, link budget | On demand |
@@ -46,12 +46,17 @@ src/python/                 # import root
                  #   align_down_doppler, apply_doppler_shift, apply_noise, inst_freq,
                  #   spectrogram, CPIContext, build_cpi_context, process_cpi,
                  #   iq_from_raw (int16 block -> complex64; live and replay both use it)
-    gui.py       # RadarDisplay (PySide6 + pyqtgraph), 4 tabs; set_playback_mode() +
-                 #   PlayerBar (the playback toolbar)
+    gui.py       # RadarDisplay (PySide6 + pyqtgraph), tabs Tracks / Signal / History /
+                 #   Config; update*() only take data in, one timer draws the current
+                 #   tab; set_playback_mode() + PlayerBar (the playback toolbar)
+    gui_tracks.py # Tracks-tab parts: TrackStore (no Qt), TrackLayer, DotImage (fading
+                 #   detection dots), TrackTableModel (track list)
   offline/
     soft_model.py        # SoftFMCWModel — target/noise/impairment sim, __main__ entry
     profile_cpi.py       # K1: median ms per process_cpi stage + apply_if vs fake-target
                          #   count (staged mirror of process_cpi, asserted equal to it)
+    profile_gui.py       # L4: RadarDisplay ms per CPI (intake, draw) per tab and mode,
+                         #   offscreen, synthetic frames, one process per cell
     replay.py            # K2: recorded session -> prepare_block -> process_rx_data;
                          #   --check compares with detections.jsonl, exact. No libiio
                          #   needed (never imports online.sdr). Player = random access
@@ -69,17 +74,17 @@ src/python/                 # import root
                    #   (fabric mode: FABRIC_FRAME_TRIM slice -> TargetSim.apply_if, no sync)
     recorder.py    # K2 Recorder: session dir = session.json, blocks.bin, index.csv,
                    #   detections.jsonl (Phase 6 guide Section 3); written to
-                   #   data/sessions/<timestamp>/ (Record checkbox in the Radar tab)
+                   #   data/sessions/<timestamp>/ (Record checkbox in the Tracks tab toolbar)
     target_sim.py  # FakeTarget / TargetSim — moving fake targets: apply() on raw RX (roll delay),
                    #   apply_if() on the fabric IF stream (beat-tone synthesis)
     processing.py  # process_rx_data(): stateless mix_signal + process_cpi wrapper
                    #   (skips mix_signal when FABRIC_DECHIRP_EN); spectrograms() for
-                   #   the Signals tab (live and playback)
+                   #   the Signal tab (live and playback)
     app.py         # RadarWorker (QThread) + main(); owns (config, ctx, sdr)
     fabric_ctl.py  # FabricCtl (enable/disable/set_calib_delay sequencing) + SshDevmem transport
   tests/           # board-free suites (test_dsp, test_soft_model, test_target_sim, test_recorder,
-                   #   test_fabric_ctl, test_tracking, test_replay_tracks, test_block_clock),
-                   #   each run as __main__
+                   #   test_fabric_ctl, test_tracking, test_replay_tracks, test_block_clock,
+                   #   test_gui (offscreen Qt)), each run as __main__
   image.png, image-1.png  # screenshots of other radar GUIs, kept as reference
 docs/              # AntSDR_Phase6_Antennas_Angle_Guide.md (Part K spec, active),
                    #   AntSDR_Phase7_Tracking_Guide.md (Part L spec, tracking, active),

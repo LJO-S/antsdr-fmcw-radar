@@ -260,7 +260,7 @@ class RadarConfig:
     # --------------------------------
     # Enable tracker
     TRACK_EN: bool = field(
-        default=False,
+        default=True,
         metadata={
             "label": "ENABLE",
             "unit": "",
