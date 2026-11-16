@@ -18,19 +18,17 @@ Ludvig's DO-NOT-FORGET:
 
 Roadmap for the FMCW radar.
 
-**This file tracks unfinished work only.** Completed parts get one line each and
-their design conclusions move to `.claude/rules/` (area rules) or `CLAUDE.md`
-(project-wide), per the close-out rule in `CLAUDE.md` - don't grow narrative back in
-here as parts close.
+**This file tracks unfinished work only.** Completed parts get one line; design
+conclusions go to `.claude/rules/` (area) or `CLAUDE.md` (project-wide) per the close-out
+rule in `CLAUDE.md` - no narrative here.
 
-Current state (2026-11-16): Parts A-G and I are done. **Parts K (Phase 6) and L
-(Phase 7, tracking) are active**:
+Current state (2026-11-16): Parts A-G and I done. **Parts K (Phase 6) and L
+(Phase 7, tracking) active**:
 K0-K2, K4, K5, K7, K8, K10, L0-L4 done. FMC5 (TDM +
-`tx_sel` on J30) on hardware; fabric /8 has run on cable RF (K7 bench, K10) but not
+`tx_sel` on J30) on hardware; fabric /8 ran on cable RF (K7 bench, K10) not
 on air (K6). K9 boards arrived 2026-11-09, S-params measured, turntable next.
 **Next: K6 on first dry day** - only source of real data for L6a; tracker tuned on
-synthetic noise until then. Meanwhile K9 turntable, then L5 (the PPI takes x, y from
-it).
+synthetic noise until then. Meanwhile K9 turntable, then L5 (PPI takes x, y from it).
 Part H deferred. Part J (`docs/archive/optionals.md`) blocks nothing, can run in parallel.
 
 ---
@@ -60,19 +58,19 @@ Part H deferred. Part J (`docs/archive/optionals.md`) blocks nothing, can run in
 ## Open small items
 
 - [ ] MTI beyond mean subtraction: 2-pulse canceller (`x[k] - x[k-1]`, wider notch,
-      3 dB SNR cost), then an exponential-average clutter map. The Part G field test
+      3 dB SNR cost), then exponential-average clutter map. Part G field test
       needed no change, so only if clutter becomes a problem.
 - [ ] Frame sync (software mode): earliest-peak-above-threshold lock instead of argmax.
 - [ ] 1/R^2 amplitude realism via `soft_model.add_amplitude`.
 - [ ] Offline soft model runs with MTI_EN both ways (detector self-test regression).
 - [ ] I5b - ADI FIR reclaim, deferred until a fabric FFT runs short of DSPs (99/220
-      used; a range + Doppler FFT is ~10-35, and a 2D FFT is bound by corner-turn
-      BRAM, not DSPs). Delete the four unused ADI FIRs (44 DSPs; recipe in the archived
+      used; range + Doppler FFT ~10-35, 2D FFT bound by corner-turn
+      BRAM not DSPs). Delete four unused ADI FIRs (44 DSPs; recipe in archived
       Phase 5 guide, Section 4.2 - easy to miss: `logic_or/Op1 <- dac_valid_i0`, and
-      `rm` the e200 `.dtb` after the dtsi edit). The halfband fold is done (folded FIR,
+      `rm` e200 `.dtb` after dtsi edit). Halfband fold done (folded FIR,
       48 -> 24). Done when software mode and `dechirp_verify.py --ab` still pass.
 - [ ] Spur source (`docs/rf_and_regulatory.md` "Spurs riding the chirp"): halve
-      `CHIRP_BW_HZ` (spur ranges double, targets stay), then power the board from
+      `CHIRP_BW_HZ` (spur ranges double, targets stay), then power board from
       another supply (which family is external).
 
 ---
@@ -81,11 +79,11 @@ Part H deferred. Part J (`docs/archive/optionals.md`) blocks nothing, can run in
 
 Spec: `docs/AntSDR_Phase6_Antennas_Angle_Guide.md` ("G" = its sections).
 Rewritten 2026-09-28: angle from two switched TX antennas (2T1R TDM), not two
-receivers - 2R2T caps the E200 at 30.72 MSPS = ~6 m bins (G1.2). The phase is for
-learning RF: VNA, soldering, an RF component, antennas. Software lane first; order
-the RF kit (K4, K5) while it runs. Each lane starts with its reading in G13.
-Fabric FFT/CFAR is not planned - decision gate in G11. Tracking (K3, the K11 tracker)
-moved to Part L on 2026-11-05.
+receivers - 2R2T caps E200 at 30.72 MSPS = ~6 m bins (G1.2). Phase is for
+learning RF: VNA, soldering, RF component, antennas. Software lane first; order
+RF kit (K4, K5) meanwhile. Each lane starts with its reading in G13.
+Fabric FFT/CFAR not planned - decision gate in G11. Tracking (K3, K11 tracker)
+moved to Part L 2026-11-05.
 
 - [x] K0 - 2R2T boot check (2026-09-28): boots, fabric transparent, FS capped at
       30.72 MSPS, which moved the angle plan to 2T1R. Fallback in G App. B,
@@ -133,12 +131,12 @@ moved to Part L on 2026-11-05.
       desktop as of 2026-11-12**: commit it from the laptop). In the radar the E200's
       TX1 -> RX1 leak lands ~1 range bin from the path, common to A and B and only ~5-10 dB
       under it (estimate from K7): psi off by tens of deg; under 1 deg at 30 deg needs it
-      ~30 dB down. The VNA gives the curve's shape. The radar adds one offset, constant to
-      ~1 deg of psi (the E200 TX1 port against the switch's state-dependent RFC match,
+      ~30 dB down. VNA gives the curve's shape. Radar adds one offset, constant to
+      ~1 deg of psi (E200 TX1 port against switch's state-dependent RFC match,
       -8 / -10 dB): psi0, set on field day 2 (K11) from a corner reflector carried
       radially along boresight at >= 1.5 m/s, >= 20 m out, MTI on (moving, so MTI removes
-      the leak, TX-RX coupling and clutter from its cell). K10's cable test skipped step 0
-      and the in-rig VNA, so that offset model is unconfirmed: psi0 comes from the field.
+      leak, TX-RX coupling and clutter from its cell). K10's cable test skipped step 0
+      and in-rig VNA, so offset model unconfirmed: psi0 comes from the field.
   - [ ] Elevation cut on the turntable (`k9_turntable.md` 8): gives tilt -> fc (window in
         `CLAUDE.md`) and mount tilt
   - [ ] Gain by the two-antenna method on the VNA too, not the E200: same leak (G9.5)
@@ -217,8 +215,8 @@ reference sessions (spur test, L1 check) are on the laptop, not the desktop.
 
 ## Part H - PA + LNA + BPF (deferred purchases)
 
-Part G worked without any of it, so buy only if a real range limit shows up, and
-only into a dummy load, a cage, or with an amateur licence. The LNA likely pays off before the PA (NF buys SNR
+Part G worked without any, so buy only if real range limit shows up, and
+only into dummy load, cage, or with amateur licence. LNA likely pays off before PA (NF buys SNR
 linearly, TX power buys range^(1/4)).
 
 - [ ] LNA at the RX antenna (sets system NF, ~+20 dB / NF ~1.3 dB class) + 3-6 dB
@@ -232,8 +230,8 @@ linearly, TX power buys range^(1/4)).
 
 ## TODO - markdown cleanup
 
-Too many markdown files. Fold or delete; git history keeps everything. Update the
-`CLAUDE.md` project map in the same change.
+Too many markdown files. Fold or delete; git history keeps everything. Update
+`CLAUDE.md` project map in same change.
 
 - [ ] `scripts/antenna_design/eps_r_sweep.md`: generated; let `sweep_eps_r.py` print the
       table and keep only the PNG.

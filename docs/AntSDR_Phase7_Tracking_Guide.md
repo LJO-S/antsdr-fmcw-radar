@@ -4,17 +4,16 @@ Runs in parallel with Phase 6 (Part K). Split out of Phase 6 on 2026-11-05: it t
 (tracker in range and velocity) and the tracker half of K11 (x, y). Phase 6 keeps the field
 days, which are RF work, and they record the sessions this phase validates on (Section 12).
 
-Same contract as before: this guide specifies, you write the code. Conventions live in
-`CLAUDE.md` and `.claude/rules/` (`dsp.md` for the detection pipeline, `app.md` for the
-worker and GUI); this guide only states what is new. "G6" = the Phase 6 guide.
+Same contract: guide specifies, you write code. Conventions in `CLAUDE.md` and
+`.claude/rules/` (`dsp.md` detection pipeline, `app.md` worker and GUI); guide states only what is new. "G6" = the Phase 6 guide.
 
 ## 1. What and why
 
-Today each CPI's detections go straight to the screen: a list that flickers at 25 CPI/s
-with targets near the threshold, CFAR false alarms (~0.1 per CPI), the four chirp spurs
-and, in triangle mode, up-only and down-only detections. A tracker turns them into tracks:
-stable IDs, smoothed range and velocity (later x and y), and no one-CPI false alarms on
-screen. It is also the project's first estimation work: Kalman filters, consistency
+Today each CPI's detections go straight to screen: list flickers at 25 CPI/s
+with targets near threshold, CFAR false alarms (~0.1 per CPI), the four chirp spurs
+and, in triangle mode, up-only and down-only detections. A tracker gives
+stable IDs, smoothed range and velocity (later x and y), no one-CPI false alarms on
+screen. Also the project's first estimation work: Kalman filters, consistency
 tests, data association.
 
 | Step | Payoff | Gated by |
@@ -37,7 +36,7 @@ Phase 6 field day 2 (patches + TDM on air, psi0 set) -----> L6b validate (x, y)
 ```
 
 **Done** when the synthetic tests pass, loopback fake targets track live, and real targets
-track on recordings: (r, v) on K6's, (x, y) on field day 2's. So the phase closes after
+track on recordings: (r, v) on K6's, (x, y) on field day 2's. Phase closes after
 Phase 6's field days; everything before L6 can run now.
 
 **Not in this phase**: drones; JPDA, MHT, PMBM/PHD; a particle filter; clustering in the
@@ -75,7 +74,7 @@ regenerates them); tracking in the fabric.
 | Does the target change behaviour? | the motion model is sometimes wrong | Q (`sa`) -> adaptive Q -> IMM |
 
 A target that stops, starts or brakes is still linear: constant velocity plus random
-acceleration. Q carries the random acceleration; `sa` says how hard targets may manoeuvre.
+acceleration. Q carries it; `sa` = how hard targets may manoeuvre.
 
 ### 3.2 The choices
 
@@ -102,12 +101,10 @@ Constant-velocity filter, steady state under 8 m/s^2 braking, 25 CPI/s, `sr` 0.7
 | r and v measured, `sa` 10 | 0.01 m | 0.27 m/s | 0.37 m/s | 2.6 |
 | r only, `sa` 3 | 1.76 m | 5.31 m/s | 0.49 m/s | - |
 
-- The measured v cuts the lag about tenfold: a braking car shows its new speed in the next
-  CPI.
+- Measured v cuts lag ~tenfold: braking car shows new speed next CPI.
 - At `sa` 3, hard braking puts the mean NIS at the 9.21 gate and the track drops out;
-  normal braking (3 m/s^2) gives NIS 3. Raising `sa` costs little noise because v is
-  measured. **Default `sa` = 10** (5 until 2026-11-12), tuned by NIS (L0 exercise 1, L6).
-- Why 10: the mean NIS hides the tail. On the L2 tracker (30 runs each, 25 CPI/s, Pd 0.9,
+  normal braking (3 m/s^2) gives NIS 3. Raising `sa` costs little noise: v is measured. **Default `sa` = 10** (5 until 2026-11-12), tuned by NIS (L0 exercise 1, L6).
+- Why 10: mean NIS hides the tail. On the L2 tracker (30 runs each, 25 CPI/s, Pd 0.9,
   6.5's fail floor in place), share of runs that keep one ID:
 
   | Scene | `sa` 5 | `sa` 10 |
@@ -135,16 +132,15 @@ Constant-velocity filter, steady state under 8 m/s^2 braking, 25 CPI/s, `sr` 0.7
   | 20 dB SNR (sigma_theta 1.8 deg) | 0.14 | 0.43 |
   | 13 dB SNR (sigma_theta 4 deg) | 0.7 | 2.2 |
 
-  L0 exercise 3 (300 m, 13 dB): the UKF lowers the NEES ~30 %, not enough to switch. The
-  EKF stays, with a larger `sa` (9.1).
+  L0 exercise 3 (300 m, 13 dB): UKF lowers NEES ~30 %, not enough to switch. EKF
+  stays, larger `sa` (9.1).
 - **Track start**: v_r gives only the radial part of the velocity; the sideways part starts
   with a large variance. And `v_r = (x vx + y vy) / r` reads (x, vx) and (-x, -vx) alike
   while x is uncertain: near boresight at 300 m and 13 dB a few tracks start on the wrong
   sideways sign and take seconds to recover. No Gaussian filter, EKF or UKF, fixes that.
 - The same geometry shows up in (r, v) as apparent radial acceleration: a target at speed
   s passing at distance d has `d2r/dt2 = s^2 d^2 / r^3`, up to `s^2 / r` at closest
-  approach (11 m/s^2 for 15 m/s at 20 m). In (r, v) `sa` must absorb it; the Cartesian state
-  removes it by construction.
+  approach (11 m/s^2 for 15 m/s at 20 m). In (r, v) `sa` must absorb it; Cartesian state removes it by construction.
 
 ---
 
@@ -212,8 +208,8 @@ Done when the three exercises are run and their results noted.
   - TDM: on `|X_A|^2 + |X_B|^2`. Signal and noise estimate both double, so this is the per-channel SNR the angle-noise formula wants (9.1), not 3 dB above it (Monte Carlo on `cfar_ca_2d`, 2026-11-11).
 - `offline/profile_cpi.py` mirrors `process_cpi` and asserts it equal: change both.
 - `replay --check` compares whole dicts (`offline/replay.py`, `check()` and `Player`'s per-CPI check): 
-  - Problem: A new key fails every older session. 
-  - Solution: Compare only the keys the recorded line has: older sessions keep checking exact, and new sessions record `snr_db` and check it too.
+  - Problem: new key fails every older session. 
+  - Solution: compare only keys the recorded line has: older sessions keep checking exact, new sessions record `snr_db` and check it too.
 
 Done when:
   - the old reference sessions still pass `replay --check` 
@@ -234,7 +230,7 @@ Done when:
 
 ### 6.2 Filter interface
 
-At the filter level, not the matrix level, so a KF, an EKF, a UKF and an IMM all plug in
+At filter level, not matrix level: KF, EKF, UKF and IMM all plug in
 without touching association or track management:
 
 ```
@@ -252,14 +248,14 @@ class TrackFilter:                 # one instance per track
     pair_d2(filters) -> d2 (n, n)               # duplicates
 ```
 
-`predict` and `update` are one-filter calls of the batched versions, so the maths has one
-code path and the filter tests run what the tracker runs.
+`predict` and `update` are one-filter calls of the batched versions: one
+code path, filter tests run what the tracker runs.
 
 The model is chosen once from the config: 
 - `TDM_EN` = True -> EKF (or UKF) 
 - `TDM_EN` = False -> KF 
 
-One session has one config, so nothing switches mid-run. Until L5 exists, `TDM_EN` also gets the (r, v) KF and theta is ignored.
+One session = one config, nothing switches mid-run. Until L5 exists, `TDM_EN` also gets the (r, v) KF, theta ignored.
 
 ### 6.3 The (r, v) Kalman filter
 
@@ -292,16 +288,16 @@ H by kind:  "up"   [[1,  k],
 where k = CHIRP_FC_HZ * T_EFF / CHIRP_BW_HZ   # ~0.012 s, dsp.md "Range-Doppler coupling"
 ```
 
-- The v innovation is wrapped into [-`MAX_VELOCITY`, `MAX_VELOCITY`): the Doppler axis is
-  circular (`dsp.md`). It only matters near the edge.
+- v innovation wrapped into [-`MAX_VELOCITY`, `MAX_VELOCITY`): Doppler axis is
+  circular (`dsp.md`). Matters only near the edge.
 - Defaults: 
     - `sr` = 0.7 m (sub-bin refined, bins are 3.0 m)
     - `sv` = 0.5 m/s
     - `sa` = 10 m/s^2 (3.3)
-    - Fixed R to start; scaling it per detection from `snr_db` is an upgrade (Section 10).
-    - `sr` and `sv` cover measurement noise only. On a car the strongest reflection wanders
-      over the body (gtrack sizes its car gate for +-4 m, +-2 m/s), so expect L6a to need a
-      larger `sr` for cars (Section 10).
+    - Fixed R to start; per-detection scaling from `snr_db` is an upgrade (Section 10).
+    - `sr` and `sv` cover measurement noise only. On a car strongest reflection wanders
+      over the body (gtrack car gate +-4 m, +-2 m/s): expect L6a to need larger
+      `sr` for cars (Section 10).
 - **Why DWNA**: Labbe and gtrack (2.3) recommend the continuous model (CWNA,
   `Q = q * [[dt^3/3, dt^2/2], [dt^2/2, dt]]`) for irregular dt. Measured 2026-11-06, 8 m/s^2
   braking, CWNA's `q` matched to `sa` 5 at 25 CPI/s, mean NIS:
@@ -312,8 +308,8 @@ where k = CHIRP_FC_HZ * T_EFF / CHIRP_BW_HZ   # ~0.012 s, dsp.md "Range-Doppler 
   | 6/s | 3.9 | 12.3 |
   | 20-50 ms jitter | 4.2 | 4.1 |
 
-  A manoeuvre's prediction error grows as `a*dt`, and so does DWNA's noise (`sa*dt`); CWNA's
-  grows as `sqrt(dt)` and falls behind at low CPI rates. CWNA fits white-noise truth, not
+  Manoeuvre prediction error grows as `a*dt`, so does DWNA's noise (`sa*dt`); CWNA's
+  grows as `sqrt(dt)`, falls behind at low CPI rates. CWNA fits white-noise truth, not
   sustained braking or turns.
 
 ### 6.4 Association
@@ -327,12 +323,12 @@ where k = CHIRP_FC_HZ * T_EFF / CHIRP_BW_HZ   # ~0.012 s, dsp.md "Range-Doppler 
      (+-3 range and +-3 velocity bins around its prediction). A walker's second dot sits
      1-2 velocity bins off, at d^2 12-48: outside the gate, inside the window.
 
-  Why two stages: a fresh tentative track has a large S, so its d^2 to everything is small,
-  and in one stage it steals detections from confirmed tracks. (Textbook alternative: cost
+  Why two stages: fresh tentative track has large S, so d^2 to everything is small;
+  in one stage it steals detections from confirmed tracks. (Textbook alternative: cost
   `d^2 + ln|S|`.)
 - Triangle: every `kind` is accepted, each with its own H.
-- **Accepted limit**: two targets in one NMS window give one detection, so one track (two
-  people walking side by side). Angle cannot split them either: two virtual elements give
+- **Accepted limit**: two targets in one NMS window = one detection = one track (two
+  people side by side). Angle cannot split them: two virtual elements give
   one blended angle per cell (G6 10.1).
 
 ### 6.5 Track management
@@ -344,7 +340,7 @@ where k = CHIRP_FC_HZ * T_EFF / CHIRP_BW_HZ   # ~0.012 s, dsp.md "Range-Doppler 
   whose range does not move with its v (only spurs are tested, (i)):
   - Over the track's history (the last `W` = `TRACK_KINEMATIC_WINDOW_S`, 3 s) fit the slope of the *measured* r vs t
     (the filter's r follows its own v, so it would always pass).
-  - Compare with the mean measured v over the same window, unrolled to the track (6.6). Both are the window's mean velocity, so a constant acceleration cancels exactly. A change of acceleration `da` inside the window does not: it leaves `d ~ 0.03 * da * W` (0.75 m/s for 8 m/s^2 braking that starts mid-window).
+  - Compare with the mean measured v over the same window, unrolled to the track (6.6). Both are the window's mean velocity: constant acceleration cancels exactly. Change of acceleration `da` inside window does not: leaves `d ~ 0.03 * da * W` (0.75 m/s for 8 m/s^2 braking that starts mid-window).
   - `d = slope - v_mean`, `sigma_d = sqrt(sigma_slope^2 + sigma_vmean^2)`, with
     `sigma_slope = sr / sqrt(sum((t - t_mean)^2))` (exact for any dt and misses),
     `sigma_vmean = sv / sqrt(N)`, `k = TRACK_KINEMATIC_SIGMA` (3).
@@ -359,14 +355,14 @@ where k = CHIRP_FC_HZ * T_EFF / CHIRP_BW_HZ   # ~0.012 s, dsp.md "Range-Doppler 
     Carlo over all four, 2026-11-11). Passing once `sigma_slope < |v| / k` let up to 90 % of
     spurs through (~50 % at the defaults); leaving sigma_vmean out of the condition did too
     for large sv.
-  - **Why fail at 2k, not k**: the check runs every CPI for the track's whole life. Failing
+  - **Why fail at 2k, not k**: check runs every CPI for the track's whole life. Failing
     at k sigma deleted ~80 % of real tracks within 2 min; at 2k none (2 Phi(-2k) per CPI).
-    It costs nothing on spurs: their d ~ |v| crosses 2k sigma_d when they become decisive.
+    Costs nothing on spurs: their d ~ |v| crosses 2k sigma_d when decisive.
   - **Why the `|v_mean| / 2` floor** (2026-11-12): sigma_d assumes white noise and shrinks
     to ~0.1 m/s over W, so the bare 2k rule fails at 0.66 m/s. A car's strongest reflection
     wanders over the body (correlated range noise), and braking or a pass leaves the `da`
-    term above: real confirmed tracks were deleted. A spur has d ~ |v|, a real target
-    d << |v|, so half of |v| splits them whatever the noise colour. Measured on the L2
+    term above: real confirmed tracks were deleted. Spur d ~ |v|, real target
+    d << |v|: half of |v| splits them whatever the noise colour. Measured on the L2
     tracker, 30 runs each, confirmed IDs per target (1 = ideal):
 
     | Scene | 2k only | With the floor |
@@ -377,7 +373,7 @@ where k = CHIRP_FC_HZ * T_EFF / CHIRP_BW_HZ   # ~0.012 s, dsp.md "Range-Doppler 
     | Passing 20 m off at 15 m/s, `sa` 10 | 2.1 | 1.1 |
 
     Spurs are unaffected: 6.9 (i) passes, and a track pulled onto a stronger spur by a
-    target passing at the spur's v dies as fast (0.2 s mean, 0.9 max). Cost: a stream
+    target passing at the spur's v dies as fast (0.2 s mean, 0.9 max). Cost: stream
     whose range moves at more than half its v no longer fails; a spur does not move.
   - **k alone sets the error rates**; sr, sv and the CPI rate only set the delay T, where
     `sigma_d(T) = |v| / (2k)` and `sigma_d^2 ~= 12 sr^2 / (rate T^3) + sv^2 / (rate T)`.
@@ -403,18 +399,18 @@ where k = CHIRP_FC_HZ * T_EFF / CHIRP_BW_HZ   # ~0.012 s, dsp.md "Range-Doppler 
     - Capping P while it coasts (sigma_v <= one bin, sigma_r <= bin x coast time) changes
       nothing: the 4 s stop keeps the ID in 35 of 40 seeds with and without it (32 and 34
       at `sa` 10). Not worth adding.
-  The tracker therefore needs each CPI's MTI state.
+  Tracker needs each CPI's MTI state.
 - **Duplicates**: two confirmed tracks within the gate of each other for `TRACK_MERGE_N`
   CPIs (10), measured as d^2 between their predicted measurements with `S = S_a + S_b`:
   delete the younger.
 - **Cap**: `TRACK_MAX` (100) tracks; at the cap no new tentative tracks start (logged
-  once). It protects the CPU when MTI is off in clutter (6.8).
+  once). Protects CPU when MTI is off in clutter (6.8).
 - **`TRACK_MIN_SPEED`** (0 = off): minimum |v| to start a track, for parked-car scenes
   with MTI off.
 - **Accepted: a slow crossing loses one ID.** Two targets inside one NMS window merge into
   one detection for `18 m / dv`: ~3.6 s for two cars at dv 5 m/s, ~36 s for one walker
-  overtaking another at 0.5 m/s. The track without detections coasts out and the target
-  returns under a new ID. Coasting for seconds to save the ID would cause more wrong
+  overtaking another at 0.5 m/s. Track without detections coasts out, target
+  returns under new ID. Coasting for seconds to save the ID causes more wrong
   reassociations than it fixes.
 - IDs are increasing integers, never reused within a run.
 
@@ -462,7 +458,7 @@ The gates (9.21, 11.34) are chi-square constants, not config.
 
 ### 6.8 Cost
 
-CPI budget ~33 ms, of which `process_cpi` takes ~25: the tracker gets a few ms at most.
+CPI budget ~33 ms, `process_cpi` takes ~25: tracker gets a few ms at most.
 Measured 2026-11-12 on the L2 tracker, 98 confirmed tracks, Pd 0.9, 2 false alarms per CPI:
 
 | Version | ms per CPI |
@@ -473,8 +469,8 @@ Measured 2026-11-12 on the L2 tracker, 98 confirmed tracks, Pd 0.9, 2 false alar
 - Batched: the classmethods of 6.2, one numpy pass for all tracks.
 - Running sums: `[n, t, t^2, r, t*r, v]` per track, t relative to its birth, added on
   append and subtracted on drop: O(1) per CPI. Drift over a 24 h track: 1e-5 m/s.
-- What is left is gathering x and P from the tracks ~6x per CPI; a struct of arrays
-  would remove it if ever needed.
+- Left: gathering x and P from tracks ~6x per CPI; struct of arrays
+  would remove it if needed.
 - L5's EKF must batch the same way: in a per-track loop it measured ~45 us per track
   (2026-11-05), ~5 ms at `TRACK_MAX` before track management.
 
@@ -535,16 +531,16 @@ Done when (a)-(k), (p)-(s) and the delay check pass.
 
 ## 7. L3 - app, playback, replay
 
-- **Worker**: owns the tracker (state across CPIs), calls
+- **Worker**: owns tracker (state across CPIs), calls
   `tracker.update(targets, t_cpi, mti_en)` right after `process_rx_data` with the CPI's
   capture timestamp (the one the recorder writes to `index.csv`, so replay reproduces it)
-  and MTI state, and rebuilds it on RE-CONFIGURE (including the revert).
-  A fake-target edit does not rebuild it: old tracks coast out.
-- **New signal `tracks`**: snapshots (plain dicts or copies), never the live `Track`
-  objects, which the worker keeps mutating. `results` is unchanged. With `TRACK_EN` off
+  and MTI state, rebuilds it on RE-CONFIGURE (incl. revert).
+  Fake-target edit does not rebuild it: old tracks coast out.
+- **New signal `tracks`**: snapshots (plain dicts or copies), never live `Track`
+  objects (worker keeps mutating them). `results` is unchanged. With `TRACK_EN` off
   there is no tracker and no signal.
 - **Playback**: `PlaybackWorker` owns its own tracker, runs it on the recorded times and
-  emits `tracks`. A seek resets the tracker, which then warms up again from the new
+  emits `tracks`. Seek resets tracker, warms up again from new
   position.
 - **Replay**: the default output is one JSON line per CPI with the tracks, including the NIS, for
   offline tuning (L6). `--track` runs the tracker on a session recorded without it, and
@@ -595,7 +591,7 @@ stands out in the History tab.
 - History: tracks over the range-vs-time and velocity-vs-time images, coloured as on the
   plots; the selected one as a yellow line.
 
-**Speed**: the GUI shares the GIL with the worker. The old Radar tab cost ~13.5 ms per CPI
+**Speed**: GUI shares the GIL with the worker. The old Radar tab cost ~13.5 ms per CPI
 at 20 detections and ~25 ms at 100 (table below). So: every CPI is taken in, only the
 current tab is drawn, tables refresh at <= 5 Hz. Budget for one Tracks-tab draw: 8 ms at 20
 detections per CPI + 10 tracks with TDM, 15 ms at 100 + 96 with Tentative on.
@@ -608,8 +604,8 @@ lower CPI rate than before (45.8 CPIs/s, L3).
 Built 2026-11-15 (8224403, 141e42f to 7b8c0c6, then the History tab). The rules are in
 `.claude/rules/app.md`. The spec above stands, except:
 
-- **Draw rate**: adaptive instead of a fixed ~30/s (user's choice): the GUI takes ~25 % of
-  the time whatever is on screen.
+- **Draw rate**: adaptive instead of fixed ~30/s (user's choice): GUI takes ~25 % of
+  time whatever is on screen.
 - **`tracks` signal** carries the capture time too, `(snapshots, t)`; `([], None)` clears.
   `TRACK_EN` defaults to True.
 - **Detection dots**: a coarse ~5 px image per plot, not scatter. Blocky; kept (user's
@@ -748,8 +744,8 @@ and loopback fake targets with `theta0` track live on the PPI.
 | Many false tracks | SPRT track score (Blackman), or a minimum `snr_db` to start a track (gtrack's `setSNRThre`) |
 | Weak far targets never confirm | Track-before-detect (research topic, skip) |
 
-Adaptive Q must trigger before the gate rejects the detection, or the track is lost with
-Q unchanged. Clutter associated to a track looks like a manoeuvre and can trigger it too.
+Adaptive Q must trigger before the gate rejects the detection, or track is lost with
+Q unchanged. Clutter associated to a track looks like a manoeuvre, can trigger it too.
 
 ---
 
