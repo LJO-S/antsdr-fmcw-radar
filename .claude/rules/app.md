@@ -13,7 +13,8 @@ paths:
 - **`RadarWorker(QThread)` owns `(config, ctx, sdr)` triple**; only touched from `run()` (worker
   thread), incl. `AntSDR` construction. GUI thread never touches sdr/ctx, worker never touches
   widgets.
-- Worker -> GUI: Qt signals only (`results`, `error`, `reconfigure_done`, `signals` -
+- Worker -> GUI: Qt signals only (`results`, `error`, `reconfigure_done`, `signals`,
+  `recording`, `tracks` -
   payload `object` for numpy arrays). Cross-thread emits auto-queued to GUI thread.
 - GUI -> worker: `reconfigure_requested` -> `pending_cfg` (fresh `RadarConfig`), swapped in
   between CPIs (new ctx, `radio.config = new`, `close()`/`start()`), with **last-good revert**
@@ -59,7 +60,8 @@ paths:
   matter. Worker rebuilds tracker on RE-CONFIGURE (incl. revert);
   `Player` resets it on any jump except a step forward. `python -m offline.replay`
   prints `{block, t, tracks}` lines (NIS included; null without `TRACK_EN` in session).
-  `--track` forces tracker on, `--set TRACK_X=V` overrides a tracking field (L6 tuning).
+  `--track` forces tracker on, `--set TRACK_X=V` overrides a tracking field (L6 tuning);
+  `offline.playback` takes both too.
   Only `TRACK_*` fields: they cannot change detections, so replay stays exact.
   Warnings go to stderr, so stdout stays pure JSON.
 - Spectrogram emits **throttled to ~2 Hz** (`_last_spec_update`) and cover only 2 chirps.

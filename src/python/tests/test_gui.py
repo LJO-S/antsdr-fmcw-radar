@@ -558,8 +558,12 @@ def test_rd_alignment():
         d = make_display(cfg)
         d.show()
         d.xs_toggle.setChecked(True)  # triangle: single-ramp crosses
-        _, _, ranges, vels, _ = frame(cfg, 0, rng)
-        dv, dr = vels[1] - vels[0], ranges[1] - ranges[0]
+        _, _, ranges, _, _ = frame(cfg, 0, rng)
+        # Real Doppler axis (fftshift, as process_cpi): -vmax .. vmax - dv
+        assert cfg.CHIRP_REPS == N_DOPPLER
+        dv = 2 * cfg.MAX_VELOCITY / N_DOPPLER
+        vels = (np.arange(N_DOPPLER) - N_DOPPLER // 2) * dv
+        dr = ranges[1] - ranges[0]
         for i, j in [(0, 0), (N_DOPPLER - 1, N_RANGE - 1), (0, N_RANGE - 1),
                      (N_DOPPLER // 2, N_RANGE // 3), (17, 400)]:
             up = np.full((N_DOPPLER, N_RANGE), -70.0, np.float32)
@@ -577,16 +581,20 @@ def test_rd_alignment():
             if cfg.TRIANGLE_EN:
                 assert abs(d.scatter_up.data["x"][-1] - vels[i]) < dv / 2
             else:
-                # Fading dot: trail point within half a bin, its image cell holds it
+                # Fading dot: trail point within half a bin, dot in the RD pixel's
+                # column, also off the bin centre (+-0.3 bin must not flip cells)
                 v_dot, r_dot = d._trail.arrays()[0][-1]
                 assert abs(v_dot - vels[i]) < dv / 2 and abs(r_dot - ranges[j]) < dr / 2
-                nx, ny = d.det_dots.image.shape
-                vmax, rmax = cfg.MAX_VELOCITY, cfg.MAX_RANGE
-                cell = (
-                    min(int((v_dot + vmax) / (2 * vmax) * nx), nx - 1),
-                    min(int(r_dot / rmax * ny), ny - 1),
-                )
-                assert d.det_dots.image[cell] == 4
+                ny = d.det_dots.image.shape[1]
+                cell_r = min(int(r_dot / cfg.MAX_RANGE * ny), ny - 1)
+                assert d.det_dots.image[i, cell_r] == 4, (name, i)
+                for off in (-0.3, 0.3):
+                    d._trail.clear()  # same age level: older dots would mask a miss
+                    tgt = [{**tgt[0], "v": float(vels[i] + off * dv)}]
+                    d.update(up, down, ranges, vels, tgt)
+                    d.draw_now()
+                    assert d.det_dots.n == 1, (name, i, off)
+                    assert d.det_dots.image[i, cell_r] == 4, (name, i, off)
             # Signal tab maps use the same rect; down map is Doppler-mirrored
             d.centralWidget().setCurrentWidget(d._signal_tab)
             d.draw_now()

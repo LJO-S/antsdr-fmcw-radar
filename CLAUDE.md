@@ -120,7 +120,7 @@ python -m offline.soft_model        # run simulation + GUI
 python -m common.gui                # GUI with pseudo-data only
 python -m online.app                # live SDR app (needs AntSDR at SDR_IP)
 python -m online.sdr                # standalone loopback test with matplotlib debug plots
-python -m offline.playback [dir]    # recorded session in the GUI (no board); Open... picks one
+python -m offline.playback [dir] [--track] [--set TRACK_X=V]  # recorded session in the GUI (no board); Open... picks one
 python -m offline.replay <dir> [--check | --track] [--set TRACK_X=V]  # headless replay (JSON line per CPI, with tracks); --check vs the live detections
 python run_tests.py [-v] [name]     # all board-free test suites (name = substring filter)
 ```

@@ -537,8 +537,8 @@ Done when (a)-(k), (p)-(s) and the delay check pass.
   and MTI state, rebuilds it on RE-CONFIGURE (incl. revert).
   Fake-target edit does not rebuild it: old tracks coast out.
 - **New signal `tracks`**: snapshots (plain dicts or copies), never live `Track`
-  objects (worker keeps mutating them). `results` is unchanged. With `TRACK_EN` off
-  there is no tracker and no signal.
+  objects (worker keeps mutating them). With `TRACK_EN` off there is no tracker and no
+  signal. Built (8.1): `(snapshots, capture t)`, and `results` carries the capture t too.
 - **Playback**: `PlaybackWorker` owns its own tracker, runs it on the recorded times and
   emits `tracks`. Seek resets tracker, warms up again from new
   position.

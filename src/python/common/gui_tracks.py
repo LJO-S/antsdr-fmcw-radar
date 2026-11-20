@@ -1,12 +1,15 @@
 """
-Track layer of the Tracks tab (L4 WP5).
+Track layer of the Tracks tab, track list and History track data.
 
 TrackStore  - no Qt. Per track id: ~2 s tail, direction class (hysteresis), age,
-              latest snapshot. Fed Track.snapshot() dicts by RadarDisplay.update_tracks()
-              read by layers (later track list, selection, History)
+              latest snapshot, 0.1 s-bin history (History tab). Fed Track.snapshot()
+              dicts by RadarDisplay.update_tracks(); read by layers, list, History
 DetectionTrail - no Qt. Last ~1 s of detections as age buckets (fading dots)
+DotImage    - fading dots of one plot as one premultiplied image on a coarse grid
+TrackTableModel - track list: confirmed tracks by num, cell strings cached, <= 5 Hz
 TrackLayer  - Qt items of one plot, built once: heads, tails, labels, tentative
-              rings. One per plot: (r, v) plot (x = v, y = r) and PPI (x, y)
+              rings, selection ring + thick tail. One per plot: (r, v) plot
+              (x = v, y = r) and PPI (x, y)
 nice_ticks  - round tick positions (1-2-5 x 10^n) for cheap grid
 
 Sign conventions as repo: v > 0 receding, theta > 0 towards B,
@@ -290,7 +293,7 @@ class DetectionTrail:
 
     def arrays(self):
         """(rv, rv_level, xy, xy_level), oldest CPI first (newest wins when drawn)
-        Level = DET_LEVELS for newest age bucket down to 1, older than DET_FADE_S
+        Level = len(DET_ALPHAS) for newest age bucket down to 1, older than DET_FADE_S
         left out"""
         n = len(DET_ALPHAS)
         rv, xy, lrv, lxy = [], [], [], []
@@ -421,7 +424,7 @@ class DotImage:
         if len(a_pts):
             ix = np.floor((a_pts[:, 0] - x0) / (x1 - x0) * nx).astype(int)
             iy = np.floor((a_pts[:, 1] - y0) / (y1 - y0) * ny).astype(int)
-            # edges inclusive (v = +vmax is real bin) -> clip into last cell
+            # up to one cell past top edge (r = rmax, v near +vmax) -> last cell
             ok = (ix >= 0) & (ix <= nx) & (iy >= 0) & (iy <= ny)
             ix, iy = np.minimum(ix[ok], nx - 1), np.minimum(iy[ok], ny - 1)
             img[ix, iy] = a_level[ok]

@@ -30,7 +30,7 @@ def spectrograms(
     a_ctx: dsp.CPIContext,
 ):
     """
-    (rx_spec, if_spec, t, f) over 2 chirp periods for the Signals tab. Shared by the
+    (rx_spec, if_spec, t, f) over 2 chirp periods for the Signal tab. Shared by the
     live worker and playback.
     """
     if a_config.FABRIC_DECHIRP_EN:

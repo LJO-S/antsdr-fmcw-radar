@@ -148,7 +148,7 @@ class Frame:
 
     block: int
     t: float  # monotonic capture time, as recorded
-    rx: np.ndarray  # prepare_block output (the Signals tab needs it)
+    rx: np.ndarray  # prepare_block output (the Signal tab needs it)
     outputs: tuple  # process_rx_data: up, down, targets, ranges, velocities, if
     mti: bool  # the MTI_EN this CPI ran with
     recorded: dict | None  # its detections.jsonl line, None if there is none

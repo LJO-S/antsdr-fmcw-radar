@@ -48,8 +48,7 @@ class RadarDisplay(QMainWindow):
     """
     Tab 0 - Tracks (TDM: PPI left, no TDM: (r, v) plot left):
     ┌───────────────────────────────────────────────────────┐
-    │ [] MTI [] Detections [] Tentative [] Up/Down          │
-    │ [] Record [notes                                    ] │
+    │ MTI, Detections, Tentative, Up/Down, Record, notes    │
     ├───────────────────────────┬───────────────────────────┤
     │                           │ (r, v) plot over dimmed   │
     │  Sector-PPI x-y (TDM)     │ up-chirp RD map           │
@@ -67,11 +66,12 @@ class RadarDisplay(QMainWindow):
     │  IF spectrogram                                   │
     └───────────────────────────────────────────────────┘
 
-    Tab 2 - History (last N s, detections as dots):
+    Tab 2 - History (last N s; detections and tracks as class masks, selected track
+    as a yellow curve):
     ┌─────────────────────────────────────────┐
-    │  Range vs time (RTI)                    │
+    │  Range (vs time)                        │
     ├─────────────────────────────────────────┤
-    │  Velocity vs time                       │
+    │  Velocity (vs time)                     │
     └─────────────────────────────────────────┘
 
     Tab 3 - Config:
@@ -81,9 +81,9 @@ class RadarDisplay(QMainWindow):
     │  Radar Parameters       │ Cfg Button  │
     └─────────────────────────┴─────────────┘
 
-    Intake and draw split: update(), update_signals(), update_recorded() only keep
-    newest data (feed History buffers every CPI) and mark dirty. One 33 ms timer draws
-    current tab when dirty; tab change draws new tab at once; draw_now() = one full
+    Intake and draw split: update(), update_signals(), update_recorded(),
+    update_tracks() only keep newest data (feed History buffers every CPI) and mark
+    dirty. One timer (adaptive interval, 33-250 ms) draws current tab when dirty; tab change draws new tab at once; draw_now() = one full
     draw without timer. Frames held by reference until drawn, so callers pass fresh
     arrays per CPI (process_cpi does).
 
@@ -1183,7 +1183,7 @@ class RadarDisplay(QMainWindow):
             self.vti_sel.setVisible(len(x) > 0)
 
     def update_signals(self, a_rx_spec, a_if_spec, a_t, a_f):
-        """Intake only; drawn while Signals tab current. None keeps that plot's
+        """Intake only; drawn while Signal tab current. None keeps that plot's
         pending or drawn image."""
         if a_rx_spec is not None:
             self._spec_rx = a_rx_spec
@@ -1339,8 +1339,12 @@ class RadarDisplay(QMainWindow):
             (0.0, r_max),
         )
         self.det_grid.setData(x=gx, y=gy)
-        # Fading-dot grids: ~5 px cells ((r, v) plot) / rmax / 140 (PPI)
-        self.det_dots.configure(-v_max, v_max, 0.0, r_max, 128, 100)
+        # Fading-dot grids. (r, v) plot: one cell per Doppler bin, edges on bin
+        # edges like the RD image, so a dot on a bin centre stays in one cell.
+        # PPI: rmax / 140
+        n_v = a_config.CHIRP_REPS
+        dv = 2 * v_max / n_v
+        self.det_dots.configure(-v_max - dv / 2, v_max - dv / 2, 0.0, r_max, n_v, 100)
         half_w = r_max * np.sin(np.radians(self.XY_FOV_DEG))
         self.xy_dots.configure(
             -half_w, half_w, 0.0, r_max, int(round(2 * half_w / r_max * 140)), 140

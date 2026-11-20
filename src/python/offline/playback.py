@@ -1,7 +1,10 @@
 """
 K2 visual playback: a recorded session in the radar GUI, no board needed.
 
-    python -m offline.playback [session_dir]
+    python -m offline.playback [session_dir] [--track] [--set TRACK_X=V ...]
+
+--track / --set as in offline.replay (tracker on a session recorded without it,
+tracking fields overridden), for every session opened.
 
 The live app's RadarDisplay in playback mode (config and fake targets read-only,
 no recording, a PLAYBACK status bar), with a gui.PlayerBar on top. PlaybackWorker
@@ -39,8 +42,9 @@ class PlaybackWorker(QThread):
     position = Signal(object)  # dict: block, t, mti, mti_forced, n_replayed, ...
     playing = Signal(bool)
 
-    def __init__(self):
+    def __init__(self, a_overrides: dict | None = None):
         super().__init__()
+        self._overrides = a_overrides  # replay.parse_overrides(), every Player
         # GUI -> worker. Commands go through a queue so no seek or step is lost or
         # reordered; the speed is a plain float (atomic under CPython)
         self._cmds = queue.SimpleQueue()
@@ -94,7 +98,7 @@ class PlaybackWorker(QThread):
                 if cmd == "open":
                     set_playing(False)
                     try:
-                        new = replay.Player(arg)
+                        new = replay.Player(arg, self._overrides)
                         if new.n_blocks == 0:
                             raise ValueError("no complete block in the session")
                     except Exception:
@@ -237,16 +241,16 @@ def _status(a_pos: dict, a_noisy: bool) -> tuple[str, str | None]:
 
 
 # ===================================================================================
-def build_app():
+def build_app(a_overrides: dict | None = None):
     """Display, player bar and worker, wired up: main() minus the event loop.
-    Needs a QApplication."""
+    Needs a QApplication. a_overrides: replay.parse_overrides(), every session"""
     display = gui.RadarDisplay(a_config=config.RadarConfig())  # until a session loads
     display.set_playback_mode()
     bar = gui.PlayerBar(a_start_dir=recorder.DEFAULT_ROOT)
     display.addToolBar(Qt.TopToolBarArea, bar)
     display.set_recorded_visible(bar.recorded_box.isChecked())
 
-    worker = PlaybackWorker()
+    worker = PlaybackWorker(a_overrides)
     noisy = False
 
     def on_loaded(a_info):
@@ -295,10 +299,26 @@ def build_app():
 def main():
     ap = argparse.ArgumentParser(description="Play a recorded K2 session in the GUI")
     ap.add_argument("session", nargs="?", type=Path, help="session directory")
+    ap.add_argument(
+        "--track", action="store_true", help="run the tracker even if TRACK_EN was off"
+    )
+    ap.add_argument(
+        "--set",
+        action="append",
+        default=[],
+        metavar="TRACK_X=V",
+        help="override a tracking field, e.g. TRACK_STD_A=10 (repeatable)",
+    )
     args = ap.parse_args()
+    try:
+        overrides = replay.parse_overrides(["TRACK_EN=1"] * args.track + args.set)
+    except ValueError as e:
+        ap.error(f"--set {e}")
+    if overrides:
+        print(f"overrides: {overrides}")
 
     app = QApplication(sys.argv)
-    display, bar, worker = build_app()
+    display, bar, worker = build_app(overrides)
     display.show()
     worker.start()
     if args.session is not None:
