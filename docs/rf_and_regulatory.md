@@ -52,7 +52,9 @@ RD map floor is ~-63 dBc.
   With it, the predicted Doppler lands within ~1-2 bins.
 - **Not baseband**: a fixed tone added after the mixer would smear across all ranges in
   software mode, where the dechirp runs on the host. These stay sharp, so the modulation
-  sits on the RF or LO path. Switching regulators are the likely source (unverified).
+  sits on the RF or LO path. They are internal to the E200 (present with every port on a
+  50 ohm load) and move with fc (56 m at 5.8 GHz, 93 m at 5.725), so the source follows the
+  synthesizer setting: a fixed-frequency switching regulator alone would not move them.
 - **Consequences**: they ride on whatever is strongest, so in the field expect them on
   the antenna leakage at about the same dBc. Range fixed with v nonzero contradicts
   `dr/dt = v`: the tracker's kinematic check keeps them from confirming (Phase 7

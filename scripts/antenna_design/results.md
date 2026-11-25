@@ -189,6 +189,7 @@ files in `local/k9_bench/` (git-ignored). A = J1 (outer column), B = J2 (next to
 | Column S11, raw null | | RX 5.734, A 5.751, B 5.754 GHz (-26 / -27 / -23 dB) |
 | Column S11, worst 5.75-5.85 GHz | -18 dB (sim, ideal port) | RX -6.5, A -8.1, B -8.4 dB |
 | Coupling A-B, worst 5.75-5.85 GHz | -24.3 dB | **-25.8 dB** (mean -28.8) |
+| Coupling TX col A -> RX col, 80 cm side by side, indoors (2026-11-21) | | -51 dB mean, -45 worst in 5.75-5.85 GHz; witnesses open or loaded: same within 0.3 dB |
 
 - **The batch is ~0.2 above the design.** Thickness and eps_r match the K8 lines. The witness
   curves overlap K8's away from resonance (same launch, solder repeatable); only the
@@ -201,6 +202,9 @@ files in `local/k9_bench/` (git-ignored). A = J1 (outer column), B = J2 (next to
   ~5 deg. The elevation cut (`k9_turntable.md` 8) measures it; fc and the mount tilt follow.
 - Coupling is S21 over a thru (cables + barrel), not 2-port calibrated: +-0.5 dB of port-match
   ripple.
+- TX -> RX board coupling is room-dominated (echoes 5-40 ns after the first arrival, nearly as
+  strong): -51 dB is an upper bound for open air. Port to port, with cables and switch, ~-60 dB:
+  16-20 dB under the E200's internal leak (`.claude/rules/sdr.md`, "Noise floor").
 
 Below: the 4.4 design, all at eps_r 4.4, h 1.5 mm, tan d 0.02, PEC copper.
 Far-field numbers corrected for a phase-centre units bug (fixed in `column_sim.py`).

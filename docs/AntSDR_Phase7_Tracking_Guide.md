@@ -447,7 +447,6 @@ where k = CHIRP_FC_HZ * T_EFF / CHIRP_BW_HZ   # ~0.012 s, dsp.md "Range-Doppler 
 | `TRACK_CONFIRM_M` / `TRACK_CONFIRM_N` | 3 / 4 | CPIs |
 | `TRACK_KINEMATIC_SIGMA` | 3 | sigma |
 | `TRACK_KINEMATIC_WINDOW_S` (W) | 3 | s |
-| `TRACK_KINEMATIC_WINDOW_S` | 3 | s |
 | `TRACK_DELETE_S` | 0.5 | s |
 | `TRACK_STOP_COAST_S` | 5 | s |
 | `TRACK_MERGE_N` | 10 | CPIs |
@@ -716,7 +715,11 @@ detections per CPI), from the sessions' `index.csv`:
 - (m) **Turn**: a car at 15 m/s turning 90 deg at 100 m. Report the sideways lag and the
   NIS through the turn. This test decides adaptive Q, a CA model or an IMM (Section 10).
 - (n) **Long range**: 300 m at 13 dB, random heading (`ex3_ekf_ukf.py` is the template):
-  mean NEES in the 95 % band after the first 5 s. The start-up bump is expected (3.4).
+  mean NEES under the 95 % band's upper edge after the first 7.5 s (one-sided: truth `sa` 5
+  vs filter 10 puts it below 4 by design, only overconfidence fails). The start-up bump is
+  expected (3.4):
+  at the TDM rate (~15 updates/s) wrong-sign starts take ~7.5 s to recover (ex3's 5 s
+  was at 25/s).
 - (o) A target crossing the beam at 30 m: one track, no ID loss.
   - A car at 15 m/s, MTI off and on: one ID both ways (it is in the notch for ~0.1 s).
   - A walker at 1.5 m/s, MTI on: the ID is lost around closest approach (9.1). Assert

@@ -77,3 +77,13 @@ Verified against the v0.x binding source (the pip package's `iio.py`). **v0.x AP
 - AD9361 tracking knobs live on `ad9361-phy`: `calib_mode`, `bb_dc_offset_tracking_en`,
   `quadrature_tracking_en`. Defaults are right. **Quadrature error shows up as a mirrored ghost
   target in the RD map** — recognize it before chasing it as a DSP bug.
+
+### Noise floor on real RF (TDM, fabric /8)
+
+- **With TX on, the RD floor is noise riding on the E200's own TX1 -> RX1 leak**, not receiver
+  noise: ~14 dB over TX-off floor at TX 0 / RX 40, same with antennas or with every
+  port on 50 ohm load, and it moves 1:1 with leak (TX gain and RX gain; no compression at
+  RX 40). So E200 TX power buys no SNR (TX -10 costs ~0.5-1 dB, -20 ~4 dB), every dB of loss
+  between the E200 and an antenna costs a full dB of SNR, and only gain outside the E200 raises
+  SNR (LNA ahead of RX1, PA after TX1). Numbers: `hardware/bench_measurements.md`, "Leak floor".
+- fc 5.725 GHz puts that floor 9 dB above 5.8 GHz: keep fc at 5.8.

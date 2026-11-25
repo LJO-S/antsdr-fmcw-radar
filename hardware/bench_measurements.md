@@ -1,4 +1,4 @@
-# Bench measurements (K4, K7)
+# Bench measurements (K4, K7, leak floor)
 
 Guide Sections 5.2 (K4) and 8.2 (K7). For each row: prediction first (datasheet or hand
 calculation), then measure, then explain the difference. K4 closed 2026-10-10; conclusions in
@@ -126,3 +126,31 @@ samples of each row skipped. A = even rows (`tx_sel` 0), B = odd rows.
 - Through the 30 dB pad, the cable path sits only ~9 dB above that leak, so the test with the
   pad shows nothing (row 3 of the table). Run it without the pad: TX -30 dB with
   `SDR_TX_GAIN_MAX_DB` -20 for the session (~-30 dBm at RX1, worst case at 0 dB ~-0.2 dBm).
+
+## Leak floor, every port on a 50 ohm load (2026-11-21)
+
+FMC5, fabric /8, TDM sawtooth, 128 reps, fc 5.8 GHz, MTI on, sessions `20261121-0932*` to
+`-1036*`. TX1 -> VNA cable -> switch RFC, loads on RF1, RF2 and E200 RX1. Floor = median of
+`|X_A|^2 + |X_B|^2` over |v| > 5 m/s at 30 m, computed before `process_cpi`'s peak
+normalization (dB re +-1 full scale). Leak = IF rms. Excess = floor minus the TX-off floor at
+the same RX gain, in linear power.
+
+| TX gain | RX gain | Leak | Floor | Excess over TX-off |
+|---|---|---|---|---|
+| 0 | 40 | -9.6 dBFS | -0.5 dB | 14.0 dB |
+| -5 | 40 | -12.6 dBFS | -3.2 dB | 11.2 dB |
+| -10 | 40 | -16.7 dBFS | -6.5 dB | 7.5 dB |
+| -20 | 40 | -26.7 dBFS | -12.6 dB | -2.1 dB |
+| off (-89) | 40 | -52.2 dBFS | -14.7 dB | |
+| 0 | 30 | -19.7 dBFS | -10.0 dB | 11.5 dB |
+| off (-89) | 30 | -53.4 dBFS | -21.8 dB | |
+
+- Excess minus leak stays within 1 dB (8.9-9.9) from TX 0 to -20, and RX 30 drops both by
+  10 dB: linear noise on the leak, no RX compression.
+- Antennas instead of loads (field session `20261119-221254`, patch TX board + RX column, same
+  settings): floor +0.4 dB. The air path does not set the floor.
+- fc 5.725 GHz, TX 0: floor +8.5 dB, 9 dB over 5.8 GHz.
+- The leak falls only 3 dB for the first 5 dB of TX gain: the E200's TX output is slightly
+  compressed at 0 dB.
+- The 56 m spur stays with every port on a load (~40 dB over the floor), at 93 m with fc
+  5.725 GHz.

@@ -132,6 +132,8 @@ CFAR cell with clutter. `CHIRP_REPS` owns detection and resolution; `subbin_refi
 RD maps are normalized to a common max (triangle uses one shared reference for up/down); the GUI
 draws with fixed `levels=(-80, 0)`. Absolute dB would blow past the window online (FFT processing
 gain ≈ +59 dB at 128 reps on ±1-normalized RX).
+So never read a noise floor off these maps: the peak is usually a spur, and the "floor" then
+moves with the spur's level. Compute it before the normalization.
 
 ## Detection pipeline
 
@@ -160,7 +162,8 @@ then pad to `scipy.fft.next_fast_len(N_IF)` and build the axis from the padded l
 
 **Real-RF recordings carry four fixed spurs** (56, 168, 337, 360 m, fixed r with nonzero
 v): not targets, see `docs/rf_and_regulatory.md` "Spurs riding the chirp". Exclude them
-when comparing detections with truth.
+when comparing detections with truth. They are internal to the E200 (there with every port on a
+load) and move with fc (56 m -> 93 m at 5.725 GHz).
 
 ## Fake targets on the fabric IF stream
 
