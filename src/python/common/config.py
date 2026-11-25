@@ -220,9 +220,7 @@ class RadarConfig:
             "group": "sdr",
         },
     )
-    SDR_TX_GAIN_MAX_DB: float = (
-        0.00  # 0.8 dBm at Tx SMA assuming worstcase 7 dbm output @ 5.8 GHz
-    )
+    SDR_TX_GAIN_MAX_DB: float = 0.00
     SDR_RX_GAIN_MODE: str = "manual"  # untagged, must stay "manual"
     SDR_RX_GAIN_DB: float = field(
         default=40.0,
@@ -317,7 +315,7 @@ class RadarConfig:
     TRACK_DELETE_S: float = field(
         default=0.5,
         metadata={
-            "label": "Delete After",
+            "label": "No update TOL",
             "unit": "s",
             "scale": 1,
             "group": "tracking",
@@ -327,7 +325,7 @@ class RadarConfig:
     TRACK_STOP_COAST_S: float = field(
         default=5.0,
         metadata={
-            "label": "Stopped Coast",
+            "label": "Stopped TOL",
             "unit": "s",
             "scale": 1,
             "group": "tracking",
@@ -337,7 +335,7 @@ class RadarConfig:
     TRACK_MERGE_N: int = field(
         default=10,
         metadata={
-            "label": "Merge After",
+            "label": "Merge after",
             "unit": "CPIs",
             "scale": 1,
             "group": "tracking",
@@ -357,7 +355,7 @@ class RadarConfig:
     TRACK_MIN_SPEED: float = field(
         default=0.0,
         metadata={
-            "label": "Min Start Speed",
+            "label": "Min V_start",
             "unit": "m/s",
             "scale": 1,
             "group": "tracking",
@@ -367,7 +365,7 @@ class RadarConfig:
     TRACK_STD_A: float = field(
         default=10.0,
         metadata={
-            "label": "Accel. Std",
+            "label": "A Std",
             "unit": "m/s^2",
             "scale": 1,
             "group": "tracking",
@@ -377,7 +375,7 @@ class RadarConfig:
     TRACK_STD_R: float = field(
         default=0.7,
         metadata={
-            "label": "Range Std",
+            "label": "R Std",
             "unit": "m",
             "scale": 1,
             "group": "tracking",
@@ -387,8 +385,26 @@ class RadarConfig:
     TRACK_STD_V: float = field(
         default=0.5,
         metadata={
-            "label": "Velocity Std",
+            "label": "V Std",
             "unit": "m/s",
+            "scale": 1,
+            "group": "tracking",
+        },
+    )
+    TRACK_STD_A_XY: float = field(
+        default=10.0,
+        metadata={
+            "label": "A_XY Std",
+            "unit": "m/s^2",
+            "scale": 1,
+            "group": "tracking",
+        },
+    )
+    TRACK_STD_THETA_MIN_DEG: float = field(
+        default=0.5,
+        metadata={
+            "label": "THETA Std",
+            "unit": "deg",
             "scale": 1,
             "group": "tracking",
         },

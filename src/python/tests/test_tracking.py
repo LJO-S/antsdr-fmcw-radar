@@ -1,8 +1,8 @@
 """
 tests/test_tracking.py
 
-L2 tracker tests (Phase 7 guide 6.9). Filter-level tests run on
-CvKalmanFilter; tracker-level (a)-(k), (p)-(s) on Tracker (guide 6.6), failing with
+L2 tracker tests (Phase 7 guide 6.9). Filter-level tests on CvKalmanFilter;
+tracker-level (a)-(k), (p)-(s) on Tracker (guide 6.6), fail with
 "Tracker not implemented" until it exists. Detections synthesized from
 ground truth with seeded Generator, never process_cpi.
 """
@@ -18,7 +18,7 @@ import common.config as config
 import common.tracking as tracking
 from common.config import RadarConfig
 from common.dsp import NMS_SIZE
-from common.tracking import CvKalmanFilter
+from common.tracking import CvKalmanFilter, CvExtendedKalmanFilter
 
 # ===================================================================================
 # Assumed tracker API (guide 6.6 / 6.7). Match to tracking.py in one place
@@ -103,7 +103,7 @@ def kin_sigma_d(a_cfg, a_t, a_rate):
 
 
 def kin_delay(a_cfg, a_v, a_rate):
-    """Time until kinematic check decides on |v|: sigma_d = |v| / 2k (guide 6.5)."""
+    """Time till kinematic check decides on |v|: sigma_d = |v| / 2k (guide 6.5)."""
     gap = abs(a_v) / (2 * a_cfg.TRACK_KINEMATIC_SIGMA)
     return optimize.brentq(lambda t: kin_sigma_d(a_cfg, t, a_rate) - gap, 1e-3, 1e3)
 
@@ -134,12 +134,12 @@ def attr(a_track, a_key):
 
 
 def snap(a_track):
-    st = np.asarray(attr(a_track, "filter").state, dtype=float).ravel()
+    r, v = attr(a_track, "filter").rv()
     return {
         "id": attr(a_track, "id"),
         "status": attr(a_track, "status"),
-        "r": float(st[0]),
-        "v": float(st[1]),
+        "r": float(r),
+        "v": float(v),
     }
 
 
@@ -352,9 +352,9 @@ class SpurPath:
 
 
 class WanderPath:
-    """a_base plus coloured range error, AR(1) with std a_rms and correlation a_tau:
+    """a_base plus coloured range error, AR(1) std a_rms, correlation a_tau:
     strongest reflection wandering over car body. Only r moves; v stays clean
-    Doppler, so range slope and v disagree as on a real car."""
+    Doppler, so range slope and v disagree as on real car."""
 
     GRID = 0.01  # s
 
@@ -392,7 +392,7 @@ def assert_share(a_name, a_fn, a_n=FIELD_SEEDS, a_share=FIELD_SHARE):
 
 
 # ===================================================================================
-# Filter-level tests (CvKalmanFilter)
+# Filter-level tests (CvKalmanFilter, CvExtendedKalmanFilter)
 # ===================================================================================
 def test_filter_dwna_nis_consistent():
     """(j) mean NIS under DWNA truth in 95 % chi-square band for 2 dof."""
@@ -482,6 +482,268 @@ def test_filter_velocity_innovation_wraps():
             want = v_true - v_pred
             assert abs(y[1] - want) < 1e-6, (v0, kind, y[1], want)
             assert y @ np.linalg.solve(S, y) < 9.21, (v0, kind)
+
+
+def ekf_c(a_cfg, a_kind):
+    """Range coupling of a detection kind, from config (independent of the filter)."""
+    return {"up": coupling(a_cfg), "down": -coupling(a_cfg)}.get(a_kind, 0.0)
+
+
+def ekf_sigma(a_cfg, a_snr_db, a_theta_deg, a_kind):
+    """Measurement noise std [r, theta, v_r] of a detection (guide 9.1), rebuilt from config."""
+    cos_th = max(np.cos(np.radians(a_theta_deg)), 0.5)
+    s_th = 1.0 / (np.pi * cos_th * np.sqrt(10 ** (a_snr_db / 10)))
+    if a_kind == "both":
+        s_th /= np.sqrt(2)
+    s_th = max(s_th, np.radians(a_cfg.TRACK_STD_THETA_MIN_DEG))
+    return np.array([a_cfg.TRACK_STD_R, s_th, a_cfg.TRACK_STD_V])
+
+
+def test_ekf_jacobian_finite_difference():
+    """EKF jacobian_h equals central finite differences of h, for c = +k, -k, 0."""
+    cfg = RadarConfig()
+    f = CvExtendedKalmanFilter(cfg)
+    x = np.array([30.0, 80.0, 3.0, -5.0])
+    eps = 1e-6
+    for kind in ("up", "down", "both"):
+        c = ekf_c(cfg, kind)
+        H = f.jacobian_h(x, c)
+        H_fd = np.empty((3, 4))
+        for i in range(4):
+            d = np.zeros(4)
+            d[i] = eps
+            H_fd[:, i] = (f.h(x + d, c) - f.h(x - d, c)) / (2 * eps)
+        assert np.allclose(H, H_fd, rtol=1e-5, atol=1e-8), (kind, np.abs(H - H_fd).max())
+    # coupling must be live: "up" and "down" range rows differ
+    up, down = ekf_c(cfg, "up"), ekf_c(cfg, "down")
+    assert not np.allclose(f.jacobian_h(x, up)[0], f.jacobian_h(x, down)[0])
+
+
+EKF_DT = (0.055, 0.075)  # s, TDM rate (guide 9.2)
+EKF_SA_TRUE = 5.0  # true random accel [m/s^2]; the filter runs TRACK_STD_A_XY
+EKF_SPEED = 15.0  # m/s
+EKF_THETA0_DEG = 5.0
+
+
+def ekf_nees(a_snr_db, a_r0, a_t_end, a_runs=200, a_kind="up", a_seed=SEED):
+    """
+    NEES of CvExtendedKalmanFilter, shape (n_runs, n_steps), and time of every step.
+    Port of ex3_ekf_ukf.py: (x, y) target, DWNA truth, random heading per run (fixed
+    heading = same sideways-velocity error every run), measured as (r, theta, v_r)
+    with filter's own R. kind "up" so range coupling is live.
+    """
+    cfg = RadarConfig()
+    n_steps = int(a_t_end / np.mean(EKF_DT))
+    nees = np.zeros((a_runs, n_steps))
+    times = np.zeros((a_runs, n_steps))
+    th0 = np.radians(EKF_THETA0_DEG)
+    for i in range(a_runs):
+        ss = np.random.SeedSequence(a_seed + i).spawn(3)
+        rng_h, rng_t, rng_m = (np.random.default_rng(s) for s in ss)
+        phi = th0 + np.radians(rng_h.uniform(0, 360))  # velocity direction
+        truth = np.array(
+            [
+                a_r0 * np.sin(th0),
+                a_r0 * np.cos(th0),
+                EKF_SPEED * np.sin(phi),
+                EKF_SPEED * np.cos(phi),
+            ]
+        )
+        f = CvExtendedKalmanFilter(cfg)
+        c = ekf_c(cfg, a_kind)
+        t = 0.0
+        for n in range(n_steps):
+            if n > 0:
+                dt = rng_t.uniform(*EKF_DT)
+                a = rng_t.normal(0, EKF_SA_TRUE, 2)
+                truth[:2] += (truth[2:] + a * dt / 2) * dt
+                truth[2:] += a * dt
+                t += dt
+            # Noiseless detection gives the per-step noise std, as the filter will see it
+            z_true = f.h(truth, c)
+            assert abs(z_true[1]) < np.pi / 2, "target left the front half-plane"
+            det = {
+                "r": z_true[0],
+                "theta": np.degrees(z_true[1]),
+                "v": z_true[2],
+                "kind": a_kind,
+                "snr_db": a_snr_db,
+            }
+            sigma = ekf_sigma(cfg, a_snr_db, det["theta"], a_kind)
+            z = z_true + rng_m.normal(0, sigma)
+            det.update(r=z[0], theta=np.degrees(z[1]), v=z[2])
+            if n == 0:
+                f.init(det)
+            else:
+                f.predict(dt)
+                f.update(det)
+            e = truth - f.x
+            nees[i, n] = e @ np.linalg.solve(f.P, e)
+            times[i, n] = t
+    return nees, times
+
+
+def test_ekf_nees_straight_100m_20db():
+    """(l) 100 m, 20 dB: mean NEES <= ~4 (under 4 is the price of sa 10)."""
+    nees, times = ekf_nees(20.0, 100.0, 5.0)
+    mean = float(nees[times >= 1.0].mean())  # after the start-up bump
+    assert mean <= 4.5, f"mean NEES {mean:.2f} > 4.5"
+
+
+def test_ekf_nees_long_range_300m_13db():
+    """(n) 300 m, 13 dB, random heading: mean NEES below the 95 % band's upper edge after 7.5 s."""
+    runs = 200
+    nees, times = ekf_nees(13.0, 300.0, 10.0, a_runs=runs)
+    # Wrong-sign starts (guide 3.4) take ~7.5 s to recover at the TDM rate
+    mean = float(nees[times >= 7.5].mean())
+    # One-sided: truth sa 5 vs filter sa 10, so NEES sits under 4 by design.
+    # Overconfidence (mean above hi) is the failure that matters.
+    hi = stats.chi2.ppf(0.975, 4 * runs) / runs
+    assert mean < hi, f"mean NEES {mean:.2f} above {hi:.2f}"
+
+
+def test_ekf_init_round_trip():
+    """EKF init from a detection: h(x0) gives the detection back, for every kind."""
+    cfg = RadarConfig()
+    f = CvExtendedKalmanFilter(cfg)
+    for kind in ("up", "down", "both"):
+        det = {"r": 100.0, "theta": 25.0, "v": 12.0, "kind": kind, "snr_db": 20.0}
+        c = ekf_c(cfg, kind)
+        z = np.array([100.0, np.radians(25.0), 12.0])  # theta deg -> rad
+        f.init(det)
+        assert np.allclose(f.h(f.x, c), z, atol=1e-9), (kind, f.h(f.x, c) - z)
+        # position without coupling bias
+        assert abs(np.hypot(*f.x[:2]) - (100.0 - c * 12.0)) < 1e-9, kind
+
+
+def test_ekf_missing_snr_uses_nominal():
+    """Missing, None or NaN snr_db gives the 13 dB R (old recordings carry none)."""
+    cfg = RadarConfig()
+    det = {"r": 100.0, "theta": 25.0, "v": 12.0, "kind": "both", "snr_db": 13.0}
+    ref = CvExtendedKalmanFilter(cfg)
+    ref.init(det)
+    for snr in ("missing", None, float("nan"), float("-inf")):
+        d = {k: v for k, v in det.items() if k != "snr_db"}
+        if snr != "missing":
+            d["snr_db"] = snr
+        f = CvExtendedKalmanFilter(cfg)
+        f.init(d)
+        assert np.all(np.isfinite(f.P)), snr
+        assert np.allclose(f.P, ref.P), snr
+        f.update(d)
+        assert np.isfinite(f.nis), snr
+
+
+# EKF reference (oracle): per-filter code on plain arrays, independent of the filter's
+# own predict/update so it stays valid once those delegate to the batched versions.
+# R and c come from the config helpers above, h / jacobian_h from the filter.
+def ekf_ref_R(a_cfg, a_det):
+    sigma = ekf_sigma(a_cfg, a_det["snr_db"], a_det["theta"], a_det["kind"])
+    return np.diag(sigma**2)
+
+
+def ekf_ref_predict(a_cfg, a_x, a_P, a_dt):
+    F = np.array([[1, 0, a_dt, 0], [0, 1, 0, a_dt], [0, 0, 1, 0], [0, 0, 0, 1]])
+    G = np.array(
+        [
+            [a_dt**4 / 4, 0, a_dt**3 / 2, 0],
+            [0, a_dt**4 / 4, 0, a_dt**3 / 2],
+            [a_dt**3 / 2, 0, a_dt**2, 0],
+            [0, a_dt**3 / 2, 0, a_dt**2],
+        ]
+    )
+    return F @ a_x, F @ a_P @ F.T + a_cfg.TRACK_STD_A_XY**2 * G
+
+
+def ekf_ref_innovation(a_cfg, a_f, a_x, a_P, a_det):
+    """(y, S, H, R) of one detection against state (a_x, a_P); a_f only supplies h, H."""
+    c = ekf_c(a_cfg, a_det["kind"])
+    R = ekf_ref_R(a_cfg, a_det)
+    z = np.array([a_det["r"], np.radians(a_det["theta"]), a_det["v"]])
+    vmax = a_cfg.MAX_VELOCITY
+    y = z - a_f.h(a_x, c)
+    y[1] = (y[1] + np.pi) % (2 * np.pi) - np.pi
+    y[2] = (y[2] + vmax) % (2 * vmax) - vmax
+    H = a_f.jacobian_h(a_x, c)
+    return y, H @ a_P @ H.T + R, H, R
+
+
+def ekf_ref_update(a_cfg, a_f, a_x, a_P, a_det):
+    """(x, P, nis, v, r): v = predicted v_r + wrapped innovation, r = z_r - c*v."""
+    c = ekf_c(a_cfg, a_det["kind"])
+    y, S, H, R = ekf_ref_innovation(a_cfg, a_f, a_x, a_P, a_det)
+    K = np.linalg.solve(S, H @ a_P).T
+    I_KH = np.eye(4) - K @ H
+    P = I_KH @ a_P @ I_KH.T + K @ R @ K.T
+    v = a_f.h(a_x, c)[2] + y[2]
+    return a_x + K @ y, P, y @ np.linalg.solve(S, y), v, a_det["r"] - c * v
+
+
+def ekf_ref_d2_matrix(a_cfg, a_f, a_states, a_dets):
+    """(n_f, n_d) d^2 by looping; a_states = [(x, P)]."""
+    D = np.zeros((len(a_states), len(a_dets)))
+    for i, (x, P) in enumerate(a_states):
+        for j, det in enumerate(a_dets):
+            y, S, _, _ = ekf_ref_innovation(a_cfg, a_f, x, P, det)
+            D[i, j] = y @ np.linalg.solve(S, y)
+    return D
+
+
+def ekf_ref_pair_d2(a_cfg, a_f, a_states):
+    """
+    (n, n) d^2 between predicted measurements by looping; a_states = [(x, P, R)], R the
+    last detection's. Geometric range (c = 0). Assumed form: S = H_a P_a H_a' + H_b P_b H_b' + R_a + R_b.
+    """
+    n, vmax = len(a_states), a_cfg.MAX_VELOCITY
+    D = np.zeros((n, n))
+    for i, (xa, Pa, Ra) in enumerate(a_states):
+        for j, (xb, Pb, Rb) in enumerate(a_states):
+            y = a_f.h(xa, 0.0) - a_f.h(xb, 0.0)
+            y[1] = (y[1] + np.pi) % (2 * np.pi) - np.pi
+            y[2] = (y[2] + vmax) % (2 * vmax) - vmax
+            Ha, Hb = a_f.jacobian_h(xa, 0.0), a_f.jacobian_h(xb, 0.0)
+            S = Ha @ Pa @ Ha.T + Hb @ Pb @ Hb.T + Ra + Rb
+            D[i, j] = y @ np.linalg.solve(S, y)
+    return D
+
+
+def test_ekf_matches_reference():
+    """EKF predict / update / innovation equal the reference to 1e-10, mixed kinds."""
+    cfg = RadarConfig()
+    rng = np.random.default_rng(SEED)
+    f = CvExtendedKalmanFilter(cfg)
+    truth = np.array([30.0, 80.0, 3.0, -5.0])
+    kinds = ("up", "down", "both")
+
+    def make_det(a_i):
+        kind, snr = kinds[a_i % 3], 10.0 + 2.0 * (a_i % 7)
+        z = f.h(truth, ekf_c(cfg, kind))
+        det = {"r": z[0], "theta": np.degrees(z[1]), "v": z[2], "kind": kind,
+               "snr_db": snr}
+        sigma = ekf_sigma(cfg, snr, det["theta"], kind)
+        z = z + rng.normal(0, sigma)
+        det.update(r=z[0], theta=np.degrees(z[1]), v=z[2])
+        return det
+
+    f.init(make_det(0))
+    x, P = f.x.copy(), f.P.copy()
+    for i in range(1, 40):
+        dt = rng.uniform(*EKF_DT)
+        truth[:2] += truth[2:] * dt
+        det = make_det(i)
+        f.predict(dt)
+        x, P = ekf_ref_predict(cfg, x, P, dt)
+        assert np.allclose(f.x, x, rtol=1e-10, atol=1e-10), ("predict x", i)
+        assert np.allclose(f.P, P, rtol=1e-10, atol=1e-10), ("predict P", i)
+        y, S, _, _ = ekf_ref_innovation(cfg, f, x, P, det)
+        y_f, S_f = f.innovation(det)
+        assert np.allclose(y_f, y, rtol=1e-10, atol=1e-10), ("innovation y", i)
+        assert np.allclose(S_f, S, rtol=1e-10, atol=1e-10), ("innovation S", i)
+        f.update(det)
+        x, P, nis, _, _ = ekf_ref_update(cfg, f, x, P, det)
+        assert np.allclose(f.x, x, rtol=1e-10, atol=1e-10), ("update x", i)
+        assert np.allclose(f.P, P, rtol=1e-10, atol=1e-10), ("update P", i)
+        assert abs(f.nis - nis) < 1e-10 * max(1.0, nis), ("nis", i)
 
 
 # ===================================================================================
@@ -682,7 +944,7 @@ def test_i_spurs_synthetic():
     """(i) fixed-r detections at v = 2, 10, 40 m/s, Pd 1, 60 s, SPUR_SEEDS seeds per spur.
     Not "never": spur-born track passes kinematic check by chance (~3 sigma on first
     ~0.4 s), then r runs off at v, spur leaves gate, times out ~TRACK_DELETE_S later.
-    So: max SPUR_SHARE of spur-born tracks confirm, none stays confirmed SPUR_LIFE
+    So: max SPUR_SHARE of spur-born tracks confirm, none confirmed SPUR_LIFE
     (the leak, two tracks sharing the stream, did)."""
     cfg = RadarConfig()
     sr, sv = cfg.TRACK_STD_R, cfg.TRACK_STD_V
@@ -876,8 +1138,8 @@ def test_s_spur_handover():
 
 
 def test_confirm_needs_a_hit():
-    """Tentative track that met M of N and reaches age W while coasting stays tentative
-    on that CPI (kinematic() passes at age W; confirm needs hit and M of N then).
+    """Tentative track with M of N reaching age W while coasting stays tentative
+    that CPI (kinematic() passes at age W; confirm needs hit and M of N).
     Confirms on next hit. Noise-free slow target: check undecided until W."""
     cfg = RadarConfig()
     trk = make_tracker(cfg)
@@ -1021,6 +1283,12 @@ if __name__ == "__main__":
         test_filter_kind_init_no_bias,
         test_filter_kinds_mixed_no_bias,
         test_filter_velocity_innovation_wraps,
+        test_ekf_jacobian_finite_difference,
+        test_ekf_init_round_trip,
+        test_ekf_missing_snr_uses_nominal,
+        test_ekf_matches_reference,
+        test_ekf_nees_straight_100m_20db,
+        test_ekf_nees_long_range_300m_13db,
         test_track_api,
         test_a_one_target,
         test_b_crossing_no_swap,
